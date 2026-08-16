@@ -9,6 +9,7 @@ BUCKET=lunarreturns
 FN_NAME=lunarreturns-presign
 SA_NAME=lunarreturns-fn
 REPO=abakum/LunarReturns
+MAX_SIZE_BYTES=1073741824  # 1 GiB (the free tier; yc --max-size takes bytes)
 ALLOWED_UIDS="${ALLOWED_UIDS:-}"
 EXPIRES="${EXPIRES:-600}"
 PAGE_DIR="$(cd "$(dirname "$0")/.." && pwd)/abakum.github.io/LunarReturns"
@@ -125,9 +126,9 @@ write_page_url() {
 bootstrap() {
   info "Bucket $BUCKET and CORS"
   if ! yc storage bucket get --name "$BUCKET" >/dev/null 2>&1; then
-    yc storage bucket create --name "$BUCKET" --default-storage-class standard --max-size 1
+    yc storage bucket create --name "$BUCKET" --default-storage-class standard --max-size "$MAX_SIZE_BYTES"
   fi
-  yc storage bucket update --name "$BUCKET" --max-size 1 --remove-cors >/dev/null
+  yc storage bucket update --name "$BUCKET" --max-size "$MAX_SIZE_BYTES" --remove-cors >/dev/null
   yc storage bucket update --name "$BUCKET" \
     --cors 'allowed-origins=https://abakum.github.io,allowed-methods=METHOD_GET,allowed-methods=METHOD_PUT,allowed-headers=*,max-age-seconds=3600' \
     || die "failed to set bucket CORS"
