@@ -44,9 +44,14 @@ def _verify_token(token):
         with urllib.request.urlopen(req, timeout=10) as resp:
             info = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, ValueError, OSError):
-        return None
+        return None, None
     uid = info.get("id")
-    return str(uid) if uid else None
+    birthday = info.get("birthday")
+    if not uid:
+        return None, None
+    if not isinstance(birthday, str):
+        birthday = None
+    return str(uid), birthday
 
 
 def _sign(key, msg):
@@ -111,7 +116,7 @@ def handler(event, context):
     if action not in ("get", "put"):
         return _response(400, {"error": "action must be get or put"})
 
-    uid = _verify_token(token)
+    uid, birthday = _verify_token(token)
     if not uid:
         return _response(401, {"error": "invalid token"})
     if ALLOWED_UIDS and uid not in ALLOWED_UIDS.split(","):
@@ -122,4 +127,4 @@ def handler(event, context):
 
     method = "GET" if action == "get" else "PUT"
     url = _presign(method, "users/" + uid + "/db.json")
-    return _response(200, {"url": url})
+    return _response(200, {"url": url, "birthday": birthday})
