@@ -1,8 +1,7 @@
 # LunarReturns
 
-Страница <https://abakum.github.io/LunarReturns/> рассчитывает совпадения предстоящих
-дней рождения с первым днём рождения (день недели, фаза луны, лунный и солнечный
-знаки зодиака, восточный календарь) — как `la()` в
+Страница <https://abakum.github.io/LunarReturns/> рассчитывает совпадения
+дней рождения с первым днём рождения — как `la()` в
 [mxbPi/LunarAnniversaries.go](https://github.com/abakum/mxbPi/blob/main/LunarAnniversaries.go).
 JS-порт формул [abakum/MoonPhase](https://github.com/abakum/MoonPhase) и таблиц
 [abakum/gozodiac](https://github.com/abakum/gozodiac) встроен в `index.html` и
@@ -18,8 +17,8 @@ JS-порт формул [abakum/MoonPhase](https://github.com/abakum/MoonPhase)
 
 ## Состав
 
-- `index.html` — страница (весь расчёт инлайн, `qr/qrcode.js` локально).
-- `qr/qrcode.js` — [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) v1.4.4 (MIT), vendored.
+- `../abakum.github.io/LunarReturns/index.html` — страница (весь расчёт инлайн, `qr/qrcode.js` локально).
+- `../abakum.github.io/LunarReturns/qr/qrcode.js` — [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) v1.4.4 (MIT), vendored.
 - `function/handler.py` — облачная функция Yandex Cloud Functions (Python, только stdlib):
   проверяет OAuth-токен через `https://login.yandex.ru/info` и выдаёт presigned URL
   (SigV4) на `GET`/`PUT` одного объекта `users/{uid}/db.json`. Подпись сверена
@@ -27,55 +26,24 @@ JS-порт формул [abakum/MoonPhase](https://github.com/abakum/MoonPhase)
 
 ## Развёртывание
 
-### 1. Приложение Яндекс ID
+### 1. Приложение Яндекс ID (единственный полностью ручной шаг)
 
 1. <https://oauth.yandex.ru/client/new> → создать приложение.
 2. Платформа «Веб-сервисы», Redirect URI: `https://abakum.github.io/LunarReturns/`.
 3. Доступы: «Яндекс ID» → «Идентификатор пользователя» (`login:id`).
 4. Полученный Client ID вписать в константу `YANDEX_CLIENT_ID` в `index.html`.
 
-### 2. Бакет Object Storage
+### 2. Всё остальное — `./deploy.sh` (см. ниже)
 
-Бакет `lunarreturns` (приватный). Правило CORS (S3 API → CORS):
+Скрипт создаёт и поддерживает: бакет `lunarreturns` (приватный, CORS
+`GET`/`PUT` с origin `https://abakum.github.io`, лимит 1 ГБ — бесплатный
+объём), сервисный аккаунт `lunarreturns-fn` (`storage.editor`) со static key,
+функцию `lunarreturns-presign` (python312, `handler.handler`, 128MB / 10s,
+публичный вызов) из `function/handler.py`. Вручную эти команды повторять
+не нужно; URL функции скрипт сам вписывает в константу `FUNCTION_URL` в
+`../abakum.github.io/LunarReturns/index.html` (commit/push того репо — вручную).
 
-```json
-[{
-  "AllowedMethods": ["GET", "PUT"],
-  "AllowedOrigins": ["https://abakum.github.io"],
-  "AllowedHeaders": ["*"],
-  "MaxAgeSeconds": 3600
-}]
-```
-
-### 3. Сервисный аккаунт и ключи
-
-1. Создать сервисный аккаунт (например `lunarreturns-fn`) с ролью `storage.editor`.
-2. Создать для него статический access key (консоль → Сервисные аккаунты → ключи).
-3. Ключи пойдут в переменные окружения функции, в репозиторий не попадают.
-
-### 4. Cloud Function
-
-```sh
-cd function
-zip fn.zip handler.py
-yc serverless function create --name lunarreturns-presign
-yc serverless function version create \
-  --name lunarreturns-presign --runtime python312 \
-  --entrypoint handler.handler --memory 128m --execution-timeout 10s \
-  --source-path fn.zip \
-  --environment S3_ACCESS_KEY_ID=<id>,S3_SECRET_ACCESS_KEY=<secret>,BUCKET=lunarreturns
-```
-
-Включить публичный доступ (unauthenticated invocation) в консоли или:
-
-```sh
-yc serverless function allow-unauthenticated-invoke --name lunarreturns-presign
-```
-
-Полученный URL вида `https://functions.yandexcloud.net/<id>` вписать в константу
-`FUNCTION_URL` в `index.html`.
-
-Переменные окружения:
+Переменные окружения функции (документация `function/handler.py`):
 
 | Переменная | Назначение | По умолчанию |
 |---|---|---|
@@ -84,17 +52,21 @@ yc serverless function allow-unauthenticated-invoke --name lunarreturns-presign
 | `ALLOWED_UIDS` | белый список UID через запятую (пусто — пускать всех) | `` |
 | `EXPIRES` | срок жизни presigned URL, сек | `600` |
 
-### 5. Проверка
+### 3. Проверка
 
 1. Закоммитить страницу с заполненными константами, дождаться GitHub Pages.
 2. Войти через Яндекс, добавить записи, проверить QR и копирование.
 3. «Сохранить базу в облако», очистить localStorage (или другой браузер),
    «Загрузить базу из облака».
 
+После каждого деплоя скрипт сам делает smoke-тест URL функции.
+
 ## Развёртывание скриптом
 
 Всё, кроме приложения Яндекс ID (шаг 1), делает локальный `deploy.sh`
-(требуются настроенные `yc init` и `gh auth login`):
+(нужны `gh`, `zip`, `curl`, `jq`; отсутствующий `yc` скрипт ставит сам в
+`~/yandex-cloud` без sudo, а не настроенные `yc init` / `gh auth login`
+запускает интерактивно):
 
 - `./deploy.sh` — сам выбирает действие: `bootstrap`, если функции ещё нет
   (бакет с CORS (лимит 1 ГБ — бесплатный объём), СА `lunarreturns-fn`
