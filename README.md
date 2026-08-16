@@ -90,3 +90,23 @@ yc serverless function allow-unauthenticated-invoke --name lunarreturns-presign
 2. Войти через Яндекс, добавить записи, проверить QR и копирование.
 3. «Сохранить базу в облако», очистить localStorage (или другой браузер),
    «Загрузить базу из облака».
+
+## Развёртывание скриптом
+
+Всё, кроме приложения Яндекс ID (шаг 1), делает локальный `deploy.sh`
+(требуются настроенные `yc init` и `gh auth login`):
+
+- `./deploy.sh` — сам выбирает действие: `bootstrap`, если функции ещё нет
+  (бакет с CORS (лимит 1 ГБ — бесплатный объём), СА `lunarreturns-fn`
+  (`storage.editor`), функция и первая версия из `function/handler.py`),
+  иначе `deploy` — новая версия функции. Явный аргумент (`./deploy.sh deploy`
+  или `bootstrap`) принудителен; обе команды идемпотентны.
+
+При каждом запуске скрипт ротирует static key СА: создаёт новый, кладёт его в
+GitHub Secrets `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` (через локальный
+`gh`, PAT не нужен), передаёт в env функции и удаляет старые ключи. Скрипт
+также вписывает URL функции в константу `FUNCTION_URL` в
+`../abakum.github.io/LunarReturns/index.html` (страница живёт в репо
+abakum/abakum.github.io); commit и push того репо — вручную. Дополнительно
+можно задать `ALLOWED_UIDS` и `EXPIRES` (по умолчанию `` и `600`).
+
