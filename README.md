@@ -40,9 +40,13 @@ JS-порт формул [abakum/MoonPhase](https://github.com/abakum/MoonPhase)
 `GET`/`PUT` с origin `https://abakum.github.io`, лимит 1 ГБ — бесплатный
 объём), сервисный аккаунт `lunarreturns-fn` (`storage.editor`) со static key,
 функцию `lunarreturns-presign` (python312, `handler.handler`, 128MB / 10s,
-публичный вызов) из `function/handler.py`. Вручную эти команды повторять
-не нужно; URL функции скрипт сам вписывает в константу `FUNCTION_URL` в
-`../abakum.github.io/LunarReturns/index.html` (commit/push того репо — вручную).
+публичный вызов) из `function/handler.py`, функцию `lunarreturns-push`
+(`push.handler`, 128MB / 30s) из `function/push.py` и таймер
+`lunarreturns-push-timer` (ежедневно 06:00 UTC = 09:00 МСК). Вручную эти
+команды повторять не нужно; URL функций скрипт сам вписывает в константы
+`FUNCTION_URL`/`PUSH_URL`/`PUSH_PUBLIC_KEY` в
+`../abakum.github.io/LunarReturns/index.html` (в CI коммитит и пушит
+автоматически; локально — вручную).
 
 Переменные окружения функции (документация `function/handler.py`):
 
@@ -53,9 +57,15 @@ JS-порт формул [abakum/MoonPhase](https://github.com/abakum/MoonPhase)
 | `ALLOWED_UIDS` | белый список UID через запятую (пусто — пускать всех) | `` |
 | `EXPIRES` | срок жизни presigned URL, сек | `600` |
 
+Переменные окружения push-функции (документация `function/push.py`):
+`S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY`/`BUCKET` — как выше,
+`VAPID_PRIVATE`/`VAPID_PUBLIC` — VAPID-пара (обязательны; создаются
+`vapid-keygen.sh`), `VAPID_SUBJECT` — необязательный `mailto:`.
+
 ### 3. Проверка
 
-1. Закоммитить страницу с заполненными константами, дождаться GitHub Pages.
+1. Закоммитить страницу с заполненными константами (при деплое из CI —
+   не требуется, workflow пушит сам), дождаться GitHub Pages.
 2. Войти через Яндекс, добавить записи, проверить QR и копирование.
 3. «Сохранить базу в облако», очистить localStorage (или другой браузер),
    «Загрузить базу из облака».
@@ -72,16 +82,22 @@ JS-порт формул [abakum/MoonPhase](https://github.com/abakum/MoonPhase)
 - `./deploy.sh` — сам выбирает действие: `bootstrap`, если функции ещё нет
   (бакет с CORS (лимит 1 ГБ — бесплатный объём), СА `lunarreturns-fn`
   (`storage.editor`), функция и первая версия из `function/handler.py`),
-  иначе `deploy` — новая версия функции. Явный аргумент (`./deploy.sh deploy`
-  или `bootstrap`) принудителен; обе команды идемпотентны.
+  иначе `deploy` — новая версия обеих функций (push-функция создаётся
+  автоматически при первом `deploy`). Явный аргумент (`./deploy.sh deploy`
+  или `bootstrap`) принудителен; обе команды идемпотентны. Для деплоя
+  push-функции нужны VAPID-ключи — локально из `.vapid.env`
+  (см. `vapid-keygen.sh` ниже); без них и без `.vapid.env` скрипт
+  завершается с подсказкой.
 
 При каждом запуске скрипт ротирует static key СА: создаёт новый, кладёт его в
 GitHub Secrets `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` (через локальный
-`gh`, PAT не нужен), передаёт в env функции и удаляет старые ключи. Скрипт
-также вписывает URL функции в константу `FUNCTION_URL` в
+`gh`, PAT не нужен), передаёт в env функции и удаляет старые ключи (env
+функций в логах CI скрывается). Скрипт также вписывает URL функций в
+константы `FUNCTION_URL`/`PUSH_URL`/`PUSH_PUBLIC_KEY` в
 `../abakum.github.io/LunarReturns/index.html` (страница живёт в репо
-abakum/abakum.github.io); commit и push того репо — вручную. Дополнительно
-можно задать `ALLOWED_UIDS` и `EXPIRES` (по умолчанию `` и `600`).
+abakum/abakum.github.io): из CI — коммитит и пушит сам, локально — commit
+и push вручную. Дополнительно можно задать `ALLOWED_UIDS` и `EXPIRES`
+(по умолчанию `` и `600`).
 
 ### Подготовка деплоя через GitHub Actions (один раз, локально)
 
@@ -106,7 +122,9 @@ abakum/abakum.github.io); commit и push того репо — вручную. �
 
 Workflow `.github/workflows/deploy.yml` (Actions → Deploy → Run workflow):
 по `workflow_dispatch` деплоит обе функции через `deploy.sh deploy`,
-ротирует S3-ключи. Локальный `./deploy.sh deploy` работает как раньше:
+ротирует S3-ключи, обновляет константы в index.html и пушит репо страницы
+(для этого workflow чекаутит `abakum/abakum.github.io` с `GH_PAT`).
+Локальный `./deploy.sh deploy` работает как раньше:
 VAPID — из `.vapid.env` или экспортированных переменных, `yc init` /
 `gh auth login` интерактивно.
 
