@@ -95,13 +95,24 @@ deploy_version() {
   )
   local env="S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID},S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY},BUCKET=${BUCKET},EXPIRES=${EXPIRES}"
   [ -n "$ALLOWED_UIDS" ] && env="${env},ALLOWED_UIDS=${ALLOWED_UIDS}"
-  yc serverless function version create \
-    --function-name "$FN_NAME" --runtime python312 \
-    --entrypoint handler.handler --memory 128MB --execution-timeout 10s \
-    --source-path "$(dirname "$0")/function/fn.zip" \
-    --environment "$env"
+  # version create prints the function env (incl. secrets) — silence it in CI logs
+  create_version "$FN_NAME" handler.handler 10s "$(dirname "$0")/function/fn.zip" "$env"
   yc serverless function allow-unauthenticated-invoke "$FN_NAME"
-  unset S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY
+}
+
+# create_version <function> <entrypoint> <timeout> <source> <env>
+create_version() {
+  if [ "${CI:-}" = true ]; then
+    yc serverless function version create \
+      --function-name "$1" --runtime python312 \
+      --entrypoint "$2" --memory 128MB --execution-timeout "$3" \
+      --source-path "$4" --environment "$5" >/dev/null
+  else
+    yc serverless function version create \
+      --function-name "$1" --runtime python312 \
+      --entrypoint "$2" --memory 128MB --execution-timeout "$3" \
+      --source-path "$4" --environment "$5"
+  fi
 }
 
 deploy_push_version() {
@@ -114,11 +125,9 @@ deploy_push_version() {
   )
   local env="S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID},S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY},BUCKET=${BUCKET}"
   [ -n "$VAPID_SUBJECT" ] && env="${env},VAPID_SUBJECT=${VAPID_SUBJECT}"
-  yc serverless function version create \
-    --function-name "$FN_PUSH_NAME" --runtime python312 \
-    --entrypoint push.handler --memory 128MB --execution-timeout 30s \
-    --source-path "$(dirname "$0")/function/fn-push.zip" \
-    --environment "$env,VAPID_PRIVATE=${VAPID_PRIVATE},VAPID_PUBLIC=${VAPID_PUBLIC}"
+  # version create prints the function env (incl. secrets) — silence it in CI logs
+  create_version "$FN_PUSH_NAME" push.handler 30s "$(dirname "$0")/function/fn-push.zip" \
+    "$env,VAPID_PRIVATE=${VAPID_PRIVATE},VAPID_PUBLIC=${VAPID_PUBLIC}"
   yc serverless function allow-unauthenticated-invoke "$FN_PUSH_NAME"
 }
 
