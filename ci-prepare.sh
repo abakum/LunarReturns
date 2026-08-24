@@ -4,8 +4,12 @@
 #      (serverless.functions.admin, iam.serviceAccounts.accessKeyAdmin).
 #   2. Create an authorized key for it, store in GitHub Secrets
 #      YC_SA_KEY / YC_FOLDER_ID.
-#   3. Self-check the new key against the resources deploy.sh touches.
-#   4. Print sa.json once — save it in your password manager; the GitHub
+#   3. Store a PAT (entered interactively) as the GH_PAT secret —
+#      GITHUB_TOKEN in CI cannot manage repo secrets, deploy.sh needs
+#      `gh secret set` for S3 key rotation. Create the PAT manually first:
+#      https://github.com/settings/tokens → repo scope.
+#   4. Self-check the new key against the resources deploy.sh touches.
+#   5. Print sa.json once — save it in your password manager; the GitHub
 #      secret cannot be read back. Losing it is recoverable by re-running
 #      this script (unlike the VAPID key, subscriptions are not affected).
 # Idempotent: safe to re-run.
@@ -42,6 +46,20 @@ yc iam key create --service-account-name "$DEPLOY_SA" --output "$SA_KEY" \
 info "Saving YC_SA_KEY/YC_FOLDER_ID to GitHub Secrets ($REPO)"
 gh secret set YC_SA_KEY -R "$REPO" < "$SA_KEY"
 gh secret set YC_FOLDER_ID -R "$REPO" --body "$FOLDER_ID"
+
+if gh secret list -R "$REPO" --json name --jq '.[].name' 2>/dev/null | grep -qx GH_PAT; then
+  info "Secret GH_PAT already exists — skipping (delete it in repo settings to re-enter)"
+else
+  info "GH_PAT: GITHUB_TOKEN in CI cannot manage repo secrets; deploy.sh needs gh secret set for S3 key rotation"
+  info "Create a PAT with 'repo' scope: https://github.com/settings/tokens"
+  printf 'Paste the PAT (input hidden): '
+  read -rs PAT
+  echo
+  [ -n "$PAT" ] || die "empty PAT; rerun this script to retry"
+  printf '%s' "$PAT" | gh secret set GH_PAT -R "$REPO"
+  info "PAT saved as secret GH_PAT (also store it in your password manager)"
+  unset PAT
+fi
 
 info "Self-check: listing keys of SA $S3_SA with the new key"
 yc iam access-key list --service-account-name "$S3_SA" >/dev/null \

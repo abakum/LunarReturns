@@ -85,6 +85,10 @@ abakum/abakum.github.io); commit и push того репо — вручную. �
 
 ### Подготовка деплоя через GitHub Actions (один раз, локально)
 
+- PAT для ротации секретов из CI: `GITHUB_TOKEN` не умеет управлять
+  секретами репозитория, поэтому `ci-prepare.sh` попросит один раз
+  вставить PAT с правом `repo` (создать: <https://github.com/settings/tokens>)
+  и сохранит его в секрет `GH_PAT`.
 - `./ci-prepare.sh` — выдаёт СА `github-actions` роли
   `serverless.functions.admin` + `iam.serviceAccounts.accessKeyAdmin`,
   создаёт authorized key и кладёт в GitHub Secrets `YC_SA_KEY` /
