@@ -7,6 +7,8 @@ set -euo pipefail
 
 BUCKET=lunarreturns
 FN_NAME=lunarreturns-presign
+FN_PUSH_NAME=lunarreturns-push
+TRIGGER_NAME=lunarreturns-push-timer
 SA_NAME=lunarreturns-fn
 REPO=abakum/LunarReturns
 MAX_SIZE_BYTES=1073741824  # 1 GiB (the free tier; yc --max-size takes bytes)
@@ -87,8 +89,46 @@ deploy_version() {
   unset S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY
 }
 
+deploy_push_version() {
+  info "Creating function version for $FN_PUSH_NAME"
+  [ -n "$VAPID_PRIVATE" ] && [ -n "$VAPID_PUBLIC" ] \
+    || die "export VAPID_PRIVATE and VAPID_PUBLIC (base64url, from 'npx web-push generate-vapid-keys') before deploying $FN_PUSH_NAME"
+  (
+    cd "$(dirname "$0")/function"
+    rm -f fn-push.zip
+    zip -q fn-push.zip handler.py push.py requirements.txt
+  )
+  local env="S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID},S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY},BUCKET=${BUCKET}"
+  [ -n "$VAPID_SUBJECT" ] && env="${env},VAPID_SUBJECT=${VAPID_SUBJECT}"
+  yc serverless function version create \
+    --function-name "$FN_PUSH_NAME" --runtime python312 \
+    --entrypoint push.handler --memory 128MB --execution-timeout 30s \
+    --source-path "$(dirname "$0")/function/fn-push.zip" \
+    --environment "$env,VAPID_PRIVATE=${VAPID_PRIVATE},VAPID_PUBLIC=${VAPID_PUBLIC}"
+  yc serverless function allow-unauthenticated-invoke "$FN_PUSH_NAME"
+}
+
+ensure_timer_trigger() {
+  info "Timer trigger $TRIGGER_NAME (daily 06:00 UTC = 09:00 MSK)"
+  if yc serverless trigger get "$TRIGGER_NAME" >/dev/null 2>&1; then
+    info "Trigger already exists"
+    return
+  fi
+  yc serverless function add-access-binding "$FN_PUSH_NAME" \
+    --role serverless.functions.invoker --service-account-name "$SA_NAME" || true
+  yc serverless trigger create timer \
+    --name "$TRIGGER_NAME" \
+    --cron-expression '0 6 * * *' \
+    --invoke-function-name "$FN_PUSH_NAME" \
+    --invoke-function-service-account-name "$SA_NAME"
+}
+
 function_url() {
   yc serverless function get "$FN_NAME" --format json | jq -r '.http_invoke_url'
+}
+
+push_function_url() {
+  yc serverless function get "$FN_PUSH_NAME" --format json | jq -r '.http_invoke_url'
 }
 
 smoke_test() {
@@ -103,22 +143,34 @@ smoke_test() {
   esac
 }
 
+write_page_var() {
+  local var="$1" url="$2"
+  if [ ! -f "$PAGE" ]; then
+    echo "WARNING: $PAGE not found — set $var manually: $url"
+    return
+  fi
+  if grep -q "const $var = \"$url\"" "$PAGE"; then
+    info "$var in the page is already up to date"
+    return
+  fi
+  if [ "$(grep -c "const $var" "$PAGE")" -ne 1 ]; then
+    echo "WARNING: $PAGE does not contain exactly one 'const $var' — set it manually: $url"
+    return
+  fi
+  sed -i "s|const $var = \"[^\"]*\";|const $var = \"$url\";|" "$PAGE"
+  info "$var written to $PAGE"
+}
+
 write_page_url() {
   local url="$1"
-  if [ ! -f "$PAGE" ]; then
-    echo "WARNING: $PAGE not found — set FUNCTION_URL manually: $url"
-    return
-  fi
-  if grep -q "FUNCTION_URL = \"$url\"" "$PAGE"; then
-    info "FUNCTION_URL in the page is already up to date"
-    return
-  fi
-  if [ "$(grep -c 'const FUNCTION_URL' "$PAGE")" -ne 1 ]; then
-    echo "WARNING: $PAGE does not contain exactly one 'const FUNCTION_URL' — set it manually: $url"
-    return
-  fi
-  sed -i "s|const FUNCTION_URL = \"[^\"]*\";|const FUNCTION_URL = \"$url\";|" "$PAGE"
-  info "FUNCTION_URL written to $PAGE"
+  write_page_var FUNCTION_URL "$url"
+  git -C "$PAGE_DIR" diff -- index.html || true
+  echo "    Now commit and push the abakum.github.io repo manually."
+}
+
+write_push_url() {
+  local url="$1"
+  write_page_var PUSH_URL "$url"
   git -C "$PAGE_DIR" diff -- index.html || true
   echo "    Now commit and push the abakum.github.io repo manually."
 }
@@ -148,6 +200,23 @@ bootstrap() {
   smoke_test "$url"
   write_page_url "$url"
   info "Done. Function URL: $url"
+
+  bootstrap_push
+}
+
+bootstrap_push() {
+  if [ -z "$VAPID_PRIVATE" ] || [ -z "$VAPID_PUBLIC" ]; then
+    info "VAPID_PRIVATE/VAPID_PUBLIC not set — skipping $FN_PUSH_NAME bootstrap (export and rerun deploy)"
+    return
+  fi
+  info "Function $FN_PUSH_NAME"
+  yc serverless function create "$FN_PUSH_NAME" || true
+  deploy_push_version
+  ensure_timer_trigger
+  local url; url="$(push_function_url)"
+  write_push_url "$url"
+  write_page_var PUSH_PUBLIC_KEY "$VAPID_PUBLIC"
+  info "Done. Push function URL: $url"
 }
 
 deploy() {
@@ -157,6 +226,17 @@ deploy() {
   smoke_test "$url"
   write_page_url "$url"
   info "Done. Function URL: $url"
+
+  if [ -n "$VAPID_PRIVATE" ] && [ -n "$VAPID_PUBLIC" ]; then
+    deploy_push_version
+    ensure_timer_trigger
+    local purl; purl="$(push_function_url)"
+    write_push_url "$purl"
+    write_page_var PUSH_PUBLIC_KEY "$VAPID_PUBLIC"
+    info "Done. Push function URL: $purl"
+  else
+    info "VAPID_PRIVATE/VAPID_PUBLIC not set — skipping $FN_PUSH_NAME deploy"
+  fi
 }
 
 main() {
