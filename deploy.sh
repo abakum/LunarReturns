@@ -259,6 +259,7 @@ bootstrap_push() {
   local url; url="$(push_function_url)"
   write_push_url "$url"
   write_page_var PUSH_PUBLIC_KEY "$VAPID_PUBLIC"
+  commit_page
   info "Done. Push function URL: $url"
 }
 
@@ -276,6 +277,7 @@ deploy() {
   local purl; purl="$(push_function_url)"
   write_push_url "$purl"
   write_page_var PUSH_PUBLIC_KEY "$VAPID_PUBLIC"
+  commit_page
   info "Done. Push function URL: $purl"
 }
 
