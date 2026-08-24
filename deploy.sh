@@ -194,8 +194,8 @@ commit_page() {
       return
     fi
     git -C "$PAGE_DIR" add index.html
-    git -C "$PAGE_DIR" -c user.name "github-actions[bot]" \
-      -c user.email "41898282+github-actions[bot]@users.noreply.github.com" \
+    git -C "$PAGE_DIR" -c user.name="github-actions[bot]" \
+      -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
       commit -m "LunarReturns: update function URLs (deploy.sh)" >/dev/null
     git -C "$PAGE_DIR" push
     info "Pushed index.html to abakum.github.io"
