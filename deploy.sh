@@ -142,7 +142,7 @@ ensure_timer_trigger() {
     --role serverless.functions.invoker --service-account-name "$SA_NAME" || true
   yc serverless trigger create timer \
     --name "$TRIGGER_NAME" \
-    --cron-expression '0 6 * * *' \
+    --cron-expression '0 6 * * * ?' \
     --invoke-function-name "$FN_PUSH_NAME" \
     --invoke-function-service-account-name "$SA_NAME"
 }
