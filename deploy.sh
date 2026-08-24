@@ -34,17 +34,32 @@ for cmd in gh zip curl jq; do
 done
 command -v yc >/dev/null || install_yc
 
-if ! gh auth status >/dev/null 2>&1; then
-  info "gh is not authenticated; running gh auth login"
-  gh auth login
-fi
+if [ "${CI:-}" != true ] && [ -z "${GH_TOKEN:-}${YC_SA_KEY:-}" ]; then
+  if ! gh auth status >/dev/null 2>&1; then
+    info "gh is not authenticated; running gh auth login"
+    gh auth login
+  fi
 
-if [ -z "$(yc config get folder-id)" ]; then
-  info "yc profile is not initialized; running yc init"
-  yc init
+  if [ -z "$(yc config get folder-id)" ]; then
+    info "yc profile is not initialized; running yc init"
+    yc init
+  fi
 fi
 FOLDER_ID="$(yc config get folder-id)"
 [ -n "$FOLDER_ID" ] || die "folder-id is not set in the yc profile; run yc init"
+
+ensure_vapid_keys() {
+  if [ -z "${VAPID_PRIVATE:-}" ] || [ -z "${VAPID_PUBLIC:-}" ]; then
+    if [ -f "$(dirname "$0")/.vapid.env" ]; then
+      info "Loading VAPID keys from .vapid.env"
+      # shellcheck disable=SC1091
+      set -a; . "$(dirname "$0")/.vapid.env"; set +a
+    fi
+  fi
+  if [ -z "${VAPID_PRIVATE:-}" ] || [ -z "${VAPID_PUBLIC:-}" ]; then
+    die "VAPID_PRIVATE/VAPID_PUBLIC not set; in CI they come from secrets, locally run ./vapid-keygen.sh once (see .kilo/plans/20260824-push-subscriptions-format.md) or source .vapid.env"
+  fi
+}
 
 rotate_key() {
   info "Creating new static key for $SA_NAME"
@@ -91,8 +106,7 @@ deploy_version() {
 
 deploy_push_version() {
   info "Creating function version for $FN_PUSH_NAME"
-  [ -n "$VAPID_PRIVATE" ] && [ -n "$VAPID_PUBLIC" ] \
-    || die "export VAPID_PRIVATE and VAPID_PUBLIC (base64url, from 'npx web-push generate-vapid-keys') before deploying $FN_PUSH_NAME"
+  ensure_vapid_keys
   (
     cd "$(dirname "$0")/function"
     rm -f fn-push.zip
@@ -133,6 +147,7 @@ push_function_url() {
 
 smoke_test() {
   local url="$1" code body
+  mkdir -p /tmp/kilo
   code="$(curl -s -o /tmp/kilo/lr_resp.json -w '%{http_code}' \
     -H 'Content-Type: application/json' -d '{}' "$url" || true)"
   body="$(cat /tmp/kilo/lr_resp.json 2>/dev/null || true)"
@@ -205,10 +220,11 @@ bootstrap() {
 }
 
 bootstrap_push() {
-  if [ -z "$VAPID_PRIVATE" ] || [ -z "$VAPID_PUBLIC" ]; then
-    info "VAPID_PRIVATE/VAPID_PUBLIC not set — skipping $FN_PUSH_NAME bootstrap (export and rerun deploy)"
+  if [ -z "${VAPID_PRIVATE:-}" ] && [ ! -f "$(dirname "$0")/.vapid.env" ]; then
+    info "VAPID keys not set — skipping $FN_PUSH_NAME bootstrap (run ./vapid-keygen.sh once, then rerun deploy)"
     return
   fi
+  ensure_vapid_keys
   info "Function $FN_PUSH_NAME"
   yc serverless function create "$FN_PUSH_NAME" || true
   deploy_push_version
@@ -220,6 +236,7 @@ bootstrap_push() {
 }
 
 deploy() {
+  ensure_vapid_keys
   rotate_key
   deploy_version
   local url; url="$(function_url)"
@@ -227,16 +244,12 @@ deploy() {
   write_page_url "$url"
   info "Done. Function URL: $url"
 
-  if [ -n "$VAPID_PRIVATE" ] && [ -n "$VAPID_PUBLIC" ]; then
-    deploy_push_version
-    ensure_timer_trigger
-    local purl; purl="$(push_function_url)"
-    write_push_url "$purl"
-    write_page_var PUSH_PUBLIC_KEY "$VAPID_PUBLIC"
-    info "Done. Push function URL: $purl"
-  else
-    info "VAPID_PRIVATE/VAPID_PUBLIC not set — skipping $FN_PUSH_NAME deploy"
-  fi
+  deploy_push_version
+  ensure_timer_trigger
+  local purl; purl="$(push_function_url)"
+  write_push_url "$purl"
+  write_page_var PUSH_PUBLIC_KEY "$VAPID_PUBLIC"
+  info "Done. Push function URL: $purl"
 }
 
 main() {

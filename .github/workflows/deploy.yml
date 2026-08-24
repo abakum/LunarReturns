@@ -1,0 +1,46 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  secrets: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yc
+        run: |
+          curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$HOME/yandex-cloud"
+          echo "$HOME/yandex-cloud/bin" >> "$GITHUB_PATH"
+
+      - name: Ensure VAPID keys
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -f vapid_public.txt ] || { echo "::error::vapid_public.txt not found; run ./vapid-keygen.sh locally (see .kilo/plans/20260824-push-subscriptions-format.md)"; exit 1; }
+          gh secret list --json name --jq '.[].name' | grep -qx VAPID_PRIVATE \
+            || { echo "::error::secret VAPID_PRIVATE not found; run ./vapid-keygen.sh locally"; exit 1; }
+          echo "VAPID keys are in place"
+
+      - name: Configure yc
+        env:
+          YC_SA_KEY: ${{ secrets.YC_SA_KEY }}
+          YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+        run: |
+          printf '%s' "$YC_SA_KEY" > "$RUNNER_TEMP/sa.json"
+          yc config set service-account-key "$RUNNER_TEMP/sa.json"
+          yc config set folder-id "$YC_FOLDER_ID"
+          rm -f "$RUNNER_TEMP/sa.json"
+
+      - name: Deploy
+        env:
+          VAPID_PRIVATE: ${{ secrets.VAPID_PRIVATE }}
+        run: |
+          VAPID_PUBLIC="$(cat vapid_public.txt)" VAPID_PRIVATE="$VAPID_PRIVATE" ./deploy.sh deploy

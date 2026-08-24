@@ -83,3 +83,26 @@ GitHub Secrets `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` (через лока�
 abakum/abakum.github.io); commit и push того репо — вручную. Дополнительно
 можно задать `ALLOWED_UIDS` и `EXPIRES` (по умолчанию `` и `600`).
 
+### Подготовка деплоя через GitHub Actions (один раз, локально)
+
+- `./ci-prepare.sh` — выдаёт СА `github-actions` роли
+  `serverless.functions.admin` + `iam.serviceAccounts.accessKeyAdmin`,
+  создаёт authorized key и кладёт в GitHub Secrets `YC_SA_KEY` /
+  `YC_FOLDER_ID`. Идемпотентен. Печатает sa.json на экран — сохраните его
+  в менеджер паролей: секрет из GitHub не читается обратно. Потеря ключа
+  лечится повторным запуском скрипта (подписки не страдают).
+- `./vapid-keygen.sh` — генерирует VAPID-пару для push-уведомлений:
+  `VAPID_PRIVATE`/`VAPID_PUBLIC` в GitHub Secrets, `.vapid.env`
+  (chmod 600, не в git) — ЕДИНСТВЕННАЯ резервная копия приватного ключа
+  (её потеря = потеря всех push-подписок), публичный ключ коммитится
+  в `vapid_public.txt`. `--force` — принудительная регенерация
+  (все подписки пропадут), `--show-private` — напечатать приватный ключ.
+
+### Деплой из CI
+
+Workflow `.github/workflows/deploy.yml` (Actions → Deploy → Run workflow):
+по `workflow_dispatch` деплоит обе функции через `deploy.sh deploy`,
+ротирует S3-ключи. Локальный `./deploy.sh deploy` работает как раньше:
+VAPID — из `.vapid.env` или экспортированных переменных, `yc init` /
+`gh auth login` интерактивно.
+
