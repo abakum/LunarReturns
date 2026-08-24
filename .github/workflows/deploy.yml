@@ -61,4 +61,4 @@ jobs:
       - name: Deploy
         env:
           VAPID_PRIVATE: ${{ secrets.VAPID_PRIVATE }}
-        run: VAPID_PUBLIC="$(cat vapid_public.txt)" ./deploy.sh deploy
+        run: VAPID_PUBLIC="$(tr -d ' \n' < vapid_public.txt)" ./deploy.sh deploy

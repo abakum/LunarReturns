@@ -59,7 +59,7 @@ printf '%s' "$VAPID_PRIVATE" | gh secret set VAPID_PRIVATE -R "$REPO"
 printf '%s' "$VAPID_PUBLIC" | gh secret set VAPID_PUBLIC -R "$REPO"
 
 info "Committing vapid_public.txt"
-printf '%s\n' "$VAPID_PUBLIC" > "$PUB_FILE"
+printf '%s' "$VAPID_PUBLIC" > "$PUB_FILE"
 git -C "$(dirname "$0")" add "$PUB_FILE" .gitignore
 git -C "$(dirname "$0")" commit -m "chore: add VAPID public key" >/dev/null
 git -C "$(dirname "$0")" push
