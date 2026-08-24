@@ -124,7 +124,7 @@ deploy_push_version() {
     zip -q fn-push.zip handler.py push.py requirements.txt
   )
   local env="S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID},S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY},BUCKET=${BUCKET}"
-  [ -n "$VAPID_SUBJECT" ] && env="${env},VAPID_SUBJECT=${VAPID_SUBJECT}"
+  [ -n "${VAPID_SUBJECT:-}" ] && env="${env},VAPID_SUBJECT=${VAPID_SUBJECT}"
   # version create prints the function env (incl. secrets) — silence it in CI logs
   create_version "$FN_PUSH_NAME" push.handler 30s "$(dirname "$0")/function/fn-push.zip" \
     "$env,VAPID_PRIVATE=${VAPID_PRIVATE},VAPID_PUBLIC=${VAPID_PUBLIC}"
@@ -185,18 +185,35 @@ write_page_var() {
   info "$var written to $PAGE"
 }
 
+commit_page() {
+  # in CI commit and push automatically; locally the user commits by hand
+  if [ "${CI:-}" = true ]; then
+    if git -C "$PAGE_DIR" diff --quiet -- index.html; then
+      info "index.html unchanged — nothing to commit"
+      return
+    fi
+    git -C "$PAGE_DIR" add index.html
+    git -C "$PAGE_DIR" -c user.name "github-actions[bot]" \
+      -c user.email "41898282+github-actions[bot]@users.noreply.github.com" \
+      commit -m "LunarReturns: update function URLs (deploy.sh)" >/dev/null
+    git -C "$PAGE_DIR" push
+    info "Pushed index.html to abakum.github.io"
+  else
+    git -C "$PAGE_DIR" diff -- index.html || true
+    echo "    Now commit and push the abakum.github.io repo manually."
+  fi
+}
+
 write_page_url() {
   local url="$1"
   write_page_var FUNCTION_URL "$url"
-  git -C "$PAGE_DIR" diff -- index.html || true
-  echo "    Now commit and push the abakum.github.io repo manually."
+  commit_page
 }
 
 write_push_url() {
   local url="$1"
   write_page_var PUSH_URL "$url"
-  git -C "$PAGE_DIR" diff -- index.html || true
-  echo "    Now commit and push the abakum.github.io repo manually."
+  commit_page
 }
 
 bootstrap() {

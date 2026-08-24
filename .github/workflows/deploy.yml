@@ -17,6 +17,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout the page repo (deploy.sh writes FUNCTION_URL/PUSH_URL there)
+        uses: actions/checkout@v4
+        with:
+          repository: abakum/abakum.github.io
+          path: ../abakum.github.io  # sibling of this repo: deploy.sh expects ../abakum.github.io/LunarReturns
+          token: ${{ secrets.GH_PAT }}
+
       - name: Check prerequisites
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
