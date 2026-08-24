@@ -15,14 +15,19 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Checkout the page repo (deploy.sh writes FUNCTION_URL/PUSH_URL there)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: abakum/abakum.github.io
-          path: ../abakum.github.io  # sibling of this repo: deploy.sh expects ../abakum.github.io/LunarReturns
+          path: abakum.github.io
           token: ${{ secrets.GH_PAT }}
+
+      # actions/checkout cannot write outside the workspace; deploy.sh expects
+      # the page at ../abakum.github.io (sibling of this repo) — symlink it.
+      - name: Link the page repo to ../abakum.github.io
+        run: ln -s "$GITHUB_WORKSPACE/abakum.github.io" "$GITHUB_WORKSPACE/../abakum.github.io"
 
       - name: Check prerequisites
         env:
