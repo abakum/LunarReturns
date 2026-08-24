@@ -118,6 +118,7 @@ create_version() {
 deploy_push_version() {
   info "Creating function version for $FN_PUSH_NAME"
   ensure_vapid_keys
+  yc serverless function create "$FN_PUSH_NAME" >/dev/null 2>&1 || true  # ok if it already exists
   (
     cd "$(dirname "$0")/function"
     rm -f fn-push.zip
