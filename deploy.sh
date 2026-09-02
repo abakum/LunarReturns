@@ -126,6 +126,13 @@ deploy_push_version() {
   )
   local env="S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID},S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY},BUCKET=${BUCKET}"
   [ -n "${VAPID_SUBJECT:-}" ] && env="${env},VAPID_SUBJECT=${VAPID_SUBJECT}"
+  # ВК-мини-апп: секреты для проверки sign и отправки уведомлений
+  # (gh secret set VK_APP_SECRET/VK_SERVICE_TOKEN -R abakum/LunarReturns).
+  if [ -n "${VK_APP_SECRET:-}" ] && [ -n "${VK_SERVICE_TOKEN:-}" ]; then
+    env="${env},VK_APP_SECRET=${VK_APP_SECRET},VK_SERVICE_TOKEN=${VK_SERVICE_TOKEN}"
+  else
+    echo "WARNING: VK_APP_SECRET/VK_SERVICE_TOKEN not set — VK push actions disabled" >&2
+  fi
   # version create prints the function env (incl. secrets) — silence it in CI logs
   create_version "$FN_PUSH_NAME" push.handler 30s "$(dirname "$0")/function/fn-push.zip" \
     "$env,VAPID_PRIVATE=${VAPID_PRIVATE},VAPID_PUBLIC=${VAPID_PUBLIC}"

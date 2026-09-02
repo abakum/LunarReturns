@@ -61,4 +61,6 @@ jobs:
       - name: Deploy
         env:
           VAPID_PRIVATE: ${{ secrets.VAPID_PRIVATE }}
+          VK_APP_SECRET: ${{ secrets.VK_APP_SECRET }}
+          VK_SERVICE_TOKEN: ${{ secrets.VK_SERVICE_TOKEN }}
         run: VAPID_PUBLIC="$(tr -d ' \n' < vapid_public.txt)" ./deploy.sh deploy

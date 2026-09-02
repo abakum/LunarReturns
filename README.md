@@ -61,6 +61,14 @@ JS-порт формул [abakum/MoonPhase](https://github.com/abakum/MoonPhase)
 `S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY`/`BUCKET` — как выше,
 `VAPID_PRIVATE`/`VAPID_PUBLIC` — VAPID-пара (обязательны; создаются
 `vapid-keygen.sh`), `VAPID_SUBJECT` — необязательный `mailto:`.
+`VK_APP_SECRET` (защищённый ключ мини-аппа 54746591 — проверка `sign`
+launch-параметров) и `VK_SERVICE_TOKEN` (сервисный ключ — отправка
+уведомлений `execute.push`) — опциональны; без них ВК-действия
+(`vk_subscribe`/`vk_unsubscribe`, ежедневная отправка) отключены.
+Задаются как GitHub Secrets (`gh secret set VK_APP_SECRET -R abakum/LunarReturns`
+и `VK_SERVICE_TOKEN`) или локально экспортом перед `./deploy.sh deploy`.
+ВК-подписки хранятся отдельным ключом `push/vk_subs.json` того же бакета
+(`[{vk_user_id, dates}]`, даты — обезличенные MM-DD, без ПДн).
 
 ### 3. Проверка
 
@@ -69,6 +77,11 @@ JS-порт формул [abakum/MoonPhase](https://github.com/abakum/MoonPhase)
 2. Войти через Яндекс, добавить записи, проверить QR и копирование.
 3. «Сохранить базу в облако», очистить localStorage (или другой браузер),
    «Загрузить базу из облака».
+4. ВК-пуши (после шага «Секреты ВК»): деплой функции → деплой мини-аппа
+   из репо страницы → в мини-аппе 🔔 → разрешение → добавить запись с
+   сегодняшней датой → проверить `push/vk_subs.json` в бакете → дождаться
+   таймера 09:00 МСК (или `yc serverless function invoke lunarreturns-push`)
+   → по пушу открыть приложение — автотап покажет сегодняшнюю запись.
 
 После каждого деплоя скрипт сам делает smoke-тест URL функции.
 
@@ -98,6 +111,33 @@ GitHub Secrets `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` (через лока�
 abakum/abakum.github.io): из CI — коммитит и пушит сам, локально — commit
 и push вручную. Дополнительно можно задать `ALLOWED_UIDS` и `EXPIRES`
 (по умолчанию `` и `600`).
+
+### Подготовка секретов ВК-пушей (один раз, локально)
+
+Для ВК-нативных уведомлений мини-аппа 54746591 нужны два ключа из панели
+разработчика ВК (<https://dev.vk.com> → ваше приложение → «Разработка» →
+«Ключи доступа»):
+
+- **Защищённый ключ** → `VK_APP_SECRET` — серверная проверка `sign`
+  launch-параметров (единственный барьер против подделки `vk_subscribe`,
+  URL функции публичен).
+- **Сервисный ключ** → `VK_SERVICE_TOKEN` — отправка уведомлений
+  (`execute.push`).
+
+Сохранить их в GitHub Secrets репозитория функции:
+
+```bash
+gh secret set VK_APP_SECRET   -R abakum/LunarReturns   # вставить защищённый ключ
+gh secret set VK_SERVICE_TOKEN -R abakum/LunarReturns  # вставить сервисный ключ
+```
+
+Секреты не ротируются (в отличие от S3-ключей) и читаются только при
+создании версии функции. Локальный деплой: экспортировать те же
+переменные перед `./deploy.sh deploy`. Без них деплой проходит с
+предупреждением, но ВК-действия функции отвечают 500 «not configured».
+
+После деплоя проверить: `curl -d '{"action":"vk_subscribe"}' <PUSH_URL>`
+→ 500/403 (не «action must be …»), т.е. vk_-ветка активна.
 
 ### Подготовка деплоя через GitHub Actions (один раз, локально)
 
