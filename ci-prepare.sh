@@ -8,8 +8,12 @@
 #      GITHUB_TOKEN in CI cannot manage repo secrets, deploy.sh needs
 #      `gh secret set` for S3 key rotation. Create the PAT manually first:
 #      https://github.com/settings/tokens → repo scope.
-#   4. Self-check the new key against the resources deploy.sh touches.
-#   5. Print sa.json once — save it in your password manager; the GitHub
+#   4. Store VK_APP_SECRET/VK_SERVICE_TOKEN (entered interactively) for
+#      VK Mini App native pushes — from dev.vk.com → app → «Ключи доступа»
+#      (защищённый и сервисный ключи). Optional: empty input skips;
+#      without them the function deploys but vk_-actions answer 500.
+#   5. Self-check the new key against the resources deploy.sh touches.
+#   6. Print sa.json once — save it in your password manager; the GitHub
 #      secret cannot be read back. Losing it is recoverable by re-running
 #      this script (unlike the VAPID key, subscriptions are not affected).
 # Idempotent: safe to re-run.
@@ -60,6 +64,27 @@ else
   info "PAT saved as secret GH_PAT (also store it in your password manager)"
   unset PAT
 fi
+
+set_vk_secret() {
+  local name="$1" what="$2" val
+  if gh secret list -R "$REPO" --json name --jq '.[].name' 2>/dev/null | grep -qx "$name"; then
+    info "Secret $name already exists — skipping (delete it in repo settings to re-enter)"
+    return 0
+  fi
+  info "$name: $what (dev.vk.com → приложение → «Разработка» → «Ключи доступа»)"
+  printf 'Paste the %s (input hidden, empty to skip): ' "$what"
+  read -rs val
+  echo
+  if [ -z "$val" ]; then
+    echo "WARNING: $name not set — VK push actions will answer 500 'not configured' until it is added" >&2
+    return 0
+  fi
+  printf '%s' "$val" | gh secret set "$name" -R "$REPO"
+  info "$name saved (also store it in your password manager)"
+}
+
+set_vk_secret VK_APP_SECRET   "защищённый ключ мини-аппа (проверка sign)"
+set_vk_secret VK_SERVICE_TOKEN "сервисный ключ (отправка уведомлений)"
 
 info "Self-check: listing keys of SA $S3_SA with the new key"
 yc iam access-key list --service-account-name "$S3_SA" >/dev/null \
