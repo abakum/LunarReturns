@@ -1,3 +1,4 @@
+import base64
 import datetime
 import hashlib
 import hmac
@@ -106,8 +107,14 @@ def handler(event, context):
     if event.get("httpMethod") == "OPTIONS":
         return _response(200, {})
 
+    raw = event.get("body") or "{}"
+    if event.get("isBase64Encoded"):
+        try:
+            raw = base64.b64decode(raw).decode("utf-8")
+        except Exception:
+            return _response(400, {"error": "bad body encoding"})
     try:
-        body = json.loads(event.get("body") or "{}")
+        body = json.loads(raw)
     except ValueError:
         return _response(400, {"error": "bad json"})
 

@@ -230,8 +230,10 @@ bootstrap() {
     yc storage bucket create --name "$BUCKET" --default-storage-class standard --max-size "$MAX_SIZE_BYTES"
   fi
   yc storage bucket update --name "$BUCKET" --max-size "$MAX_SIZE_BYTES" --remove-cors >/dev/null
+  # Origin мини-аппа ВК обязателен: браузер сам ходит в бакет по presigned
+  # GET/PUT из домена vk-apps (prod может отдаваться с pages-ac).
   yc storage bucket update --name "$BUCKET" \
-    --cors 'allowed-origins=https://abakum.github.io,allowed-methods=METHOD_GET,allowed-methods=METHOD_PUT,allowed-headers=*,max-age-seconds=3600' \
+    --cors 'allowed-origins=https://abakum.github.io,allowed-origins=https://prod-app54746591-*.pages-ac.vk-apps.ru,allowed-origins=https://stage-app54746591-*.pages.vk-apps.ru,allowed-methods=METHOD_GET,allowed-methods=METHOD_PUT,allowed-headers=*,max-age-seconds=3600' \
     || die "failed to set bucket CORS"
 
   info "Service account $SA_NAME (storage.editor)"
