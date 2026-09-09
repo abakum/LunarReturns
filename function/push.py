@@ -275,6 +275,22 @@ def _unsubscribe(body):
 
 # ---- ВК-мини-апп: подписки и отправка уведомлений ----
 
+def _vk_sign_debug(reason, params, sign, digests=None):
+    """Временная диагностика bad sign (убрать после починки): в лог уходит
+    сам набор launch-параметров и префиксы ожидаемых подписей — по ним
+    локально (зная секрет) можно воспроизвести любой вариант алгоритма.
+    Значения параметров платформенные, ПДн не содержат."""
+    try:
+        ts = int(str(params.get("vk_ts", "")))
+        age = int(time.time()) - ts
+    except ValueError:
+        age = None
+    print("vk sign DEBUG %s: sign_len=%s vk_ts_age=%s params=%s expected=%s"
+          % (reason, len(sign), age,
+             json.dumps(params, ensure_ascii=False, sort_keys=True),
+             {k: v[:10] for k, v in (digests or {}).items()}))
+
+
 def _vk_sign_ok(params):
     """Проверка sign launch-параметров VK Mini App. Клиент присылает весь
     набор параметров из location.search (включая не-vk_): актуальный
@@ -289,38 +305,40 @@ def _vk_sign_ok(params):
     (защита от replay)."""
     sign = str(params.get("sign", "")).lower()
     if not sign or not VK_APP_SECRET:
+        _vk_sign_debug("no sign or secret", params, sign)
         return False
     if len(sign) == 64:  # актуальный алгоритм — HMAC-SHA256
         variants = [k for k in sorted(params) if k != "sign"]
         vk_only = [k for k in variants if k.startswith("vk_")]
-        ok = any(hmac.compare_digest(hmac.new(
-            VK_APP_SECRET.encode("utf-8"),
-            "".join(k + "=" + str(params[k]) for k in keys).encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest(), sign) for keys in (variants, vk_only) if keys)
+        digests = {
+            "all": hmac.new(VK_APP_SECRET.encode("utf-8"),
+                            "".join(k + "=" + str(params[k]) for k in variants).encode("utf-8"),
+                            hashlib.sha256).hexdigest(),
+            "vk": hmac.new(VK_APP_SECRET.encode("utf-8"),
+                           "".join(k + "=" + str(params[k]) for k in vk_only).encode("utf-8"),
+                           hashlib.sha256).hexdigest(),
+        } if variants and vk_only else {}
+        ok = any(hmac.compare_digest(d, sign) for d in digests.values())
         if not ok:
-            # Диагностика без секретов и значений: отличить неверный секрет
-            # от иного состава подписи / устаревшего vk_ts можно по логам.
-            ts = params.get("vk_ts", "")
-            try:
-                age = int(time.time()) - int(str(ts))
-            except ValueError:
-                age = None
-            print("vk sign mismatch: keys=%s len=%d vk_ts_age=%s"
-                  % (sorted(params), len(sign), age))
+            _vk_sign_debug("hmac mismatch", params, sign, digests)
     else:  # легаси MD5
         legacy = "".join(
             k + "=" + str(params[k]) for k in sorted(params) if k.startswith("vk_")
         ) + VK_APP_SECRET
-        ok = hmac.compare_digest(hashlib.md5(legacy.encode("utf-8")).hexdigest(), sign)
+        expected = hashlib.md5(legacy.encode("utf-8")).hexdigest()
+        ok = hmac.compare_digest(expected, sign)
+        if not ok:
+            _vk_sign_debug("md5 mismatch", params, sign, {"md5": expected})
     if not ok:
         return False
     if VK_TS_MAX_AGE > 0:
         try:
             ts = int(str(params.get("vk_ts", "")))
         except ValueError:
+            _vk_sign_debug("bad vk_ts", params, sign)
             return False
         if abs(time.time() - ts) > VK_TS_MAX_AGE:
+            _vk_sign_debug("stale vk_ts", params, sign)
             return False
     return True
 
