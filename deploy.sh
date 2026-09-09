@@ -133,8 +133,11 @@ deploy_push_version() {
   else
     echo "WARNING: VK_APP_SECRET/VK_SERVICE_TOKEN not set — VK push actions disabled" >&2
   fi
-  # version create prints the function env (incl. secrets) — silence it in CI logs
-  create_version "$FN_PUSH_NAME" push.handler 30s "$(dirname "$0")/function/fn-push.zip" \
+  # version create prints the function env (incl. secrets) — silence it in CI logs.
+  # 120s: платформа допускает до 600 c и тарифицирует фактическое время;
+  # бюджеты веток (PUSH_WEB_BUDGET=45 + PUSH_VK_BUDGET=60) оставляют ~15 c
+  # запаса на финальные _save_subs.
+  create_version "$FN_PUSH_NAME" push.handler 120s "$(dirname "$0")/function/fn-push.zip" \
     "$env,VAPID_PRIVATE=${VAPID_PRIVATE},VAPID_PUBLIC=${VAPID_PUBLIC}"
   yc serverless function allow-unauthenticated-invoke "$FN_PUSH_NAME"
 }

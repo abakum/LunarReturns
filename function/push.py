@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import random
 import re
 import time
 import urllib.error
@@ -55,16 +56,19 @@ VK_ORIGIN_RE = re.compile(
 VK_PUSH_TEXT = "Сегодня есть поводы — откройте «Лунно-солнечные юбилеи»"
 VK_API_URL = "https://api.vk.com/method/notifications.sendMessage"
 VK_API_V = "5.199"
-VK_SEND_PERIOD = 0.34  # ~3 rps
-VK_SEND_CAP = 60  # уложиться в таймаут функции 30s
+VK_SEND_PERIOD = 0.34  # пауза между чанками, ~3 rps
+VK_CHUNK = 100  # максимум user_ids в одном notifications.sendMessage (дока)
 VK_MAX_FAILS = 7  # подряд неудачных отправок до удаления подписки
 # Защита от replay launch-параметров. Щедрое окно по умолчанию: фронт берёт
 # location.search на момент действия, приложение может быть открыто давно.
 VK_TS_MAX_AGE = int(os.environ.get("VK_TS_MAX_AGE", "86400"))
-# Бюджеты времени таймерных веток (сек): web-push + VK ≤ таймаута функции.
-# Неуспевшие подписки уходят в pending и доотправляются следующим запуском.
-WEB_BUDGET = int(os.environ.get("PUSH_WEB_BUDGET", "6"))
-VK_BUDGET = int(os.environ.get("PUSH_VK_BUDGET", "22"))
+# Бюджеты времени таймерных веток (сек). Платформа допускает таймаут
+# функции до 600 c и тарифицирует фактическое время — берём 120 c
+# (см. deploy.sh) с запасом ~15 c на финальные _save_subs. Недоставленное
+# НЕ переносится на завтра (механики pending нет): бюджеты определяют,
+# сколько «сегодняшних» напоминаний реально уйдёт.
+WEB_BUDGET = int(os.environ.get("PUSH_WEB_BUDGET", "45"))
+VK_BUDGET = int(os.environ.get("PUSH_VK_BUDGET", "60"))
 
 
 def _b64url(data):
@@ -196,28 +200,20 @@ def _run_daily(deadline=None):
     if not subs:
         return {"sent": 0}
     today = _today_md()
-    # Долги (pending) первыми; дедлайн ограничивает ветку целиком — без него
-    # сотни подписок с датой «сегодня» (каждая до 15 c таймаута) убьют
-    # функцию раньше VK-рассылки и финального _save_subs.
-    subs.sort(key=lambda s: not s.get("pending"))
-    sent = failed = pending = 0
+    # due — ТОЛЬКО дата «сегодня»: недоставленное не переносится на завтра
+    # (напоминание «про сегодня» завтра бессмысленно — решение автора).
+    # Дедлайн ограничивает ветку целиком: каждая отправка до 15 c таймаута.
+    sent = failed = lost = 0
     changed = False
     drop_ids = set()
     due_idx = [i for i, s in enumerate(subs)
-               if s.get("pending")
-               or any(d in today for d in (s.get("dates") or []) if isinstance(d, str))]
-    stop = False
+               if any(d in today for d in (s.get("dates") or []) if isinstance(d, str))]
     for n, i in enumerate(due_idx):
         sub = subs[i]
         if deadline is not None and time.monotonic() > deadline:
-            stop = True
-            # Не успели — необработанные в pending, fails не растёт.
-            for j in due_idx[n:]:
-                if not subs[j].get("pending"):
-                    subs[j]["pending"] = 1
-                    changed = True
-                pending += 1
-            print("web-push: deadline after %d, deferred %d" % (n, pending))
+            # Не успели — сегодняшний остаток теряется (не «завтра»).
+            lost = len(due_idx) - n
+            print("web-push: deadline after %d, lost %d" % (n, lost))
             break
         endpoint = sub.get("endpoint")
         if not isinstance(endpoint, str) or not endpoint.startswith("https://"):
@@ -231,11 +227,8 @@ def _run_daily(deadline=None):
             auth = _vapid_auth(endpoint)
         except ValueError:
             # Битый VAPID-ключ — системная ошибка, не проблема подписки:
-            # список не трогаем, повторим следующим запуском.
+            # список не трогаем, считаем failed без изменений записи.
             failed += 1
-            if not sub.get("pending"):
-                sub["pending"] = 1
-                changed = True
             continue
         code = _send_push(endpoint, auth)
         if code in (404, 410):
@@ -244,21 +237,13 @@ def _run_daily(deadline=None):
             changed = True
         elif 200 <= code < 300:
             sent += 1
-            if "pending" in sub:
-                sub.pop("pending", None)
-                changed = True
         else:
-            failed += 1
-            # Сетевая/персистентная ошибка — повторим следующим запуском,
-            # напоминание не теряется.
-            if not sub.get("pending"):
-                sub["pending"] = 1
-                changed = True
+            failed += 1  # сеть/персистентная ошибка — потеря, без переноса
     if drop_ids:
         subs = [s for s in subs if id(s) not in drop_ids]
     if changed:
         _save_subs(subs)
-    return {"date": today[0], "sent": sent, "failed": failed, "pending": pending}
+    return {"date": today[0], "sent": sent, "failed": failed, "lost": lost}
 
 
 def _subscribe(body):
@@ -345,7 +330,13 @@ def _vk_subscribe(body):
     if dates is None:
         return _response(400, {"error": "bad dates"})
     subs = [s for s in _load_subs(VK_SUBS_KEY) if s.get("vk_user_id") != uid]
-    subs.append({"vk_user_id": uid, "dates": dates})
+    # lr_stage_probe — тест-байпас stage (разрешение до модерации
+    # недоступно): запись хранится, но таймером игнорируется
+    # (см. _run_daily_vk).
+    rec = {"vk_user_id": uid, "dates": dates}
+    if body.get("lr_stage_probe"):
+        rec["lr_stage_probe"] = 1
+    subs.append(rec)
     _save_subs(subs, VK_SUBS_KEY)
     return _response(200, {"ok": True})
 
@@ -366,64 +357,60 @@ def _vk_unsubscribe(body):
     return _response(200, {"ok": True})
 
 
-def _vk_random_id(user_id):
-    # Детерминирован от (uid, дата): повторный запуск в тот же день не
-    # дублирует уведомление (random_id дедуплицируется VK в течение часа;
-    # для наших ежедневных напоминаний этого достаточно).
-    day = datetime.datetime.now(_MSK).strftime("%Y-%m-%d")
-    return int.from_bytes(
-        hashlib.sha256(("lr:" + str(user_id) + ":" + day).encode()).digest()[:4],
-        "big") & 0x7FFFFFFF
-
-
-def _vk_send(user_id):
-    """Отправка уведомления мини-аппа (метод notifications.sendMessage;
-    при смене метода по доке правится только здесь; кандидат-фолбэк —
-    secure.sendNotification). Возвращает:
-      "ok"                     — доставлено;
-      "disabled"               — пер-пользовательские коды 1 (уведомления
-                                 отключены) / 4 (приложение не установлено),
-                                 подписка бесполезна;
-      "limit"                  — коды 2/3 (часовой/суточный лимит VK):
-                                 не доставка, но и не вина подписки;
-      "fatal: ..."             — ТОП-уровневая ошибка API (токен/права/
-                                 метод): системная, не про пользователя;
-      "error: ..."             — прочее (сеть, отсутствие записи в ответе).
-    Формат ответа: response — массив статусов по каждому пользователю
-    {user_id, status, error: {code, description}}."""
+def _vk_send_chunk(user_ids):
+    """Батч-отправка уведомлений мини-аппа: один вызов
+    notifications.sendMessage на ≤100 uid (документированный максимум
+    user_ids; при смене метода по доке правится только здесь;
+    кандидат-фолбэк — secure.sendNotification). Ответ — массив
+    пер-пользовательских статусов {user_id, status, error:{code,...}}.
+    Коды: 1 — уведомления отключены, 2/3 — часовой/суточный лимит,
+    4 — приложение не установлено.
+    Возвращает {"ok": [uid], "disabled": [uid], "limit": [uid],
+    "failed": [uid], "fatal": str|None}."""
     data = urllib.parse.urlencode({
-        "user_ids": str(user_id),
+        "user_ids": ",".join(str(u) for u in user_ids),
         "message": VK_PUSH_TEXT,
-        "random_id": _vk_random_id(user_id),
+        # random_id: дедуп одинакового уведомления в течение часа.
+        "random_id": random.randint(0, 2 ** 31 - 1),
         "access_token": VK_SERVICE_TOKEN,
         "v": VK_API_V,
     }).encode("utf-8")
     req = urllib.request.Request(VK_API_URL, data=data, method="POST")
+    res = {"ok": [], "disabled": [], "limit": [], "failed": [], "fatal": None}
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, ValueError, OSError) as e:
-        return "error: " + str(e)
+        # Сеть/битый JSON — не вина подписок: весь чанк failed без fails.
+        print("_vk_send_chunk network error:", e)
+        res["failed"] = [str(u) for u in user_ids]
+        return res
     err = body.get("error")
     if err:
-        # Топ-уровневая ошибка API — системная: не считать фейлом подписок,
-        # иначе битый токен за VK_MAX_FAILS дней вычистит всю базу.
-        return "fatal: " + str(err.get("error_code",
-                                       str(err.get("error_msg", ""))[:80]))
-    entry = next((r for r in (body.get("response") or [])
-                  if str(r.get("user_id")) == str(user_id)), None)
-    if entry is None:
-        return "error: no response entry for user"
-    if entry.get("status"):
-        return "ok"
-    perr = entry.get("error") or {}
-    code = perr.get("code")
-    if code in (1, 4):
-        return "disabled"
-    if code in (2, 3):
-        return "limit"
-    return "error: " + str(code if code is not None
-                           else str(perr.get("description", ""))[:80])
+        # Топ-уровневая ошибка API — системная (токен/права/метод): не
+        # считать фейлом подписок, иначе битый токен за VK_MAX_FAILS дней
+        # вычистит всю базу.
+        res["fatal"] = str(err.get("error_code",
+                                   str(err.get("error_msg", ""))[:80]))
+        return res
+    by_uid = {str(r.get("user_id")): r for r in (body.get("response") or [])}
+    for uid in user_ids:
+        entry = by_uid.get(str(uid))
+        if entry is None:
+            res["failed"].append(str(uid))
+            continue
+        if entry.get("status"):
+            res["ok"].append(str(uid))
+            continue
+        code = (entry.get("error") or {}).get("code")
+        if code in (1, 4):
+            # Уведомления отключены / приложение не установлено.
+            res["disabled"].append(str(uid))
+        elif code in (2, 3):
+            res["limit"].append(str(uid))
+        else:
+            res["failed"].append(str(uid))
+    return res
 
 
 def _run_daily_vk(deadline=None):
@@ -431,87 +418,73 @@ def _run_daily_vk(deadline=None):
         return {"vk_error": "VK_SERVICE_TOKEN not configured"}
     subs = _load_subs(VK_SUBS_KEY)
     today = _today_md()
-    # pending: не влезли в cap/дедлайн на прошлом запуске — отправляем
-    # внеочередно, независимо от даты, иначе напоминание теряется навсегда.
+    # due — ТОЛЬКО дата «сегодня»: недоставленное не переносится на завтра
+    # (напоминание «про сегодня» завтра бессмысленно — решение автора).
+    # lr_stage_probe — тест-байпас stage: запись хранится, пушей на неё нет.
     due = [s for s in subs
-           if s.get("pending")
-           or any(d in today for d in (s.get("dates") or []) if isinstance(d, str))]
+           if not s.get("lr_stage_probe")
+           and any(d in today for d in (s.get("dates") or []) if isinstance(d, str))]
     if not due:
         return {"vk_sent": 0}
-    # Долги первыми: иначе должники прошлых дней снова не влезут за cap.
-    due.sort(key=lambda s: not s.get("pending"))
-    sent = failed = 0
+    by_uid = {str(s.get("vk_user_id", "")): s for s in due}
+    uids = [u for u in by_uid if u]
+    sent = failed = lost = 0
     changed = False
-    drop_ids = set()
-    stop = None
-    n = 0
-    for n, sub in enumerate(due):
-        # cap — страховка от RTT (sleep 0.34 + HTTP ~0.2-0.3 c на отправку),
-        # дедлайн — честный бюджет времени ветки.
-        if n >= VK_SEND_CAP:
-            stop = "cap"
-            break
+    for i in range(0, len(uids), VK_CHUNK):
+        chunk = uids[i:i + VK_CHUNK]
         if deadline is not None and time.monotonic() > deadline:
-            stop = "deadline"
+            # Не успели — сегодняшний остаток теряется (не «завтра»).
+            lost += len(uids) - i
+            print("VK: deadline, %d lost" % lost)
             break
-        res = _vk_send(str(sub.get("vk_user_id", "")))
-        if res.startswith("fatal:"):
-            # Системная ошибка: прекращаем, fails обработанных подписок не
-            # трогаем — они не виноваты; необработанные уходят в pending.
-            print("VK systemic error, aborting:", res)
-            stop = "fatal"
+        res = _vk_send_chunk(chunk)
+        if res["fatal"]:
+            # Системная ошибка: стоп без счётчика fails у подписок;
+            # невыполненный остаток — потерян (не переносится).
+            lost += len(uids) - i
+            print("VK systemic error, aborting:", res["fatal"])
             break
-        if res == "ok":
-            sent += 1
-            if "pending" in sub or sub.get("fails"):
-                sub.pop("pending", None)
+        for uid in res["ok"]:
+            sub = by_uid.get(uid)
+            if sub and sub.get("fails"):
                 sub["fails"] = 0
                 changed = True
-        elif res == "disabled":
-            # Пользователь отозвал разрешение — подписка больше не нужна.
-            drop_ids.add(id(sub))
+            sent += 1
+        for uid in res["disabled"]:
+            # Пользователь отозвал разрешение / снёс приложение.
+            subs = [s for s in subs if str(s.get("vk_user_id")) != uid]
+            failed += 1
             changed = True
+        for uid in res["limit"]:
+            # Часовой/суточный лимит VK: доставки нет, подписка жива —
+            # fails не растит, повторять завтра нечего (дата уйдёт).
             failed += 1
-        elif res == "limit":
-            # Часовой/суточный лимит VK: доставки не было, но подписка жива —
-            # fails не растит, повторим следующим запуском.
+        for uid in res["failed"]:
+            sub = by_uid.get(uid)
             failed += 1
-            if not sub.get("pending"):
-                sub["pending"] = 1
-                changed = True
-        else:
-            failed += 1
+            if not sub:
+                continue
             fails = int(sub.get("fails", 0)) + 1
             if fails >= VK_MAX_FAILS:
-                drop_ids.add(id(sub))
+                subs = [s for s in subs if s is not sub]
             else:
                 sub["fails"] = fails
             changed = True
-        time.sleep(VK_SEND_PERIOD)
-    pending = 0
-    if stop:
-        # Хвост — по ФАКТУ обработки (а не по len(due) > cap): ранний выход
-        # по fatal/deadline тоже должен размечать необработанных.
-        for sub in due[n:]:
-            if not sub.get("pending"):
-                sub["pending"] = 1
-                changed = True
-            pending += 1
-        print("VK: stopped (%s) after %d, deferred %d" % (stop, n, pending))
-    if drop_ids:
-        subs = [s for s in subs if id(s) not in drop_ids]
+        if i + VK_CHUNK < len(uids):
+            time.sleep(VK_SEND_PERIOD)
     if changed:
         _save_subs(subs, VK_SUBS_KEY)
-    return {"vk_sent": sent, "vk_failed": failed, "vk_pending": pending}
+    return {"vk_sent": sent, "vk_failed": failed, "vk_lost": lost}
 
 
 def handler(event, context):
     if event.get("httpMethod") == "OPTIONS":
         return _response(200, {})
     if "httpMethod" not in event:
-        # Ветки независимы и ограничены бюджетами времени (сумма ≤ таймаута
-        # функции ~30 c): web-рассылка не должна съесть время VK-ветки.
-        # VK-бюджет больше: каждая отправка это sleep 0.34 c + HTTP RTT.
+        # Ветки независимы и ограничены бюджетами времени (сумма 105 c ≤
+        # таймаута функции 120 c, запас ~15 c на финальные _save_subs):
+        # web-рассылка не должна съесть время VK-ветки. VK отправляется
+        # чанками по VK_CHUNK uid — бюджет почти не тратится.
         result = {}
         try:
             result.update(_run_daily(deadline=time.monotonic() + WEB_BUDGET))
