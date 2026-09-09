@@ -52,7 +52,8 @@ VK_SUBS_KEY = "push/vk_subs.json"
 # *.pages-ac.vk-apps.ru — допускаем оба домена (ru/com).
 VK_ORIGIN_RE = re.compile(
     r"^https://(prod|stage)-app54746591-[a-z0-9]+\.pages(-ac)?\.vk-apps\.(ru|com)\Z")
-# Общий текст без ПДн: сервер знает только обезличенные MM-DD.
+# Общий текст без ПДн: launch-параметры платформенные (без имён/дат), из них
+# сервер извлекает только vk_user_id; сами события — обезличенные MM-DD.
 VK_PUSH_TEXT = "Сегодня есть поводы — откройте «Лунно-солнечные юбилеи»"
 VK_API_URL = "https://api.vk.com/method/notifications.sendMessage"
 VK_API_V = "5.199"
@@ -275,29 +276,44 @@ def _unsubscribe(body):
 # ---- ВК-мини-апп: подписки и отправка уведомлений ----
 
 def _vk_sign_ok(params):
-    """Проверка sign launch-параметров VK Mini App. Актуальный алгоритм
-    (2023+) — HMAC-SHA256 по всем параметрам, кроме sign, отсортированным
-    по ключу; секрет — защищённый ключ приложения. Легаси (старые приложения)
-    — MD5 только по vk_*-параметрам + секрет в конце. Алгоритм различаем по
-    длине подписи: 64 hex — HMAC-SHA256, иначе MD5. Формулы сверять с
-    dev.vk.com («Проверка подписи launch-параметров»). Дополнительно
-    проверяем свежесть vk_ts (защита от replay)."""
+    """Проверка sign launch-параметров VK Mini App. Клиент присылает весь
+    набор параметров из location.search (включая не-vk_): актуальный
+    алгоритм (2023+) — HMAC-SHA256 по всем параметрам, кроме sign,
+    отсортированным по ключу; секрет — защищённый ключ приложения. На
+    практике состав подписи ВК зависит от платформы, поэтому для 64-hex
+    sign принимаем совпадение любого из вариантов: все параметры или
+    только vk_*. Легаси (старые приложения) — MD5 только по vk_*-параметрам
+    + секрет в конце. Алгоритм различаем по длине подписи: 64 hex —
+    HMAC-SHA256, иначе MD5. Формулы сверять с dev.vk.com («Проверка
+    подписи launch-параметров»). Дополнительно проверяем свежесть vk_ts
+    (защита от replay)."""
     sign = str(params.get("sign", "")).lower()
     if not sign or not VK_APP_SECRET:
         return False
-    plain = "".join(
-        k + "=" + str(params[k]) for k in sorted(params) if k != "sign"
-    )
     if len(sign) == 64:  # актуальный алгоритм — HMAC-SHA256
-        expected = hmac.new(
-            VK_APP_SECRET.encode("utf-8"), plain.encode("utf-8"), hashlib.sha256
-        ).hexdigest()
+        variants = [k for k in sorted(params) if k != "sign"]
+        vk_only = [k for k in variants if k.startswith("vk_")]
+        ok = any(hmac.compare_digest(hmac.new(
+            VK_APP_SECRET.encode("utf-8"),
+            "".join(k + "=" + str(params[k]) for k in keys).encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest(), sign) for keys in (variants, vk_only) if keys)
+        if not ok:
+            # Диагностика без секретов и значений: отличить неверный секрет
+            # от иного состава подписи / устаревшего vk_ts можно по логам.
+            ts = params.get("vk_ts", "")
+            try:
+                age = int(time.time()) - int(str(ts))
+            except ValueError:
+                age = None
+            print("vk sign mismatch: keys=%s len=%d vk_ts_age=%s"
+                  % (sorted(params), len(sign), age))
     else:  # легаси MD5
         legacy = "".join(
             k + "=" + str(params[k]) for k in sorted(params) if k.startswith("vk_")
         ) + VK_APP_SECRET
-        expected = hashlib.md5(legacy.encode("utf-8")).hexdigest()
-    if not hmac.compare_digest(expected, sign):
+        ok = hmac.compare_digest(hashlib.md5(legacy.encode("utf-8")).hexdigest(), sign)
+    if not ok:
         return False
     if VK_TS_MAX_AGE > 0:
         try:
