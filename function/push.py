@@ -331,11 +331,11 @@ def _vk_subscribe(body):
         return _response(400, {"error": "bad dates"})
     subs = [s for s in _load_subs(VK_SUBS_KEY) if s.get("vk_user_id") != uid]
     # lr_stage_probe — тест-байпас stage (разрешение до модерации
-    # недоступно): запись хранится, но таймером игнорируется
-    # (см. _run_daily_vk).
-    rec = {"vk_user_id": uid, "dates": dates}
-    if body.get("lr_stage_probe"):
-        rec["lr_stage_probe"] = 1
+    # недоступно): храним запись с ПУСТЫМИ датами — пустой список
+    # естественно исключает её из ежедневной рассылки, флаг в записи не
+    # нужен. Проверку s.get("lr_stage_probe") в _run_daily_vk оставляем
+    # для старых записей.
+    rec = {"vk_user_id": uid, "dates": [] if body.get("lr_stage_probe") else dates}
     subs.append(rec)
     _save_subs(subs, VK_SUBS_KEY)
     return _response(200, {"ok": True})
@@ -420,10 +420,9 @@ def _run_daily_vk(deadline=None):
     today = _today_md()
     # due — ТОЛЬКО дата «сегодня»: недоставленное не переносится на завтра
     # (напоминание «про сегодня» завтра бессмысленно — решение автора).
-    # lr_stage_probe — тест-байпас stage: запись хранится, пушей на неё нет.
+    # Пробные записи stage хранятся с пустыми dates — сюда не попадают.
     due = [s for s in subs
-           if not s.get("lr_stage_probe")
-           and any(d in today for d in (s.get("dates") or []) if isinstance(d, str))]
+           if any(d in today for d in (s.get("dates") or []) if isinstance(d, str))]
     if not due:
         return {"vk_sent": 0}
     by_uid = {str(s.get("vk_user_id", "")): s for s in due}
