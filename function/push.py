@@ -275,86 +275,55 @@ def _unsubscribe(body):
 
 # ---- ВК-мини-апп: подписки и отправка уведомлений ----
 
-def _vk_sign_debug(reason, params, sign, digests=None):
-    """Временная диагностика bad sign (убрать после починки): в лог уходит
-    сам набор launch-параметров и префиксы ожидаемых подписей — по ним
-    локально (зная секрет) можно воспроизвести любой вариант алгоритма.
-    Значения параметров платформенные, ПДн не содержат."""
-    try:
-        ts = int(str(params.get("vk_ts", "")))
-        age = int(time.time()) - ts
-    except ValueError:
-        age = None
-    print("vk sign DEBUG %s: sign_len=%s vk_ts_age=%s params=%s expected=%s"
-          % (reason, len(sign), age,
-             json.dumps(params, ensure_ascii=False, sort_keys=True),
-             {k: v[:10] for k, v in (digests or {}).items()}))
-
-
 def _vk_sign_ok(params):
     """Проверка sign launch-параметров VK Mini App. Клиент присылает весь
-    набор параметров из location.search (включая не-vk_): актуальный
-    алгоритм (2023+) — HMAC-SHA256 по всем параметрам, кроме sign,
-    отсортированным по ключу; секрет — защищённый ключ приложения. На
-    практике состав подписи ВК зависит от платформы, поэтому для 64-hex
-    sign принимаем совпадение любого из вариантов: все параметры или
-    только vk_*. Легаси (старые приложения) — MD5 только по vk_*-параметрам
-    + секрет в конце. Алгоритм различаем по длине подписи: 64 hex —
-    HMAC-SHA256, иначе MD5. Формулы сверять с dev.vk.com («Проверка
-    подписи launch-параметров»). Дополнительно проверяем свежесть vk_ts
-    (защита от replay)."""
+    набор параметров из location.search (включая не-vk_). Реальный формат
+    (проверен на захваченных launch-параметрах 09.09.2026): HMAC-SHA256 →
+    base64url без паддинга, пары k=v, отсортированные по ключу, соединённые
+    «&»; секрет — защищённый ключ приложения. Для устойчивости к вариациям
+    платформ дополнительно пробуем склейку без разделителя, hex-кодировку
+    подписи и оба набора ключей (все параметры / только vk_*); легаси
+    (старые приложения) — MD5 только по vk_*-параметрам + секрет в конце.
+    Формулы сверять с dev.vk.com («Проверка подписи launch-параметров»).
+    Дополнительно проверяем свежесть vk_ts (защита от replay)."""
     # lower не применяется к самому sign: base64url чувствителен к регистру,
     # регистронезависимы только hex/MD5-сравнения ниже.
     sign = str(params.get("sign", ""))
     if not sign or not VK_APP_SECRET:
-        _vk_sign_debug("no sign or secret", params, sign)
         return False
     variants = [k for k in sorted(params) if k != "sign"]
     vk_only = [k for k in variants if k.startswith("vk_")]
-    # Реальный формат VK (проверен на захваченных launch-параметрах 09.09.2026):
-    # HMAC-SHA256 → base64url без паддинга, пары k=v, отсортированные по
-    # ключу, соединённые «&». Раньше ошибочно ждали hex и склейку без
-    # разделителя. Для надёжности пробуем оба разделителя и оба набора
-    # ключей (все параметры / только vk_*): легаси-платформы могут отличаться.
+
     def _digest(keys, sep):
         plain = sep.join(k + "=" + str(params[k]) for k in keys)
         return hmac.new(VK_APP_SECRET.encode("utf-8"),
                         plain.encode("utf-8"), hashlib.sha256).digest()
+
     raws = [_digest(keys, sep) for keys in (variants, vk_only) if keys
             for sep in ("&", "")]
-    digests = {r.hex(): r for r in raws}
+    hexes = [r.hex() for r in raws]
     if len(sign) in (43, 44):  # base64url-закодированный HMAC-SHA256
         try:
             raw = _b64url_decode(sign.rstrip("="))
         except Exception:
-            _vk_sign_debug("bad b64url sign", params, sign, digests)
             return False
         ok = len(raw) == 32 and any(raw == r for r in raws)
-        if not ok:
-            _vk_sign_debug("hmac b64 mismatch", params, sign, digests)
     elif len(sign) == 64:  # hex-закодированный HMAC-SHA256
-        ok = any(hmac.compare_digest(h, sign.lower()) for h in digests)
-        if not ok:
-            _vk_sign_debug("hmac hex mismatch", params, sign, digests)
+        ok = any(hmac.compare_digest(h, sign.lower()) for h in hexes)
     else:  # легаси MD5 (hex) только по vk_*-параметрам
         legacy = "".join(
             k + "=" + str(params[k]) for k in vk_only
         ) + VK_APP_SECRET
-        expected = hashlib.md5(legacy.encode("utf-8")).hexdigest()
-        ok = hmac.compare_digest(expected, sign.lower())
-        if not ok:
-            _vk_sign_debug("md5 mismatch", params, sign,
-                           {"md5": expected, **digests})
+        ok = hmac.compare_digest(
+            hashlib.md5(legacy.encode("utf-8")).hexdigest(), sign.lower())
     if not ok:
         return False
     if VK_TS_MAX_AGE > 0:
         try:
             ts = int(str(params.get("vk_ts", "")))
         except ValueError:
-            _vk_sign_debug("bad vk_ts", params, sign)
             return False
         if abs(time.time() - ts) > VK_TS_MAX_AGE:
-            _vk_sign_debug("stale vk_ts", params, sign)
             return False
     return True
 
