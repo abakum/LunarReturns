@@ -50,11 +50,13 @@ echo "node: $NODE_BIN"
 # 3. скрипт и база — в /var/lib/lunarreturns (домашние каталоги пользователей
 #    не читаются системным сервисом), старая база из репо переносится
 install -d -m 700 /var/lib/lunarreturns
-install -m 600 "$DIR/lunarreturns.js" /var/lib/lunarreturns/lunarreturns.js
+install -m 644 "$DIR/lunarreturns.js" /var/lib/lunarreturns/lunarreturns.js
 if [ -f "$DIR/db.json" ] && [ ! -f /var/lib/lunarreturns/db.json ]; then
     install -m 600 "$DIR/db.json" /var/lib/lunarreturns/db.json
     echo "база перенесена: $DIR/db.json -> /var/lib/lunarreturns/db.json"
 fi
+# db.json: владелец будет сменён systemd на динамического пользователя
+# (StateDirectory), скрипт читается сервисом — 644 root:root
 
 # 4. юнит из шаблона (пути, node)
 sed -e "s|@CFG@|$CFG|g" \
