@@ -3,9 +3,10 @@
 #
 # Сервис изолирован от пользователя-установщика:
 #   - DynamicUser — одноразовый системный пользователь без логина;
-#   - StateDirectory — свой каталог /var/lib/lunarreturns (там db.json, LR_DB);
+#   - StateDirectory — свой каталог /var/lib/lunarreturns: там и скрипт
+#     (копия, ставится инсталлятором), и db.json (LR_DB);
 #   - конфиг с токеном: /etc/lunarreturns/.env (VK_TOKEN=…), root:root 600;
-#   - каталог репо используется только на чтение (lunarreturns.js).
+#   - каталог репо используется только на этапе установки.
 
 [Unit]
 Description=LunarReturns VK jubilee bot
@@ -18,12 +19,13 @@ DynamicUser=yes
 StateDirectory=lunarreturns
 Environment=LR_DB=/var/lib/lunarreturns/db.json
 EnvironmentFile=@CFG@/.env
-ExecStart=@NODE@ @DIR@/lunarreturns.js
+ExecStart=@NODE@ /var/lib/lunarreturns/lunarreturns.js
+WorkingDirectory=/var/lib/lunarreturns
 Restart=always
 RestartSec=10
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=read-only
+ProtectHome=yes
 PrivateTmp=yes
 
 [Install]

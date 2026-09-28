@@ -47,17 +47,18 @@ fi
 [ -x "$NODE_BIN" ] || { echo "node не найден, укажите: $0 /путь/к/node"; exit 1; }
 echo "node: $NODE_BIN"
 
-# 3. миграция старой базы из корня репо (если была и перенос ещё не делался)
+# 3. скрипт и база — в /var/lib/lunarreturns (домашние каталоги пользователей
+#    не читаются системным сервисом), старая база из репо переносится
 install -d -m 700 /var/lib/lunarreturns
+install -m 600 "$DIR/lunarreturns.js" /var/lib/lunarreturns/lunarreturns.js
 if [ -f "$DIR/db.json" ] && [ ! -f /var/lib/lunarreturns/db.json ]; then
     install -m 600 "$DIR/db.json" /var/lib/lunarreturns/db.json
     echo "база перенесена: $DIR/db.json -> /var/lib/lunarreturns/db.json"
 fi
 
 # 4. юнит из шаблона (пути, node)
-sed -e "s|@DIR@|$DIR|g" \
+sed -e "s|@CFG@|$CFG|g" \
     -e "s|@NODE@|$NODE_BIN|g" \
-    -e "s|@CFG@|$CFG|g" \
     "$TEMPLATE" > "$TARGET"
 
 # 5. установка и запуск
