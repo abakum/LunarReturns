@@ -286,7 +286,8 @@ function jubileeText(rec, note) {
 const fs = require("fs");
 const path = require("path");
 
-const DB_FILE = path.join(__dirname, "db.json");
+// база рядом со скриптом; в сервисе (DynamicUser) путь задаёт LR_DB
+const DB_FILE = process.env.LR_DB || path.join(__dirname, "db.json");
 let db = { records: [] };
 
 function loadDb() {
@@ -304,17 +305,61 @@ function saveDb() {
     fs.renameSync(tmp, DB_FILE);
 }
 
+// запись своя у каждого пира, ключ — имя+дата: повторный триггер с той же
+// датой обновляет, с другой — отдельная запись (Георгий 1910 и Георгий 1963)
 function upsertRecord(rec, peerId) {
-    const same = db.records.find(r => r.n === rec.n);
+    const same = db.records.find(r => r.peerId === peerId && r.n === rec.n && r.d === rec.d);
     if (same) Object.assign(same, rec, { peerId });
     else db.records.push(Object.assign({ peerId, lastSentYear: 0 }, rec));
     saveDb();
+}
+
+// ============================== CATCH UP ==============================
+// Как в pinguin (messages.getHistory): после простоя догоняем сообщения,
+// пришедшие пока бот не работал. Очерёдность — по db.lastSeen (unix время
+// последнего обработанного сообщения), пиры — из сохранённых записей.
+
+function markSeen(date) {
+    const last = db.lastSeen || 0;
+    if (date > last) {
+        db.lastSeen = date;
+        saveDb();
+    }
+}
+
+async function catchUp(startAt) {
+    const peers = [...new Set(db.records.map(r => r.peerId))];
+    for (const peer of peers) {
+        let items;
+        try {
+            const res = await vkApi("messages.getHistory", { peer_id: peer, count: 200 });
+            items = res.items || [];
+        } catch (e) {
+            console.error("catchUp", peer, e.message);
+            continue;
+        }
+        let n = 0;
+        for (const tm of items) { // от новых к старым
+            if (tm.out || tm.from_id < 0) continue;   // только чужие входящие
+            if (tm.date <= (db.lastSeen || 0) || tm.date > startAt) continue;
+            n++;
+            try {
+                await handleMessage(peer, String(tm.text || ""), tm.date, tm.id, tm.conversation_message_id);
+            } catch (e) {
+                console.error("catchUp", peer, tm.id, e.message);
+            }
+        }
+        if (n) console.log("catchUp peer", peer, "replayed", n);
+    }
 }
 
 // ============================== VK ==============================
 
 const VK_API = "https://api.vk.com/method/";
 const VK_VERSION = "5.199";
+
+// необязательное ограничение: обслуживать только эту группу (число из club…)
+const GROUP_ID = Number(process.env.VK_GROUP_ID || 0) || 0;
 
 let token = process.env.VK_TOKEN || "";
 if (!token) {
@@ -325,29 +370,60 @@ if (!token) {
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const LOG_RAW = !!process.env.LOG_VK; // сырые ответы VK API и Long Poll
 
 async function vkApi(method, params) {
     const qs = new URLSearchParams(Object.assign({ access_token: token, v: VK_VERSION }, params));
+    if (LOG_RAW) console.log(">> " + method, new URLSearchParams(qs).toString().replace(/access_token=[^&]+/, "access_token=…"));
     const res = await fetch(VK_API + method + "?" + qs, { signal: AbortSignal.timeout(30000) });
     if (!res.ok) throw new Error(method + " HTTP " + res.status);
     const body = await res.json();
+    if (LOG_RAW) console.log("<< " + method, JSON.stringify(body).slice(0, 800));
     if (body.error) throw new Error(method + " " + body.error.error_code + ": " + body.error.error_msg);
     return body.response;
 }
 
-async function messagesSend(peerId, text) {
-    return vkApi("messages.send", {
+// ответ на сообщение: reply_to по глобальному id (личка) либо forward по
+// conversation_message_id (в чатах id приходит 0 — как в pinguin vk.go)
+async function messagesSend(peerId, text, msgId, convMsgId) {
+    const params = {
         peer_id: peerId,
         message: text,
         random_id: Date.now() % 2147483647
+    };
+    if (msgId > 0) params.reply_to = msgId;
+    else if (convMsgId > 0) params.forward = JSON.stringify({
+        peer_id: peerId, conversation_message_ids: [convMsgId], is_reply: true
     });
+    return vkApi("messages.send", params);
 }
 
 let lp = null; // { url, key, ts }
+let groupId = GROUP_ID;
 
 async function longPollInit() {
-    lp = await vkApi("groups.getLongPollServer", process.env.VK_GROUP_ID ? { group_id: process.env.VK_GROUP_ID } : {});
-    console.log("long poll ready");
+    // как в pinguin (NewLongPollCommunity): группа из токена через groups.getById
+    if (!groupId) {
+        try {
+            const r = await vkApi("groups.getById", {});
+            const g = (r.groups && r.groups[0]) || (r.items && r.items[0]);
+            if (g && g.id) {
+                groupId = g.id;
+                console.log("группа из токена:", groupId);
+            }
+        } catch (e) { /* укажем VK_GROUP_ID по ошибке ниже */ }
+    }
+    try {
+        lp = await vkApi("groups.getLongPollServer", groupId ? { group_id: groupId } : {});
+    } catch (e) {
+        // ВК требует group_id (токен не привязан однозначно) — групповой токен
+        // не позволяет узнать свои группы (groups.get недоступен), поэтому
+        // просим указать группу явно
+        if (/\bgroup_id\b/.test(e.message) && e.message.includes("100")) {
+            throw new Error("задайте VK_GROUP_ID (число из club…, напр. VK_GROUP_ID=241064685)");
+        } else throw e;
+    }
+    console.log("long poll ready", lp.server);
 }
 
 // один запрос long poll; обрабатывает пришедшие message_new
@@ -359,6 +435,8 @@ async function longPollStep() {
     u.searchParams.set("wait", "25");
     const res = await fetch(u, { signal: AbortSignal.timeout(35000) });
     const body = await res.json();
+    if (LOG_RAW) console.log("<< poll ts=" + lp.ts, JSON.stringify(body).slice(0, 1000));
+    if (process.env.LOG_UPDATES && body.failed) console.log("poll failed:", JSON.stringify(body));
     if (body.failed) {
         if (body.failed === 1 && body.ts) lp.ts = body.ts;
         else await longPollInit(); // 2/3 — смена key/server
@@ -366,27 +444,36 @@ async function longPollStep() {
     }
     lp.ts = body.ts;
     for (const upd of body.updates || []) {
+        if (process.env.LOG_UPDATES) console.log("upd:", JSON.stringify(upd).slice(0, 500));
         if (upd.type !== "message_new" || !upd.object) continue;
+        // фильтр по группе: обрабатывать только группу токена/GROUP_ID
+        if (groupId && Number(upd.group_id) !== groupId) continue;
         const msg = upd.object.message || upd.object;
         if (!msg || !msg.text || msg.peer_id === undefined) continue;
         try {
-            await handleMessage(msg.peer_id, String(msg.text));
+            await handleMessage(msg.peer_id, String(msg.text), msg.date, msg.id, msg.conversation_message_id);
         } catch (e) {
             console.error("handle:", e.message);
         }
     }
 }
 
-async function handleMessage(peerId, text) {
-    const parsed = parseTrigger(text);
-    if (!parsed) return; // не триггер — молчим
-    if (parsed.error) {
-        await messagesSend(peerId, "💥 " + parsed.error);
-        return;
+async function handleMessage(peerId, text, date, msgId, convMsgId) {
+    if (process.env.LOG_UPDATES) console.log("msg from", peerId, ":", text);
+    if (date) markSeen(date);
+    // триггеров может быть несколько — по одному на строку
+    const lines = String(text).split(/\s*\n+\s*/).filter(Boolean);
+    for (const line of lines) {
+        const parsed = parseTrigger(line);
+        if (!parsed) continue; // не триггер — молчим
+        if (parsed.error) {
+            await messagesSend(peerId, "💥 " + line + "\n" + parsed.error, msgId, convMsgId);
+            continue;
+        }
+        upsertRecord(parsed.rec, peerId);
+        await messagesSend(peerId, jubileeText(parsed.rec, parsed.note), msgId, convMsgId);
+        console.log("record:", parsed.rec.n, parsed.rec.d, "peer", peerId);
     }
-    upsertRecord(parsed.rec, peerId);
-    await messagesSend(peerId, jubileeText(parsed.rec, parsed.note));
-    console.log("record:", parsed.rec.n, parsed.rec.d, "peer", peerId);
 }
 
 // ============================== ПЛАНИРОВЩИК ==============================
@@ -446,15 +533,73 @@ function scheduleDaily() {
 
 async function main() {
     const args = process.argv.slice(2);
+    if (args[0] === "probe") {
+        // диагностика: диалоги, отправка теста, сырой long poll 2 варианта
+        let noGroupOk = false;
+        try {
+            const r = await vkApi("groups.getLongPollServer", {});
+            noGroupOk = true;
+            console.log("без group_id сервер получен:", r.server);
+        } catch (e) {
+            console.log("без group_id:", e.message);
+        }
+        try {
+            lp = await vkApi("groups.getLongPollServer", groupId ? { group_id: groupId } : {});
+        } catch (e) {
+            console.log("getLongPollServer:", e.message);
+            lp = null;
+        }
+        try {
+            const conv = await vkApi("messages.getConversations", { count: 5, extended: 0 });
+            const items = conv.items || [];
+            console.log("диалогов:", conv.count, items.map(i =>
+                (i.conversation.peer && (i.conversation.peer.type + ":" + i.conversation.peer.id)) + " " +
+                (i.last_message && JSON.stringify(i.last_message.text).slice(0, 40))).join("\n  "));
+            const peer = items[0]?.conversation?.peer?.id;
+            if (peer) {
+                const s = await vkApi("messages.send", { peer_id: peer, message: "probe " + new Date().toISOString(), random_id: Date.now() % 2147483647 });
+                console.log("messages.send в peer", peer, "→", JSON.stringify(s));
+            }
+        } catch (e) {
+            console.log("сообщения:", e.message);
+        }
+        if (!lp) return;
+        // по очереди: как vksdk и как новые клиенты (version=3)
+        const variants = [["как vksdk", ""], ["version=3", "&version=3"]];
+        let ts = lp.ts, vi = 0;
+        const until = Date.now() + 120000;
+        let t0 = 0;
+        while (Date.now() < until) {
+            const [label, extra] = variants[vi % variants.length];
+            // каждый вариант ~60 c, затем смена
+            if (Date.now() - (t0 || Date.now()) > 60000 && t0) { vi++; t0 = 0; }
+            if (!t0) t0 = Date.now();
+            const u = new URL(lp.server + "?act=a_check&key=" + encodeURIComponent(lp.key) +
+                "&ts=" + encodeURIComponent(ts) + "&wait=10" + extra);
+            let b;
+            try {
+                b = await (await fetch(u, { signal: AbortSignal.timeout(20000) })).json();
+            } catch (e) {
+                console.log(label, "poll error:", e.message);
+                continue;
+            }
+            console.log("[" + label + "] poll:", JSON.stringify(b).slice(0, 600));
+            if (b.ts) ts = b.ts;
+            if (b.failed) { console.log("failed", b.failed); if (b.ts) ts = b.ts; }
+        }
+        return;
+    }
     if (args[0] === "test") {
         const input = args.slice(1).join(" ") || "Костя 1963-09-27";
-        const parsed = parseTrigger(input);
-        if (!parsed) { console.log("не похоже на триггер"); process.exit(1); }
-        if (parsed.error) { console.log("💥 " + parsed.error); process.exit(1); }
-        console.log("запись (МСК):", JSON.stringify(parsed.rec));
-        if (parsed.note) console.log("примечание:", parsed.note);
-        console.log("---");
-        console.log(jubileeText(parsed.rec, parsed.note));
+        for (const line of input.split(/\s*\n+\s*/).filter(Boolean)) {
+            const parsed = parseTrigger(line);
+            if (!parsed) { console.log(line, "— не похоже на триггер"); continue; }
+            if (parsed.error) { console.log("💥 " + parsed.error); continue; }
+            console.log("запись (МСК):", JSON.stringify(parsed.rec));
+            if (parsed.note) console.log("примечание:", parsed.note);
+            console.log("---");
+            console.log(jubileeText(parsed.rec, parsed.note));
+        }
         return;
     }
     if (!token) {
@@ -463,6 +608,14 @@ async function main() {
     }
     loadDb();
     await longPollInit();
+    // догнать сообщения, накопившиеся за простой (как catchUp в pinguin)
+    const startAt = Math.floor(Date.now() / 1000);
+    if (!db.lastSeen) {
+        db.lastSeen = startAt;
+        saveDb();
+    } else {
+        try { await catchUp(startAt); } catch (e) { console.error("catchUp:", e.message); }
+    }
     // стартовая суточная проверка: dailyCheck сам следит, что раз в сутки,
     // так что если процесс встал до 09:00 и поднялся после — догонит
     try { await dailyCheck(); } catch (e) { console.error("daily:", e.message); }

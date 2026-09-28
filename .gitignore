@@ -2,3 +2,5 @@ sa_key.json
 function/fn.zip
 __pycache__/
 .vapid.env
+db.json
+.env
