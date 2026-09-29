@@ -595,11 +595,11 @@ function relKeyboard(peerId) {
     const mk = (label, payload, color) => ({
         action: { type: "callback", label, payload: JSON.stringify(payload), color }
     });
-    const btn = key => mk(REL_DEFS[key].icon + (s[key] ? "🔔" : "🔕"), "rel:" + key, "secondary");
+    const btn = key => mk(REL_DEFS[key].icon + (s[key] ? "🔔" : "🔕"), { rel: key }, "secondary");
     return JSON.stringify({
         inline: true,
         buttons: [
-            [mk("🗑", "del", "negative"), btn("orth"), btn("islam")],
+            [mk("🗑", { c: "del" }, "negative"), btn("orth"), btn("islam")],
             [btn("bud"), btn("cath"), btn("jud")]
         ]
     });
@@ -729,8 +729,15 @@ const LOG_RAW = !!process.env.LOG_VK; // сырые ответы VK API и Long 
 
 async function vkApi(method, params) {
     const qs = new URLSearchParams(Object.assign({ access_token: token, v: VK_VERSION }, params));
-    if (LOG_RAW) console.log(">> " + method, new URLSearchParams(qs).toString().replace(/access_token=[^&]+/, "access_token=…"));
-    const res = await fetch(VK_API + method + "?" + qs, { signal: AbortSignal.timeout(30000) });
+    if (LOG_RAW) console.log(">> " + method, qs.toString().replace(/access_token=[^&]+/, "access_token=…"));
+    // POST с form-body — как в vksdk/pinguin: клавиатуры в query string
+    // (GET) ВК портит («unknown fields» на каждой кнопке)
+    const res = await fetch(VK_API + method, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: qs,
+        signal: AbortSignal.timeout(30000)
+    });
     if (!res.ok) throw new Error(method + " HTTP " + res.status);
     const body = await res.json();
     if (LOG_RAW) console.log("<< " + method, JSON.stringify(body).slice(0, 800));
@@ -842,17 +849,20 @@ async function handleMessage(peerId, text, date, msgId, convMsgId) {
     }
 }
 
-// payload приходит JSON-строкой ("\"rel:orth\"") или plain
+// payload — JSON ("{\"rel\":\"orth\"}"); понимаем и старые строки "rel:…"
 function unpay(p) {
     try {
         const v = JSON.parse(p);
         if (typeof v === "string") return v;
+        if (v && typeof v === "object") return v;
     } catch (e) { /* plain */ }
     return String(p);
 }
 
 async function handleEvent(o) {
-    const payload = unpay(o.payload);
+    const p = unpay(o.payload);
+    // нормализуем: {c} / {rel} либо строка "del" / "del:yes" / "rel:orth"
+    const payload = typeof p === "object" ? (p.rel ? "rel:" + p.rel : String(p.c ?? "")) : p;
     const peerId = o.peer_id;
     console.log("event:", payload, "peer", peerId);
     if (payload === "del") {
@@ -866,8 +876,8 @@ async function handleEvent(o) {
         const kb = JSON.stringify({
             inline: true,
             buttons: [[
-                { action: { type: "callback", label: "🗑", payload: JSON.stringify("del:yes"), color: "negative" } },
-                { action: { type: "callback", label: "❌", payload: JSON.stringify("del:no"), color: "secondary" } }
+                { action: { type: "callback", label: "🗑", payload: JSON.stringify({ c: "del:yes" }), color: "negative" } },
+                { action: { type: "callback", label: "❌", payload: JSON.stringify({ c: "del:no" }), color: "secondary" } }
             ]]
         });
         await messagesSend(peerId, "Удалить все записи чата?\n" + list, 0, 0, kb);
