@@ -600,7 +600,7 @@ function relKeyboard(peerId) {
     return JSON.stringify({
         inline: true,
         buttons: [
-            [mk("🗑", { c: "del" }, "negative"), btn("orth"), btn("islam")],
+            [mk("🗑", { c: "del" }, "secondary"), btn("orth"), btn("islam")],
             [btn("bud"), btn("cath"), btn("jud")]
         ]
     });
@@ -832,7 +832,8 @@ async function handleMessage(peerId, text, date, msgId, convMsgId) {
     if (date) markSeen(date);
     if (text.trim() === "/") {
         if (peerId >= 2000000000) return; // только личный чат
-        await messagesSend(peerId, "Удалить записи или выбрать оповещения о религиозных днях:", msgId, convMsgId, relKeyboard(peerId));
+        // "⠀" — брайлевский пустой символ, как в pinguin: текста не видно
+        await messagesSend(peerId, "⠀", msgId, convMsgId, relKeyboard(peerId));
         return;
     }
     // триггеров может быть несколько — по одному на строку
@@ -850,12 +851,13 @@ async function handleMessage(peerId, text, date, msgId, convMsgId) {
     }
 }
 
-// payload — JSON ("{\"rel\":\"orth\"}"); понимаем и старые строки "rel:…"
+// payload — JSON-объект (после перехода на POST ВК отдаёт его объектом)
+// или JSON/plain строка (легаси)
 function unpay(p) {
+    if (p && typeof p === "object") return p;
     try {
         const v = JSON.parse(p);
-        if (typeof v === "string") return v;
-        if (v && typeof v === "object") return v;
+        if (typeof v === "string" || typeof v === "object") return v;
     } catch (e) { /* plain */ }
     return String(p);
 }
@@ -866,6 +868,10 @@ async function handleEvent(o) {
     const payload = typeof p === "object" ? (p.rel ? "rel:" + p.rel : String(p.c ?? "")) : p;
     const peerId = o.peer_id;
     console.log("event:", payload, "peer", peerId);
+    if (!["del", "del:yes", "del:no"].includes(payload) && !payload.startsWith("rel:")) {
+        await answerEvent(o.event_id || o.id, o.user_id, peerId, "неизвестная кнопка");
+        return;
+    }
     if (payload === "del") {
         // подтверждение: список записей чата + 🗑/❌
         const recs = db.records.filter(r => r.peerId === peerId);
