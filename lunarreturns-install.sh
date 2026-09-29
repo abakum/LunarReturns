@@ -47,7 +47,14 @@ fi
 [ -x "$NODE_BIN" ] || { echo "node не найден, укажите: $0 /путь/к/node"; exit 1; }
 echo "node: $NODE_BIN"
 
-# 3. скрипт и база — в /var/lib/lunarreturns (домашние каталоги пользователей
+# 3. остановить сервис перед перезаписью скрипта (если запущен)
+if systemctl is-active --quiet $UNIT 2>/dev/null; then
+    systemctl stop $UNIT
+    echo "сервис остановлен для обновления"
+fi
+pkill -u "$RUN_USER" -f "node .*$DIR/lunarreturns.js" 2>/dev/null && echo "ручной экземпляр остановлен" || true
+
+# 4. скрипт и база — в /var/lib/lunarreturns (домашние каталоги пользователей
 #    не читаются системным сервисом), старая база из репо переносится
 install -d -m 700 /var/lib/lunarreturns
 install -m 644 "$DIR/lunarreturns.js" /var/lib/lunarreturns/lunarreturns.js
@@ -58,12 +65,12 @@ fi
 # db.json: владелец будет сменён systemd на динамического пользователя
 # (StateDirectory), скрипт читается сервисом — 644 root:root
 
-# 4. юнит из шаблона (пути, node)
+# 5. юнит из шаблона (пути, node)
 sed -e "s|@CFG@|$CFG|g" \
     -e "s|@NODE@|$NODE_BIN|g" \
     "$TEMPLATE" > "$TARGET"
 
-# 5. установка и запуск
+# 6. установка и запуск
 systemctl daemon-reload
 systemctl enable --now $UNIT 2>/dev/null || systemctl restart $UNIT
 
