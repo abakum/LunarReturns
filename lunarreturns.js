@@ -443,10 +443,7 @@ function religiousDigest(settings) {
 function religiousYear(key) {
     const d0 = todayJdn();
     return relDays(key, d0, d0 + 366)
-        .map(([j, name]) => {
-            const [, m, d] = jdnToGreg(j);
-            return String(d).padStart(2, "0") + "." + String(m).padStart(2, "0") + " — " + name;
-        })
+        .map(([j, name]) => jdnToGreg(j).map((x, i) => i < 3 ? String(x).padStart(i === 0 ? 4 : 2, "0") : x).slice(0, 3).join("-") + " " + name)
         .join("\n");
 }
 
@@ -879,6 +876,7 @@ async function handleEvent(o) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "записей нет");
             return;
         }
+        await answerEvent(o.event_id || o.id, o.user_id, peerId, "подтвердите удаление");
         const list = recs.map(r => r.n + " " + r.d + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "")).join("\n");
         const kb = JSON.stringify({
             inline: true,
@@ -902,7 +900,10 @@ async function handleEvent(o) {
         const key = payload.slice(4);
         if (!REL_DEFS[key]) return;
         const on = toggleRel(peerId, key);
-        const text = REL_DEFS[key].name + (on ? ", год вперёд:\n" + religiousYear(key) : " — оповещения выключены.");
+        // снекбар останавливает «вращение» на кнопке
+        await answerEvent(o.event_id || o.id, o.user_id, peerId, on ? "🔔 включены" : "🔕 выключены");
+        const text = REL_DEFS[key].icon + " " + REL_DEFS[key].name +
+            (on ? "\n" + religiousYear(key) : "\nоповещения выключены");
         await messagesSend(peerId, text, 0, 0, relKeyboard(peerId));
     }
 }
@@ -1074,7 +1075,7 @@ async function main() {
         if (arg.startsWith("rel:")) {
             const key = arg.slice(4);
             if (!REL_DEFS[key]) { console.log("религии нет:", key); process.exit(1); }
-            console.log(REL_DEFS[key].name + ", год вперёд:\n" + religiousYear(key));
+            console.log(REL_DEFS[key].icon + " " + REL_DEFS[key].name + "\n" + religiousYear(key));
             return;
         }
         const input = args.slice(1).join(" ") || "Костя 1963-09-27";
