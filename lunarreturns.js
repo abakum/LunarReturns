@@ -809,12 +809,14 @@ async function longPollStep() {
         if (groupId && Number(upd.group_id) !== groupId) continue;
         try {
             if (upd.type === "message_new" && upd.object) {
+                if (groupId && Number(upd.group_id) !== groupId) continue;
                 const msg = upd.object.message || upd.object;
                 if (!msg || !msg.text || msg.peer_id === undefined) continue;
                 await handleMessage(msg.peer_id, String(msg.text), msg.date, msg.id, msg.conversation_message_id);
             } else if (upd.type === "message_event" && upd.object) {
                 await handleEvent(upd.object);
             } else if (upd.type && upd.type.includes("reaction") && upd.object) {
+                console.log("reaction upd:", JSON.stringify(upd.object).slice(0, 400));
                 await handleReaction(upd.object);
             }
         } catch (e) {
@@ -881,7 +883,7 @@ async function handleEvent(o) {
         const kb = JSON.stringify({
             inline: true,
             buttons: [[
-                { action: { type: "callback", label: "🗑", payload: JSON.stringify({ c: "del:yes" }) }, color: "negative" },
+                { action: { type: "callback", label: "🗑", payload: JSON.stringify({ c: "del:yes" }) }, color: "secondary" },
                 { action: { type: "callback", label: "❌", payload: JSON.stringify({ c: "del:no" }) }, color: "secondary" }
             ]]
         });
@@ -902,7 +904,7 @@ async function handleEvent(o) {
         const on = toggleRel(peerId, key);
         // снекбар останавливает «вращение» на кнопке
         await answerEvent(o.event_id || o.id, o.user_id, peerId, on ? "🔔 включены" : "🔕 выключены");
-        const text = REL_DEFS[key].icon + " " + REL_DEFS[key].name +
+        const text = REL_DEFS[key].icon + " " + REL_DEFS[key].name + " дни" +
             (on ? "\n" + religiousYear(key) : "\nоповещения выключены");
         await messagesSend(peerId, text, 0, 0, relKeyboard(peerId));
     }
@@ -910,12 +912,14 @@ async function handleEvent(o) {
 
 // 👎 на ответ бота — удалить запись из этого ответа (имя+дата из заголовка)
 async function handleReaction(o) {
-    const reactions = o.reactions || [];
-    // 👎 в ВК — reaction_id 2 (проверить логом при первом использовании)
+    // 👎 в ВК — reaction_id 2; поле и структура уточняются по логу выше
+    const reactions = o.reactions || (o.reaction ? [o.reaction] : []);
     const isDown = reactions.some(r => (r.reaction_id ?? r.id) === 2);
-    if (!isDown || o.from_id <= 0) return;
+    if (!isDown) return;
+    const from = o.from_id ?? o.user_id ?? o.reactor_id;
+    if (from <= 0) return; // чужие реакции бота игнорируем
     const peerId = o.peer_id;
-    const cmid = o.cmid || o.conversation_message_id;
+    const cmid = o.cmid ?? o.conversation_message_id ?? o.message_id;
     if (!cmid) return;
     let text = "";
     try {
@@ -1075,7 +1079,7 @@ async function main() {
         if (arg.startsWith("rel:")) {
             const key = arg.slice(4);
             if (!REL_DEFS[key]) { console.log("религии нет:", key); process.exit(1); }
-            console.log(REL_DEFS[key].icon + " " + REL_DEFS[key].name + "\n" + religiousYear(key));
+            console.log(REL_DEFS[key].icon + " " + REL_DEFS[key].name + " дни\n" + religiousYear(key));
             return;
         }
         const input = args.slice(1).join(" ") || "Костя 1963-09-27";
