@@ -911,12 +911,11 @@ async function handleEvent(o) {
 }
 
 // 👎 на ответ бота — удалить запись из этого ответа (имя+дата из заголовка)
+// событие (по факту): { reacted_id, peer_id, cmid, reaction_id } — 👎 = 9
 async function handleReaction(o) {
-    // 👎 в ВК — reaction_id 2; поле и структура уточняются по логу выше
-    const reactions = o.reactions || (o.reaction ? [o.reaction] : []);
-    const isDown = reactions.some(r => (r.reaction_id ?? r.id) === 2);
+    const isDown = o.reaction_id === 9;
     if (!isDown) return;
-    const from = o.from_id ?? o.user_id ?? o.reactor_id;
+    const from = o.reacted_id ?? o.from_id ?? o.user_id;
     if (from <= 0) return; // чужие реакции бота игнорируем
     const peerId = o.peer_id;
     const cmid = o.cmid ?? o.conversation_message_id ?? o.message_id;
