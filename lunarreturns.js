@@ -588,18 +588,21 @@ function toggleRel(peerId, key) {
     return s[key];
 }
 
-// клавиатура: 🗑 + [emoji 🔔|🔕] по состоянию, одна строка (проверенный
-// формат pinguin — несколько callback-кнопок в ряд)
+// клавиатура: как в pinguin — несколько callback-кнопок в ряду, ряды 3+3:
+// [🗑, ☦️, ☪️], [☸️, ✝️, ✡️]; состояние — 🔔 (вкл) / 🔕 (выкл)
 function relKeyboard(peerId) {
     const s = getSettings(peerId);
     const mk = (label, payload, color) => ({
         action: { type: "callback", label, payload: JSON.stringify(payload), color }
     });
-    const row = [mk("🗑", "del", "negative")];
-    for (const key of REL_ORDER) {
-        row.push(mk(REL_DEFS[key].icon + (s[key] ? "🔔" : "🔕"), "rel:" + key, "secondary"));
-    }
-    return JSON.stringify({ inline: true, buttons: [row] });
+    const btn = key => mk(REL_DEFS[key].icon + (s[key] ? "🔔" : "🔕"), "rel:" + key, "secondary");
+    return JSON.stringify({
+        inline: true,
+        buttons: [
+            [mk("🗑", "del", "negative"), btn("orth"), btn("islam")],
+            [btn("bud"), btn("cath"), btn("jud")]
+        ]
+    });
 }
 
 const snackbar = text => JSON.stringify({ type: "show_snackbar", text });
@@ -632,13 +635,37 @@ async function sendWithRetry(params) {
                 await sleep(3000); // flood control — подождать и повторить
                 continue;
             }
-            if (params.keyboard && e.message.includes("911")) {
-                console.error("keyboard rejected:", params.keyboard);
+            if (e.message.includes("911") && params.keyboard) {
+                console.error("keyboard rejected (" + e.message + "):", params.keyboard);
+                await bisectKeyboard(params);
                 delete params.keyboard; // деградация: текст без клавиатуры
                 continue;
             }
             throw e;
         }
+    }
+}
+
+// 911: проверить каждую кнопку отдельным сообщением-«…», найти виновника
+async function bisectKeyboard(params) {
+    let kb;
+    try { kb = JSON.parse(params.keyboard); } catch (e) { return; }
+    const peerId = params.peer_id;
+    const flat = kb.buttons.flatMap((row, ri) => row.map((b, ci) => ({ ...b, _pos: ri + ":" + ci })));
+    for (const b of flat) {
+        const one = JSON.stringify({ inline: true, buttons: [[{ action: { type: b.action.type, label: b.action.label, payload: b.action.payload, color: b.action.color } }]] });
+        try {
+            await vkApi("messages.send", {
+                peer_id: peerId,
+                message: "кнопка " + b._pos + " " + b.action.label,
+                random_id: Date.now() % 2147483647,
+                keyboard: one
+            });
+            console.log("кнопка", b._pos, b.action.label, "— ОК");
+        } catch (e) {
+            console.log("кнопка", b._pos, b.action.label, "— ОТКЛОНЕНА:", e.message);
+        }
+        await sleep(400);
     }
 }
 
