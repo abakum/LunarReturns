@@ -938,6 +938,12 @@ async function handleReaction(o) {
     if (db.records.length === before) return; // не наша запись — молча
     saveDb();
     console.log("reaction 👎: удалена запись", name, d, "peer", peerId);
+    // snackbar для реакций ВК не даёт (нет event_id) — отвечаем reply'ем
+    try {
+        await messagesSend(peerId, "🗑 Запись удалена: " + name + " " + d, 0, cmid);
+    } catch (e) {
+        console.error("reaction reply:", e.message);
+    }
 }
 
 // ============================== ПЛАНИРОВЩИК ==============================
