@@ -593,7 +593,8 @@ function toggleRel(peerId, key) {
 function relKeyboard(peerId) {
     const s = getSettings(peerId);
     const mk = (label, payload, color) => ({
-        action: { type: "callback", label, payload: JSON.stringify(payload), color }
+        action: { type: "callback", label, payload: JSON.stringify(payload) },
+        color
     });
     const btn = key => mk(REL_DEFS[key].icon + (s[key] ? "🔔" : "🔕"), { rel: key }, "secondary");
     return JSON.stringify({
@@ -876,8 +877,8 @@ async function handleEvent(o) {
         const kb = JSON.stringify({
             inline: true,
             buttons: [[
-                { action: { type: "callback", label: "🗑", payload: JSON.stringify({ c: "del:yes" }), color: "negative" } },
-                { action: { type: "callback", label: "❌", payload: JSON.stringify({ c: "del:no" }), color: "secondary" } }
+                { action: { type: "callback", label: "🗑", payload: JSON.stringify({ c: "del:yes" }) }, color: "negative" },
+                { action: { type: "callback", label: "❌", payload: JSON.stringify({ c: "del:no" }) }, color: "secondary" }
             ]]
         });
         await messagesSend(peerId, "Удалить все записи чата?\n" + list, 0, 0, kb);
