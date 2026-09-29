@@ -61,6 +61,8 @@ install -m 644 "$DIR/lunarreturns.js" /var/lib/lunarreturns/lunarreturns.js
 if [ -f "$DIR/db.json" ] && [ ! -f /var/lib/lunarreturns/db.json ]; then
     install -m 600 "$DIR/db.json" /var/lib/lunarreturns/db.json
     echo "база перенесена: $DIR/db.json -> /var/lib/lunarreturns/db.json"
+elif [ -f /var/lib/lunarreturns/db.json ]; then
+    echo "база /var/lib/lunarreturns/db.json не тронута (рабочая; $DIR/db.json игнорируется)"
 fi
 # db.json: владелец будет сменён systemd на динамического пользователя
 # (StateDirectory), скрипт читается сервисом — 644 root:root

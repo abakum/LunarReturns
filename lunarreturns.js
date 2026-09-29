@@ -588,21 +588,18 @@ function toggleRel(peerId, key) {
     return s[key];
 }
 
-// клавиатура: 🗑 + пары [emoji 🔔|🔕] по состоянию
+// клавиатура: 🗑 + [emoji 🔔|🔕] по состоянию, одна строка (проверенный
+// формат pinguin — несколько callback-кнопок в ряд)
 function relKeyboard(peerId) {
     const s = getSettings(peerId);
-    const kb = { inline: true, buttons: [[{ action: { type: "callback", label: "🗑", payload: JSON.stringify("del"), color: "negative" } }]] };
+    const mk = (label, payload, color) => ({
+        action: { type: "callback", label, payload: JSON.stringify(payload), color }
+    });
+    const row = [mk("🗑", "del", "negative")];
     for (const key of REL_ORDER) {
-        kb.buttons.push([{
-            action: {
-                type: "callback",
-                label: REL_DEFS[key].icon + (s[key] ? "🔔" : "🔕"),
-                payload: JSON.stringify("rel:" + key),
-                color: "secondary"
-            }
-        }]);
+        row.push(mk(REL_DEFS[key].icon + (s[key] ? "🔔" : "🔕"), "rel:" + key, "secondary"));
     }
-    return JSON.stringify(kb);
+    return JSON.stringify({ inline: true, buttons: [row] });
 }
 
 const snackbar = text => JSON.stringify({ type: "show_snackbar", text });
@@ -614,6 +611,35 @@ async function answerEvent(eventId, userId, peerId, text) {
         peer_id: peerId,
         event_data: snackbar(text)
     });
+}
+
+// ---- очередь отправки: flood control (ошибка 9) при массовом импорте ----
+const SEND_GAP = 400; // мс между сообщениями
+let sendChain = Promise.resolve();
+
+function queueSend(params) {
+    const job = sendChain.then(() => sendWithRetry(params));
+    sendChain = job.then(() => sleep(SEND_GAP), () => sleep(SEND_GAP));
+    return job;
+}
+
+async function sendWithRetry(params) {
+    for (let attempt = 1; ; attempt++) {
+        try {
+            return await vkApi("messages.send", params);
+        } catch (e) {
+            if (e.message.includes("messages.send 9:") && attempt < 5) {
+                await sleep(3000); // flood control — подождать и повторить
+                continue;
+            }
+            if (params.keyboard && e.message.includes("911")) {
+                console.error("keyboard rejected:", params.keyboard);
+                delete params.keyboard; // деградация: текст без клавиатуры
+                continue;
+            }
+            throw e;
+        }
+    }
 }
 
 // ============================== CATCH UP ==============================
@@ -698,7 +724,7 @@ async function messagesSend(peerId, text, msgId, convMsgId, keyboard) {
         peer_id: peerId, conversation_message_ids: [convMsgId], is_reply: true
     });
     if (keyboard) params.keyboard = keyboard;
-    return vkApi("messages.send", params);
+    return queueSend(params);
 }
 
 let lp = null; // { url, key, ts }
