@@ -852,7 +852,7 @@ async function longPollStep() {
                 await handleReaction(upd.object);
             }
         } catch (e) {
-            console.error("handle:", e.message);
+            console.error("handle:", e.message, "\n", (e.stack || "").split("\n").slice(1, 4).join("\n"));
         }
     }
 }
@@ -983,8 +983,11 @@ async function handleEvent(o) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "записей нет");
             return;
         }
-        // в личном чате — reply, в групповом — сначала в личку автора
-        if (peerId < 2000000000) await messagesSend(peerId, list, 0, o.conversation_message_id);
+        // снекбар останавливает «вращение» на кнопке
+        if (peerId < 2000000000) await answerEvent(o.event_id || o.id, o.user_id, peerId, "выше список");
+        else await answerEvent(o.event_id || o.id, o.user_id, peerId, "список — в личке");
+        // в личном чате — отдельным сообщением (не reply), в групповом — сначала в личку автора
+        if (peerId < 2000000000) await messagesSend(peerId, list);
         else await sendToUserFirst(o.user_id, peerId, list);
     } else if (payload === "del:no") {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "отменено");
@@ -1004,6 +1007,8 @@ async function handleEvent(o) {
 // реакции на ответы/уведомления бота; формат события (по факту):
 // { reacted_id, peer_id, cmid, reaction_id } — 👎 = 9, 👀 = REACTION_EYES_ID
 async function handleReaction(o) {
+    // событие без reaction_id (снятие реакции) — молча
+    if (o.reaction_id === undefined) return;
     const cmid = o.cmid ?? o.conversation_message_id ?? o.message_id;
     if (!cmid) return;
     const peerId = o.peer_id;
@@ -1025,8 +1030,11 @@ async function handleReaction(o) {
         return;
     }
     if (REACTION_EYES_ID && o.reaction_id === REACTION_EYES_ID) { // 👀 — детально
-        const rec = findRecordByCmid(peerId, cmid);
-        if (!rec) return;
+        const rec = await findRecordByCmid(peerId, cmid);
+        if (!rec) {
+            console.log("reaction 👀: запись не найдена (cmid", cmid, "peer", peerId, ") — возможно, событие уже удалено");
+            return;
+        }
         const text = jubileeText(rec, "", true);
         console.log("reaction 👀: детально", rec.n, rec.d, "peer", peerId);
         if (peerId < 2000000000) await messagesSend(peerId, text, 0, cmid);
