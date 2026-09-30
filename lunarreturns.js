@@ -913,27 +913,15 @@ async function sendToUserFirst(userId, groupPeerId, text) {
     }
 }
 
-// ближайший день рождения записи (jdn этого или следующего года)
-function nextOccurrenceJdn(rec, d0) {
-    const [, m, d] = rec.d.split("-").map(Number);
-    let y = jdnToGreg(d0)[0];
-    let j = gregToJdn(y, m, d);
-    if (j < d0) j = gregToJdn(y + 1, m, d);
-    return j;
-}
-
-// «Имя ГГГГ-ММ-ДД[ ЧЧ:ММ]» ближайшие на год вперёд; "" — событий нет
+// «Имя ГГГГ-ММ-ДД[ ЧЧ:ММ]» в исходных датах, сортировка по ММ-ДД (не ломая
+// год); "" — записей нет
 function upcomingEvents(peerId) {
-    const d0 = todayJdn();
+    const key = r => r.d.slice(5) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
     return db.records.filter(r => r.peerId === peerId)
-        .map(r => ({ r, j: nextOccurrenceJdn(r, d0) }))
-        .filter(x => x.j < d0 + 366)
-        .sort((a, b) => a.j - b.j)
-        .map(({ r, j }) => {
-            const [y, m, d] = jdnToGreg(j);
-            const date = y + "-" + String(m).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+        .sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0))
+        .map(r => {
             const time = r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "";
-            return r.n + " " + date + time;
+            return r.n + " " + r.d + time;
         })
         .join("\n");
 }
