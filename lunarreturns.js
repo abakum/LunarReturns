@@ -779,10 +779,7 @@ async function messagesSend(peerId, text, msgId, convMsgId, keyboard) {
 let lp = null; // { server, key, ts }
 let groupId = GROUP_ID;
 let ownerId = 0; // создатель сообщества (role=creator), 0 — неизвестен
-// 👀 (детально) — reaction_id уточняется первым использованием:
-// поставить 👀 и посмотреть reaction_id в логе (LOG_UPDATES=1 или всегда
-// для неизвестных), затем задать тут или в env LR_EYES_ID
-let REACTION_EYES_ID = Number(process.env.LR_EYES_ID || 0);
+const REACTION_EYES_ID = 32; // 👀 (детально); 👍 = 4, 👎 = 9
 
 async function initOwner() {
     try {
@@ -947,8 +944,13 @@ async function handleEvent(o) {
     const payload = typeof p === "object" ? (p.rel ? "rel:" + p.rel : String(p.c ?? "")) : p;
     const peerId = o.peer_id;
     console.log("event:", payload, "peer", peerId);
-    if (!["del", "del:yes", "del:no"].includes(payload) && !payload.startsWith("rel:")) {
+    if (!["del", "del:yes", "del:no", "bell"].includes(payload) && !payload.startsWith("rel:")) {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "неизвестная кнопка");
+        return;
+    }
+    // 🗑/❌ в групповом чате — только владелец
+    if (peerId >= 2000000000 && ["del", "del:yes", "del:no"].includes(payload) && o.user_id !== ownerId) {
+        await answerEvent(o.event_id || o.id, o.user_id, peerId, "только владелец");
         return;
     }
     if (payload === "del") {
@@ -1031,8 +1033,8 @@ async function handleReaction(o) {
         else await sendToUserFirst(from, peerId, text);
         return;
     }
-    // неизвестная реакция: id в лог — пригодится для настройки 👀
-    console.log("reaction:", o.reaction_id, REACTION_EYES_ID ? "" : "(👀 не настроена: задайте LR_EYES_ID или константу)");
+    // неизвестная реакция: id в лог
+    console.log("reaction:", o.reaction_id);
 }
 
 // найти запись по тексту ответа бота (заголовок «Имя ГГГГ-ММ-ДД»)
