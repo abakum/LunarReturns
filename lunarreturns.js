@@ -131,7 +131,7 @@ function legend(t) {
         String((n0 - 1) % 15 + 1).padStart(2, "0") + (n0 > 15 ? "☾#" : "☽#") + tithiName(n0) + (n0 > 15 ? "_" : "");
 }
 
-function la(birth) {
+function la(birth, detail = false) {
     const mMid = moonNew(birth);
     const n0 = tithiInt(mMid);
     const p0 = phaseName(n0, false);
@@ -159,7 +159,7 @@ function la(birth) {
         if (z0 === z) c++; else z = SPACE;
         let v = chineseZodiacName(bd, false);
         if (v0 === v) c++; else v = WIDE_SPACE;
-        if (i >= f && c > 0 || c > 1 && i < 90) {
+        if (i >= f && c > 0 || (detail ? c > 0 : c > 1) && i < 90) {
             years.push("#" + bd.getUTCFullYear() + yl + " " + v + w + z + p + t);
             if (i > f && c > 0) fc++;
         }
@@ -526,14 +526,14 @@ function parseTrigger(text) {
 
 // ============================== ВЫВОД ==============================
 
-function jubileeText(rec, note) {
+function jubileeText(rec, note, detail = false) {
     const hasTime = rec.h !== undefined && rec.m !== undefined;
     const [y, mo, d] = rec.d.split("-").map(Number);
     const t = new Date(Date.UTC(y, mo - 1, d, rec.h !== undefined ? rec.h : 12, rec.m !== undefined ? rec.m : 0, 0));
     const head = rec.n + " " + rec.d + (hasTime ? " " + String(rec.h).padStart(2, "0") + ":" + String(rec.m).padStart(2, "0") : "")
         + ageSuffix(rec.n, rec.d)
         + (note ? "\n" + note : "");
-    return head + "\n" + la(t).join("\n");
+    return head + "\n" + la(t, detail).join("\n");
 }
 
 // ============================== STORE ==============================
@@ -597,9 +597,26 @@ function relKeyboard(peerId) {
     return JSON.stringify({
         inline: true,
         buttons: [
-            [mk("🗑", { c: "del" }, "secondary"), btn("orth"), btn("islam")],
-            [btn("bud"), btn("cath"), btn("jud")]
+            [mk("🗑", { c: "del" }, "secondary"), mk("🔔", { c: "bell" }, "secondary")],
+            [btn("orth"), btn("islam"), btn("bud"), btn("cath"), btn("jud")]
         ]
+    });
+}
+
+// клавиатура владельца в групповом чате
+function ownerKeyboard() {
+    const mk = (label, payload) => ({
+        action: { type: "callback", label, payload: JSON.stringify(payload) },
+        color: "secondary"
+    });
+    return JSON.stringify({ inline: true, buttons: [[mk("🗑", { c: "del" }), mk("🔔", { c: "bell" })]] });
+}
+
+// клавиатура обычного участника группового чата
+function bellKeyboard() {
+    return JSON.stringify({
+        inline: true,
+        buttons: [[{ action: { type: "callback", label: "🔔", payload: JSON.stringify({ c: "bell" }) }, color: "secondary" }]]
     });
 }
 
@@ -759,8 +776,25 @@ async function messagesSend(peerId, text, msgId, convMsgId, keyboard) {
     return queueSend(params);
 }
 
-let lp = null; // { url, key, ts }
+let lp = null; // { server, key, ts }
 let groupId = GROUP_ID;
+let ownerId = 0; // создатель сообщества (role=creator), 0 — неизвестен
+// 👀 (детально) — reaction_id уточняется первым использованием:
+// поставить 👀 и посмотреть reaction_id в логе (LOG_UPDATES=1 или всегда
+// для неизвестных), затем задать тут или в env LR_EYES_ID
+let REACTION_EYES_ID = Number(process.env.LR_EYES_ID || 0);
+
+async function initOwner() {
+    try {
+        const r = await vkApi("groups.getMembers", { group_id: groupId, filter: "managers" });
+        const c = (r.items || []).find(x => x.role === "creator");
+        ownerId = c ? c.id : 0;
+        console.log("owner:", ownerId || "не найден");
+    } catch (e) {
+        ownerId = 0;
+        console.log("owner unknown:", e.message);
+    }
+}
 
 async function longPollInit() {
     // как в pinguin (NewLongPollCommunity): группа из токена через groups.getById
@@ -811,8 +845,9 @@ async function longPollStep() {
             if (upd.type === "message_new" && upd.object) {
                 if (groupId && Number(upd.group_id) !== groupId) continue;
                 const msg = upd.object.message || upd.object;
-                if (!msg || !msg.text || msg.peer_id === undefined) continue;
-                await handleMessage(msg.peer_id, String(msg.text), msg.date, msg.id, msg.conversation_message_id);
+                if (!msg || msg.peer_id === undefined) continue;
+                if (!msg.text && !msg.payload) continue;
+                await handleMessage(msg.peer_id, String(msg.text || ""), msg.date, msg.id, msg.conversation_message_id, msg.from_id, unpay(msg.payload || ""));
             } else if (upd.type === "message_event" && upd.object) {
                 await handleEvent(upd.object);
             } else if (upd.type && upd.type.includes("reaction") && upd.object) {
@@ -825,14 +860,24 @@ async function longPollStep() {
     }
 }
 
-// ответ на «/»: только личный чат
-async function handleMessage(peerId, text, date, msgId, convMsgId) {
+const HELP = "Реакция 👎 — удалить событие. Реакция 👀 — детально.";
+
+// «Начать» (payload {"command":"start"}) работает как «/»
+const isStart = (text, payload) => {
+    if (text.trim() === "/") return true;
+    if (payload && typeof payload === "object") return payload.command === "start";
+    return payload === "start";
+};
+
+// ответ на «/» или «Начать»: справка + клавиатура по чату/роли
+async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, payload = "") {
     if (process.env.LOG_UPDATES) console.log("msg from", peerId, ":", text);
     if (date) markSeen(date);
-    if (text.trim() === "/") {
-        if (peerId >= 2000000000) return; // только личный чат
-        // "⠀" — брайлевский пустой символ, как в pinguin: текста не видно
-        await messagesSend(peerId, "⠀", msgId, convMsgId, relKeyboard(peerId));
+    if (isStart(text, payload)) {
+        let kb;
+        if (peerId < 2000000000) kb = relKeyboard(peerId);
+        else kb = (ownerId && fromId === ownerId) ? ownerKeyboard() : bellKeyboard();
+        await messagesSend(peerId, HELP, msgId, convMsgId, kb);
         return;
     }
     // триггеров может быть несколько — по одному на строку
@@ -859,6 +904,41 @@ function unpay(p) {
         if (typeof v === "string" || typeof v === "object") return v;
     } catch (e) { /* plain */ }
     return String(p);
+}
+
+// сначала в личку автора, при ошибке — в групповой чат
+async function sendToUserFirst(userId, groupPeerId, text) {
+    try {
+        return await messagesSend(userId, text);
+    } catch (e) {
+        console.log("в личку не ушло (" + e.message.slice(0, 80) + ") — в чат");
+        return messagesSend(groupPeerId, text);
+    }
+}
+
+// ближайший день рождения записи (jdn этого или следующего года)
+function nextOccurrenceJdn(rec, d0) {
+    const [, m, d] = rec.d.split("-").map(Number);
+    let y = jdnToGreg(d0)[0];
+    let j = gregToJdn(y, m, d);
+    if (j < d0) j = gregToJdn(y + 1, m, d);
+    return j;
+}
+
+// «Имя ГГГГ-ММ-ДД[ ЧЧ:ММ]» ближайшие на год вперёд; "" — записей нет
+function upcomingEvents(peerId) {
+    const d0 = todayJdn();
+    return db.records.filter(r => r.peerId === peerId)
+        .map(r => ({ r, j: nextOccurrenceJdn(r, d0) }))
+        .filter(x => x.j < d0 + 366)
+        .sort((a, b) => a.j - b.j)
+        .map(({ r, j }) => {
+            const [y, m, d] = jdnToGreg(j);
+            const date = y + "-" + String(m).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+            const time = r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "";
+            return r.n + " " + date + time;
+        })
+        .join("\n");
 }
 
 async function handleEvent(o) {
@@ -895,6 +975,15 @@ async function handleEvent(o) {
         console.log("deleted", n, "records peer", peerId);
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "удалено событий: " + n);
         await messagesSend(peerId, "События чата удалены.", 0, 0, relKeyboard(peerId));
+    } else if (payload === "bell") {
+        const list = upcomingEvents(peerId);
+        if (!list) {
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "записей нет");
+            return;
+        }
+        // в личном чате — reply, в групповом — сначала в личку автора
+        if (peerId < 2000000000) await messagesSend(peerId, list, 0, o.conversation_message_id);
+        else await sendToUserFirst(o.user_id, peerId, list);
     } else if (payload === "del:no") {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "отменено");
         await messagesSend(peerId, "Удаление отменено.", 0, 0, relKeyboard(peerId));
@@ -910,16 +999,44 @@ async function handleEvent(o) {
     }
 }
 
-// 👎 на ответ бота — удалить событие из этого ответа (имя+дата из заголовка)
-// событие (по факту): { reacted_id, peer_id, cmid, reaction_id } — 👎 = 9
+// реакции на ответы/уведомления бота; формат события (по факту):
+// { reacted_id, peer_id, cmid, reaction_id } — 👎 = 9, 👀 = REACTION_EYES_ID
 async function handleReaction(o) {
-    const isDown = o.reaction_id === 9;
-    if (!isDown) return;
-    const from = o.reacted_id ?? o.from_id ?? o.user_id;
-    if (from <= 0) return; // чужие реакции бота игнорируем
-    const peerId = o.peer_id;
     const cmid = o.cmid ?? o.conversation_message_id ?? o.message_id;
     if (!cmid) return;
+    const peerId = o.peer_id;
+    const from = o.reacted_id ?? o.from_id ?? o.user_id;
+    if (from <= 0) return; // реакции бота игнорируем
+
+    if (o.reaction_id === 9) { // 👎 — удалить событие
+        const rec = findRecordByCmid(peerId, cmid);
+        if (!rec) return;
+        db.records = db.records.filter(r => r !== rec);
+        saveDb();
+        console.log("reaction 👎: удалено событие", rec.n, rec.d, "peer", peerId);
+        // snackbar для реакций ВК не даёт (нет event_id) — отвечаем reply'ем
+        try {
+            await messagesSend(peerId, "🗑 Событие удалено: " + rec.n + " " + rec.d, 0, cmid);
+        } catch (e) {
+            console.error("reaction reply:", e.message);
+        }
+        return;
+    }
+    if (REACTION_EYES_ID && o.reaction_id === REACTION_EYES_ID) { // 👀 — детально
+        const rec = findRecordByCmid(peerId, cmid);
+        if (!rec) return;
+        const text = jubileeText(rec, "", true);
+        console.log("reaction 👀: детально", rec.n, rec.d, "peer", peerId);
+        if (peerId < 2000000000) await messagesSend(peerId, text, 0, cmid);
+        else await sendToUserFirst(from, peerId, text);
+        return;
+    }
+    // неизвестная реакция: id в лог — пригодится для настройки 👀
+    console.log("reaction:", o.reaction_id, REACTION_EYES_ID ? "" : "(👀 не настроена: задайте LR_EYES_ID или константу)");
+}
+
+// найти запись по тексту ответа бота (заголовок «Имя ГГГГ-ММ-ДД»)
+async function findRecordByCmid(peerId, cmid) {
     let text = "";
     try {
         const res = await vkApi("messages.getByConversationMessageId", {
@@ -928,22 +1045,12 @@ async function handleReaction(o) {
         text = res.items?.[0]?.text || "";
     } catch (e) {
         console.error("reaction lookup:", e.message);
-        return;
+        return null;
     }
     const m = text.match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/);
-    if (!m) return;
+    if (!m) return null;
     const name = m[1].trim(), d = m[2];
-    const before = db.records.length;
-    db.records = db.records.filter(r => !(r.peerId === peerId && r.n === name && r.d === d));
-    if (db.records.length === before) return; // не наше событие — молча
-    saveDb();
-    console.log("reaction 👎: удалено событие", name, d, "peer", peerId);
-    // snackbar для реакций ВК не даёт (нет event_id) — отвечаем reply'ем
-    try {
-        await messagesSend(peerId, "🗑 Событие удалено", 0, cmid);
-    } catch (e) {
-        console.error("reaction reply:", e.message);
-    }
+    return db.records.find(r => r.peerId === peerId && r.n === name && r.d === d) || null;
 }
 
 // ============================== ПЛАНИРОВЩИК ==============================
@@ -1105,6 +1212,7 @@ async function main() {
     }
     loadDb();
     await longPollInit();
+    await initOwner();
     // догнать сообщения, накопившиеся за простой (как catchUp в pinguin)
     const startAt = Math.floor(Date.now() / 1000);
     if (!db.lastSeen) {
