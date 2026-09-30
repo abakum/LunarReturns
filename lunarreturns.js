@@ -585,8 +585,8 @@ function toggleRel(peerId, key) {
     return s[key];
 }
 
-// клавиатура: как в pinguin — несколько callback-кнопок в ряду, ряды 3+3:
-// [🗑, ☦️, ☪️], [☸️, ✝️, ✡️]; состояние — 🔔 (вкл) / 🔕 (выкл)
+// клавиатура: как раньше — ряды [🗑, 🔔, ☦️], [☪️, ☸️], [✝️, ✡️],
+// в первый ряд справа добавлена ❌ (закрыть); состояние — 🔔 (вкл) / 🔕 (выкл)
 function relKeyboard(peerId) {
     const s = getSettings(peerId);
     const mk = (label, payload, color) => ({
@@ -597,7 +597,7 @@ function relKeyboard(peerId) {
     return JSON.stringify({
         inline: true,
         buttons: [
-            [mk("🗑", { c: "del" }, "secondary"), mk("🔔", { c: "bell" }, "secondary")],
+            [mk("🗑", { c: "del" }, "secondary"), mk("🔔", { c: "bell" }, "secondary"), mk("❌", { c: "close" }, "secondary")],
             [btn("orth"), btn("islam"), btn("bud"), btn("cath"), btn("jud")]
         ]
     });
@@ -629,6 +629,28 @@ async function answerEvent(eventId, userId, peerId, text) {
         peer_id: peerId,
         event_data: snackbar(text)
     });
+}
+
+// сообщение-подтверждение «Удалить все события чата?» удаляется после 🗑/❌
+const confirmMsg = new Map();
+// сообщение-клавиатура после «/» удаляется кнопкой ❌
+const kbMsg = new Map();
+
+// удалить сообщение (id из maps), ошибки молча
+async function deleteMsg(mid) {
+    if (!mid) return;
+    try {
+        await vkApi("messages.delete", { message_ids: mid, delete_for_all: 1, spam: 1 });
+    } catch (e) {
+        console.error("message delete:", e.message);
+    }
+}
+
+async function deleteConfirm(peerId) {
+    const mid = confirmMsg.get(peerId);
+    if (!mid) return;
+    confirmMsg.delete(peerId);
+    await deleteMsg(mid);
 }
 
 // ---- очередь отправки: flood control (ошибка 9) при массовом импорте ----
@@ -874,7 +896,9 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         let kb;
         if (peerId < 2000000000) kb = relKeyboard(peerId);
         else kb = (ownerId && fromId === ownerId) ? ownerKeyboard() : bellKeyboard();
-        await messagesSend(peerId, HELP, msgId, convMsgId, kb);
+        // запомнить id: ❌ удалит это сообщение
+        const sent = await messagesSend(peerId, HELP, msgId, convMsgId, kb);
+        kbMsg.set(peerId, sent);
         return;
     }
     // триггеров может быть несколько — по одному на строку
@@ -932,7 +956,7 @@ async function handleEvent(o) {
     const payload = typeof p === "object" ? (p.rel ? "rel:" + p.rel : String(p.c ?? "")) : p;
     const peerId = o.peer_id;
     console.log("event:", payload, "peer", peerId);
-    if (!["del", "del:yes", "del:no", "bell"].includes(payload) && !payload.startsWith("rel:")) {
+    if (!["del", "del:yes", "del:no", "bell", "close"].includes(payload) && !payload.startsWith("rel:")) {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "неизвестная кнопка");
         return;
     }
@@ -957,13 +981,19 @@ async function handleEvent(o) {
                 { action: { type: "callback", label: "❌", payload: JSON.stringify({ c: "del:no" }) }, color: "secondary" }
             ]]
         });
-        await messagesSend(peerId, "Удалить все события чата?\n" + list, 0, 0, kb);
+        const sent = await messagesSend(peerId, "Удалить все события чата?\n" + list, 0, 0, kb);
+        confirmMsg.set(peerId, sent); // удалить после 🗑/❌
     } else if (payload === "del:yes") {
         const n = db.records.filter(r => r.peerId === peerId).length;
         db.records = db.records.filter(r => r.peerId !== peerId);
         saveDb();
         console.log("deleted", n, "records peer", peerId);
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "удалено событий: " + n);
+        await deleteConfirm(peerId);
+    } else if (payload === "close") {
+        const mid = kbMsg.get(peerId);
+        kbMsg.delete(peerId);
+        await deleteMsg(mid);
     } else if (payload === "bell") {
         const list = upcomingEvents(peerId);
         if (!list) {
@@ -977,6 +1007,7 @@ async function handleEvent(o) {
         else await sendToUserFirst(o.user_id, peerId, list);
     } else if (payload === "del:no") {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "отмена удаления");
+        await deleteConfirm(peerId);
     } else if (payload.startsWith("rel:")) {
         const key = payload.slice(4);
         if (!REL_DEFS[key]) return;
