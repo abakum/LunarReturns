@@ -922,7 +922,7 @@ function nextOccurrenceJdn(rec, d0) {
     return j;
 }
 
-// «Имя ГГГГ-ММ-ДД[ ЧЧ:ММ]» ближайшие на год вперёд; "" — записей нет
+// «Имя ГГГГ-ММ-ДД[ ЧЧ:ММ]» ближайшие на год вперёд; "" — событий нет
 function upcomingEvents(peerId) {
     const d0 = todayJdn();
     return db.records.filter(r => r.peerId === peerId)
@@ -976,22 +976,19 @@ async function handleEvent(o) {
         saveDb();
         console.log("deleted", n, "records peer", peerId);
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "удалено событий: " + n);
-        await messagesSend(peerId, "События чата удалены.", 0, 0, relKeyboard(peerId));
     } else if (payload === "bell") {
         const list = upcomingEvents(peerId);
         if (!list) {
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "записей нет");
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "событий нет");
             return;
         }
         // снекбар останавливает «вращение» на кнопке
-        if (peerId < 2000000000) await answerEvent(o.event_id || o.id, o.user_id, peerId, "выше список");
-        else await answerEvent(o.event_id || o.id, o.user_id, peerId, "список — в личке");
+        await answerEvent(o.event_id || o.id, o.user_id, peerId, "список событий");
         // в личном чате — отдельным сообщением (не reply), в групповом — сначала в личку автора
         if (peerId < 2000000000) await messagesSend(peerId, list);
         else await sendToUserFirst(o.user_id, peerId, list);
     } else if (payload === "del:no") {
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, "отменено");
-        await messagesSend(peerId, "Удаление отменено.", 0, 0, relKeyboard(peerId));
+        await answerEvent(o.event_id || o.id, o.user_id, peerId, "отмена удаления");
     } else if (payload.startsWith("rel:")) {
         const key = payload.slice(4);
         if (!REL_DEFS[key]) return;
@@ -1037,7 +1034,8 @@ async function handleReaction(o) {
         }
         const text = jubileeText(rec, "", true);
         console.log("reaction 👀: детально", rec.n, rec.d, "peer", peerId);
-        if (peerId < 2000000000) await messagesSend(peerId, text, 0, cmid);
+        // отдельным сообщением, не reply; в групповом чате — сначала в личку
+        if (peerId < 2000000000) await messagesSend(peerId, text);
         else await sendToUserFirst(from, peerId, text);
         return;
     }
