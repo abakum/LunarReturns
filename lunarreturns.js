@@ -1000,6 +1000,49 @@ function upcomingEvents(peerId) {
         .join("\n");
 }
 
+// клавиатура «/»-ответа по чату и роли пользователя
+async function peerKeyboard(peerId, userId) {
+    if (peerId < 2000000000) return relKeyboard(peerId);
+    return (await isChatAdmin(peerId, userId)) ? ownerKeyboard() : bellKeyboard();
+}
+
+// текст сообщения по cmid беседы; null если недоступен
+async function cmidText(peerId, cmid) {
+    try {
+        const res = await vkApi("messages.getByConversationMessageId", {
+            peer_id: peerId, conversation_message_ids: cmid
+        });
+        return res.items?.[0]?.text ?? null;
+    } catch (e) {
+        return null;
+    }
+}
+
+// разбить текст на куски < 4000 символов по границам строк
+function splitText(text) {
+    if (text.length < 4000) return [text];
+    const parts = [];
+    for (let line of text.split("\n")) {
+        const last = parts[parts.length - 1];
+        if (last !== undefined && last.length + line.length + 1 < 4000) parts[parts.length - 1] += "\n" + line;
+        else parts.push(line);
+    }
+    return parts;
+}
+
+// ответ на кнопку — правка исходного «/»-сообщения, при ошибке — новое сообщение
+async function editOrigin(o, text, kb) {
+    try {
+        await vkApi("messages.edit", {
+            peer_id: o.peer_id, conversation_message_id: o.conversation_message_id,
+            message: text, keyboard: kb
+        });
+    } catch (e) {
+        console.error("editOrigin:", e.message, "— отправляю сообщением");
+        await messagesSend(o.peer_id, text, 0, 0, kb);
+    }
+}
+
 async function handleEvent(o) {
     const p = unpay(o.payload);
     // нормализуем: {c} / {rel} либо строка "del" / "del:yes" / "rel:orth"
@@ -1031,17 +1074,20 @@ async function handleEvent(o) {
                 { action: { type: "callback", label: "❌", payload: JSON.stringify({ c: "del:no" }) }, color: "secondary" }
             ]]
         });
-        await messagesSend(peerId, "Удалить все события чата?\n" + list, 0, 0, kb);
+        await editOrigin(o, "Удалить все события чата?\n" + list, kb);
     } else if (payload === "del:yes") {
         const n = db.records.filter(r => r.peerId === peerId).length;
         db.records = db.records.filter(r => r.peerId !== peerId);
         saveDb();
         console.log("deleted", n, "records peer", peerId);
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "удалено событий: " + n);
-        await deleteByCmid(peerId, o.conversation_message_id);
+        await editOrigin(o, "Удалено событий: " + n + "\n" + HELP, await peerKeyboard(peerId, o.user_id));
     } else if (payload === "close") {
         await deleteByCmid(peerId, o.conversation_message_id);
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "закрыто");
+    } else if (payload === "del:no") {
+        await answerEvent(o.event_id || o.id, o.user_id, peerId, "отмена удаления");
+        await editOrigin(o, HELP, await peerKeyboard(peerId, o.user_id));
     } else if (payload === "bell") {
         const list = upcomingEvents(peerId);
         if (!list) {
@@ -1050,58 +1096,93 @@ async function handleEvent(o) {
         }
         // снекбар останавливает «вращение» на кнопке
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "список событий");
-        // отдельным сообщением (не reply)
-        await messagesSend(peerId, list);
-    } else if (payload === "del:no") {
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, "отмена удаления");
-        await deleteByCmid(peerId, o.conversation_message_id);
+        const parts = splitText(list);
+        await editOrigin(o, parts[0], await peerKeyboard(peerId, o.user_id));
+        for (let i = 1; i < parts.length; i++) await messagesSend(peerId, parts[i]);
     } else if (payload.startsWith("rel:")) {
         const key = payload.slice(4);
         if (!REL_DEFS[key]) return;
-        const on = toggleRel(peerId, key);
-        // снекбар останавливает «вращение» на кнопке
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, on ? "🔔 включены" : "🔕 выключены");
-        const text = REL_DEFS[key].icon + " " + REL_DEFS[key].name + " дни" +
-            (on ? "\n" + religiousYear(key) : "\nоповещения выключены");
-        await messagesSend(peerId, text, 0, 0, relKeyboard(peerId));
+        const head = REL_DEFS[key].icon + " " + REL_DEFS[key].name + " дни";
+        // календарь уже показан в этом сообщении (заголовок совпадает) — toggle,
+        // иначе первый тап: показать календарь
+        const cur = await cmidText(peerId, o.conversation_message_id);
+        const shown = cur !== null && cur.split("\n", 1)[0] === head;
+        if (shown) {
+            const on = toggleRel(peerId, key);
+            // снекбар останавливает «вращение» на кнопке
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, on ? "🔔 включены" : "🔕 выключены");
+            await editOrigin(o, head + "\n" + religiousYear(key), relKeyboard(peerId));
+        } else {
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "календарь на год");
+            await editOrigin(o, head + "\n" + religiousYear(key), relKeyboard(peerId));
+        }
     }
 }
 
 // реакции на ответы/уведомления бота; формат события (по факту):
 // { reacted_id, peer_id, cmid, reaction_id } — 👎 = 9, 👀 = REACTION_EYES_ID
 async function handleReaction(o) {
-    // событие без reaction_id (снятие реакции) — молча
-    if (o.reaction_id === undefined) return;
     const cmid = o.cmid ?? o.conversation_message_id ?? o.message_id;
     if (!cmid) return;
     const peerId = o.peer_id;
     const from = o.reacted_id ?? o.from_id ?? o.user_id;
     if (from <= 0) return; // реакции бота игнорируем
 
+    if (o.reaction_id === undefined) { // снятие реакции — сжать обратно
+        const rec = await findRecordByCmid(peerId, cmid);
+        if (!rec) {
+            console.log("reaction снята: запись не найдена (cmid", cmid, "peer", peerId, ")");
+            return;
+        }
+        try {
+            await vkApi("messages.edit", {
+                peer_id: peerId, conversation_message_id: cmid,
+                message: jubileeText(rec, "")
+            });
+            console.log("reaction снята: сжато", rec.n, rec.d, "peer", peerId);
+        } catch (e) {
+            console.error("reaction collapse:", e.message);
+        }
+        return;
+    }
     if (o.reaction_id === 9) { // 👎 — удалить событие
         const rec = await findRecordByCmid(peerId, cmid);
         if (!rec) return;
         db.records = db.records.filter(r => r !== rec);
         saveDb();
         console.log("reaction 👎: удалено событие", rec.n, rec.d, "peer", peerId);
-        // snackbar для реакций ВК не даёт (нет event_id) — отвечаем reply'ем
+        // правим сообщение события в пометку об удалении (реакции сохраняются),
+        // при неудаче — reply
         try {
-            await messagesSend(peerId, "🗑 Событие удалено: " + rec.n + " " + rec.d, 0, cmid);
+            await vkApi("messages.edit", {
+                peer_id: peerId, conversation_message_id: cmid,
+                message: "🗑 Событие удалено: " + rec.n + " " + rec.d
+            });
         } catch (e) {
-            console.error("reaction reply:", e.message);
+            console.error("reaction edit:", e.message, "— reply");
+            try {
+                await messagesSend(peerId, "🗑 Событие удалено: " + rec.n + " " + rec.d, 0, cmid);
+            } catch (e2) {
+                console.error("reaction reply:", e2.message);
+            }
         }
         return;
     }
-    if (REACTION_EYES_ID && o.reaction_id === REACTION_EYES_ID) { // 👀 — детально
+    if (REACTION_EYES_ID && o.reaction_id === REACTION_EYES_ID) { // 👀 — детализировать
         const rec = await findRecordByCmid(peerId, cmid);
         if (!rec) {
             console.log("reaction 👀: запись не найдена (cmid", cmid, "peer", peerId, ") — возможно, событие уже удалено");
             return;
         }
-        const text = jubileeText(rec, "", true);
-        console.log("reaction 👀: детально", rec.n, rec.d, "peer", peerId);
-        // отдельным сообщением, не reply
-        await messagesSend(peerId, text);
+        try {
+            await vkApi("messages.edit", {
+                peer_id: peerId, conversation_message_id: cmid,
+                message: jubileeText(rec, "", true)
+            });
+            console.log("reaction 👀: детально", rec.n, rec.d, "peer", peerId);
+        } catch (e) {
+            console.error("reaction detail:", e.message);
+        }
         return;
     }
     // неизвестная реакция: id в лог
