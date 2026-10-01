@@ -505,14 +505,21 @@ function parseTrigger(text) {
             return { n, error: "не знаю места «" + zone + "» — укажите город из списка приложения или сдвиг вида МСК+2 / UTC+5" };
         }
     }
-    const msk = new Date(Date.UTC(y, mo - 1, dd, hh, mm, 0) - diffMin * 60000);
     const pad = (x, l) => String(x).padStart(l, "0");
-    // без времени и пояса — как в приложении: { n, d }, расчёт в полдень
+    // без времени и пояса — как в приложении: { n, d }, расчёт в полдень;
+    // время без пояса уже МСК — сдвиг только при явной зоне
     const rec = { n };
     if (givenTime || zone) {
-        rec.d = msk.getUTCFullYear() + "-" + pad(msk.getUTCMonth() + 1, 2) + "-" + pad(msk.getUTCDate(), 2);
-        rec.h = msk.getUTCHours();
-        rec.m = msk.getUTCMinutes();
+        if (zone) {
+            const msk = new Date(Date.UTC(y, mo - 1, dd, hh, mm, 0) - diffMin * 60000);
+            rec.d = msk.getUTCFullYear() + "-" + pad(msk.getUTCMonth() + 1, 2) + "-" + pad(msk.getUTCDate(), 2);
+            rec.h = msk.getUTCHours();
+            rec.m = msk.getUTCMinutes();
+        } else {
+            rec.d = d;
+            rec.h = hh;
+            rec.m = mm;
+        }
     } else {
         rec.d = d;
     }
@@ -585,8 +592,8 @@ function toggleRel(peerId, key) {
     return s[key];
 }
 
-// клавиатура: как раньше — ряды [🗑, 🔔, ☦️], [☪️, ☸️], [✝️, ✡️],
-// в первый ряд справа добавлена ❌ (закрыть); состояние — 🔔 (вкл) / 🔕 (выкл)
+// клавиатура: по 4 кнопки в ряд, последняя — ❌ (закрыть, красная);
+// состояние — 🔔 (вкл) / 🔕 (выкл)
 function relKeyboard(peerId) {
     const s = getSettings(peerId);
     const mk = (label, payload, color) => ({
@@ -597,8 +604,8 @@ function relKeyboard(peerId) {
     return JSON.stringify({
         inline: true,
         buttons: [
-            [mk("🗑", { c: "del" }, "secondary"), mk("🔔", { c: "bell" }, "secondary"), mk("❌", { c: "close" }, "secondary")],
-            [btn("orth"), btn("islam"), btn("bud"), btn("cath"), btn("jud")]
+            [mk("🗑", { c: "del" }, "secondary"), mk("🔔", { c: "bell" }, "secondary"), btn("orth"), btn("islam")],
+            [btn("bud"), btn("cath"), btn("jud"), mk("❌", { c: "close" }, "secondary")]
         ]
     });
 }
@@ -609,15 +616,16 @@ function ownerKeyboard() {
         action: { type: "callback", label, payload: JSON.stringify(payload) },
         color: "secondary"
     });
-    return JSON.stringify({ inline: true, buttons: [[mk("🗑", { c: "del" }), mk("🔔", { c: "bell" })]] });
+    return JSON.stringify({ inline: true, buttons: [[mk("🗑", { c: "del" }), mk("🔔", { c: "bell" }), mk("❌", { c: "close" })]] });
 }
 
 // клавиатура обычного участника группового чата
 function bellKeyboard() {
-    return JSON.stringify({
-        inline: true,
-        buttons: [[{ action: { type: "callback", label: "🔔", payload: JSON.stringify({ c: "bell" }) }, color: "secondary" }]]
+    const mk = (label, payload) => ({
+        action: { type: "callback", label, payload: JSON.stringify(payload) },
+        color: "secondary"
     });
+    return JSON.stringify({ inline: true, buttons: [[mk("🔔", { c: "bell" }), mk("❌", { c: "close" })]] });
 }
 
 const snackbar = text => JSON.stringify({ type: "show_snackbar", text });
@@ -631,19 +639,52 @@ async function answerEvent(eventId, userId, peerId, text) {
     });
 }
 
-// удалить сообщение по conversation_message_id чата (глобальный id берётся
-// через messages.getByConversationMessageId — работает и после рестарта)
+// удалить сообщение по conversation_message_id чата. В личных чатах удаление
+// работает честно. В беседах messages.delete по conversation_message_ids
+// удаляет только для бота (даже с delete_for_all), поэтому там сначала
+// затираем сообщение messages.edit — текст и клавиатуру (правка своих
+// сообщений боту разрешена всегда) — затем удаляем best-effort
 async function deleteByCmid(peerId, cmid) {
-    if (!cmid) return;
+    if (!cmid) {
+        console.log("deleteByCmid: нет cmid");
+        return false;
+    }
+    if (peerId >= 2000000000) {
+        let wiped = false;
+        try {
+            await vkApi("messages.edit", {
+                peer_id: peerId, conversation_message_id: cmid,
+                message: HELP, keyboard: JSON.stringify({ inline: true, buttons: [] })
+            });
+            console.log("message edit: затёрто", cmid);
+            wiped = true;
+        } catch (e) {
+            console.error("message edit:", e.message); // уже удалено — ок
+        }
+        try {
+            const res = await vkApi("messages.delete", {
+                peer_id: peerId, conversation_message_ids: cmid, delete_for_all: 1
+            });
+            console.log("message delete", cmid, "->", JSON.stringify(res).slice(0, 200));
+        } catch (e) {
+            console.error("message delete:", e.message);
+        }
+        return wiped;
+    }
     try {
-        const res = await vkApi("messages.getByConversationMessageId", {
-            peer_id: peerId, conversation_message_ids: cmid
+        const res = await vkApi("messages.delete", {
+            peer_id: peerId, conversation_message_ids: cmid, delete_for_all: 1
         });
-        const mid = res.items?.[0]?.id;
-        if (!mid) return;
-        await vkApi("messages.delete", { message_ids: mid, delete_for_all: 1, spam: 1 });
+        const item = Array.isArray(res) ? res[0] : null;
+        if (item && item.error) {
+            console.log("message delete", cmid, "->", item.error.code, item.error.description);
+            return false;
+        }
+        console.log("message delete", cmid, "->", JSON.stringify(res).slice(0, 200));
+        return true;
     } catch (e) {
         console.error("message delete:", e.message);
+        return false;
     }
 }
 
@@ -797,6 +838,25 @@ let groupId = GROUP_ID;
 let ownerId = 0; // создатель сообщества (role=creator), 0 — неизвестен
 const REACTION_EYES_ID = 32; // 👀 (детально); 👍 = 4, 👎 = 9
 
+// админ беседы или создатель сообщества; кэш на 5 минут
+const adminCache = new Map();
+async function isChatAdmin(peerId, userId) {
+    if (userId === ownerId) return true;
+    const now = Date.now();
+    const hit = adminCache.get(peerId + ":" + userId);
+    if (hit !== undefined && now - hit.at < 5 * 60000) return hit.val;
+    let val = false;
+    try {
+        const r = await vkApi("messages.getConversationMembers", { peer_id: peerId });
+        val = (r.items || []).some(m => m.member_id === userId && m.is_admin);
+    } catch (e) {
+        console.log("admin check:", e.message);
+        val = false;
+    }
+    adminCache.set(peerId + ":" + userId, { at: now, val });
+    return val;
+}
+
 async function initOwner() {
     try {
         const r = await vkApi("groups.getMembers", { group_id: groupId, filter: "managers" });
@@ -859,6 +919,14 @@ async function longPollStep() {
                 if (groupId && Number(upd.group_id) !== groupId) continue;
                 const msg = upd.object.message || upd.object;
                 if (!msg || msg.peer_id === undefined) continue;
+                if (msg.action) { // сервисное: вход/выход участника и т.п.
+                    console.log("action:", msg.action.type, "peer", msg.peer_id, "member", msg.action.member_id ?? "");
+                    if (msg.action.type === "chat_invite_user" && msg.action.member_id !== -groupId) {
+                        await messagesSend(msg.peer_id, HELP, 0, msg.conversation_message_id,
+                            (ownerId && msg.action.member_id === ownerId) ? ownerKeyboard() : bellKeyboard());
+                    }
+                    continue;
+                }
                 if (!msg.text && !msg.payload) continue;
                 await handleMessage(msg.peer_id, String(msg.text || ""), msg.date, msg.id, msg.conversation_message_id, msg.from_id, unpay(msg.payload || ""));
             } else if (upd.type === "message_event" && upd.object) {
@@ -889,7 +957,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     if (isStart(text, payload)) {
         let kb;
         if (peerId < 2000000000) kb = relKeyboard(peerId);
-        else kb = (ownerId && fromId === ownerId) ? ownerKeyboard() : bellKeyboard();
+        else kb = (await isChatAdmin(peerId, fromId)) ? ownerKeyboard() : bellKeyboard();
         await messagesSend(peerId, HELP, msgId, convMsgId, kb);
         return;
     }
@@ -919,16 +987,6 @@ function unpay(p) {
     return String(p);
 }
 
-// сначала в личку автора, при ошибке — в групповой чат
-async function sendToUserFirst(userId, groupPeerId, text) {
-    try {
-        return await messagesSend(userId, text);
-    } catch (e) {
-        console.log("в личку не ушло (" + e.message.slice(0, 80) + ") — в чат");
-        return messagesSend(groupPeerId, text);
-    }
-}
-
 // «Имя ГГГГ-ММ-ДД[ ЧЧ:ММ]» в исходных датах, сортировка по ММ-ДД (не ломая
 // год); "" — записей нет
 function upcomingEvents(peerId) {
@@ -952,8 +1010,8 @@ async function handleEvent(o) {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "неизвестная кнопка");
         return;
     }
-    // 🗑/❌ в групповом чате — только владелец
-    if (peerId >= 2000000000 && ["del", "del:yes", "del:no"].includes(payload) && o.user_id !== ownerId) {
+    // 🗑/❌ в групповом чате — только админ беседы или создатель сообщества
+    if (peerId >= 2000000000 && ["del", "del:yes", "del:no"].includes(payload) && !(await isChatAdmin(peerId, o.user_id))) {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "только владелец");
         return;
     }
@@ -983,6 +1041,7 @@ async function handleEvent(o) {
         await deleteByCmid(peerId, o.conversation_message_id);
     } else if (payload === "close") {
         await deleteByCmid(peerId, o.conversation_message_id);
+        await answerEvent(o.event_id || o.id, o.user_id, peerId, "закрыто");
     } else if (payload === "bell") {
         const list = upcomingEvents(peerId);
         if (!list) {
@@ -991,9 +1050,8 @@ async function handleEvent(o) {
         }
         // снекбар останавливает «вращение» на кнопке
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "список событий");
-        // в личном чате — отдельным сообщением (не reply), в групповом — сначала в личку автора
-        if (peerId < 2000000000) await messagesSend(peerId, list);
-        else await sendToUserFirst(o.user_id, peerId, list);
+        // отдельным сообщением (не reply)
+        await messagesSend(peerId, list);
     } else if (payload === "del:no") {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "отмена удаления");
         await deleteByCmid(peerId, o.conversation_message_id);
@@ -1021,7 +1079,7 @@ async function handleReaction(o) {
     if (from <= 0) return; // реакции бота игнорируем
 
     if (o.reaction_id === 9) { // 👎 — удалить событие
-        const rec = findRecordByCmid(peerId, cmid);
+        const rec = await findRecordByCmid(peerId, cmid);
         if (!rec) return;
         db.records = db.records.filter(r => r !== rec);
         saveDb();
@@ -1042,9 +1100,8 @@ async function handleReaction(o) {
         }
         const text = jubileeText(rec, "", true);
         console.log("reaction 👀: детально", rec.n, rec.d, "peer", peerId);
-        // отдельным сообщением, не reply; в групповом чате — сначала в личку
-        if (peerId < 2000000000) await messagesSend(peerId, text);
-        else await sendToUserFirst(from, peerId, text);
+        // отдельным сообщением, не reply
+        await messagesSend(peerId, text);
         return;
     }
     // неизвестная реакция: id в лог
