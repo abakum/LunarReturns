@@ -473,8 +473,10 @@ function explicitZoneMinutes(s) {
     return (base + (m[2] === "+" ? 1 : -1) * Number(m[3])) * 60;
 }
 
-// 1: имя, 2-4: дата, 5-6: время, 7: зона в скобках, 8: зона без скобок
-const TRIGGER_RE = /^(.+?)\s+(\d{4})[-./]?(\d{2})[-./]?(\d{2})(?:\s+(\d{1,2})(?:[:.\u0433]?(\d{2}))?)?\s*(?:\(\s*([^)]+?)\s*\)|\b((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\s*[+-]\s*\d{1,2})\b)?\s*$/iu;
+// 1: имя, 2-4: дата, 5-6: время, 7: зона в скобках, 8: зона без скобок.
+// Без \b вокруг группы зоны: в юникод-режиме \b ASCII-only и не срабатывает
+// на кириллице («МСК+2» без скобок не разбиралось).
+const TRIGGER_RE = /^(.+?)\s+(\d{4})[-./]?(\d{2})[-./]?(\d{2})(?:\s+(\d{1,2})(?:[:.\u0433]?(\d{2}))?)?\s*(?:\(\s*([^)]+?)\s*\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\s*[+-]\s*\d{1,2}))?\s*$/iu;
 
 function parseTrigger(text) {
     const m = text.trim().match(TRIGGER_RE);
@@ -496,7 +498,9 @@ function parseTrigger(text) {
     if (zone) {
         const explicit = explicitZoneMinutes(zone);
         if (explicit !== null) {
-            diffMin = explicit;
+            // explicit — абсолютное смещение от UTC; cityDiffMin даёт смещение
+            // относительно МСК, приводим к нему: UTC+0 12:30 → МСК 15:30.
+            diffMin = explicit - 3 * 60;
             zoneLabel = zone;
         } else if (CITY_INDEX[zone.toLowerCase()]) {
             diffMin = cityDiffMin(CITY_INDEX[zone.toLowerCase()], d);
