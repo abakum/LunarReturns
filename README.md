@@ -25,6 +25,76 @@ JS-порт формул [abakum/MoonPhase](https://github.com/abakum/MoonPhase)
   (SigV4) на `GET`/`PUT` одного объекта `users/{uid}/db.json`. Подпись сверена
   побайтово с boto3 `generate_presigned_url`.
 
+## Telegram-бот (tgcloud, серверлесс)
+
+Порт логики VK-бота на платформу [Telegram Serverless](https://core.telegram.org/bots/serverless):
+`tgcloud/handlers/message.js` (триггеры «Имя ГГГГ-ММ-ДД [ЧЧ:ММ]» — как в VK-боте,
+`/today`, `/list`), `tgcloud/handlers/callback_query.js` (кнопки: удаление,
+подробно, настройки религиозных дайджестов), логика — `tgcloud/lib/`
+(astro/religion/parse/text, скопированы из `lunarreturns.js`), БД SQLite —
+`tgcloud/schema.js` (таблицы `events`, `settings`). Реакции 👎/👀 из VK заменены
+кнопками 🗑/🔍 под ответом бота.
+
+Деплой (нужен VPN и бот с включённым Serverless в @BotFather):
+
+```
+npx tgcloud login    # токен: @BotFather → бот → Serverless → CLI Access
+npx tgcloud push     # залить модули
+npx tgcloud migrate  # создать таблицы
+```
+
+Тест без деплоя: `npx tgcloud run handlers/message '{ chat: { id: 1 }, text: "Лёша 2024-03-01" }'`.
+
+Ежедневной рассылки нет (на платформе нет планировщика) — `/today` по запросу.
+Локальная копия документации платформы: `docs/tgcloud-serverless.md`.
+
+### Создание бота lunarreturns в Telegram (один раз)
+
+Нужен VPN (api.telegram.org недоступен из РФ напрямую) и Node.js ≥ 18.
+
+1. **Зарегистрировать бота** у [@BotFather](https://t.me/BotFather):
+   `/newbot` → имя (например, «LunarReturns») → username
+   (например, `lunarreturns_bot`; должен заканчиваться на `bot`).
+   Bot API-токен, который он выдаст, **не нужен** — код бота живёт на
+   инфраструктуре Telegram и токенов в репо не содержит.
+2. **Включить Serverless**: в @BotFather открыть созданного бота →
+   **Serverless** → переключатель **on**. Это открывает хендлеры, библиотеку,
+   БД и CLI-токен бота.
+   Нет кнопки **Serverless** в меню бота — бета включена не для всех
+   (постепенный раскат, зависит от региона): откройте **Mini App** бота
+   @BotFather и запросите добавление в список ожидания Serverless-беты. После
+   добавления кнопка появится в меню бота.
+3. **Получить CLI-токен**: там же → **Serverless** → **CLI Access** →
+   **Access token** (вид `app<id>:<secret>`). Токен отдельный, не бот-токен.
+
+### Установка кода бота из tgcloud/ (клон репо на новую машину)
+
+```
+git clone https://github.com/abakum/LunarReturns && cd LunarReturns
+npm install -g @tgcloud/cli   # CLI 0.2+; либо npx tgcloud везде ниже
+npx tgcloud login             # вставить CLI-токен из шага 3 выше
+npx tgcloud status            # покажет все модули как new — ещё не задеплоены
+npx tgcloud push              # залить schema/lib/handlers в облако бота
+npx tgcloud migrate           # создать таблицы events и settings (интерактив, подтвердить)
+npx tgcloud webhook           # должно быть In sync с handlers/message, callback_query
+```
+
+Токен сохраняется в `.tgcloud/` (gitignored). Обновления кода дальше —
+правки в `tgcloud/` → `npx tgcloud status` (что изменилось) →
+`npx tgcloud push`; изменения `tgcloud/schema.js` — отдельный
+`npx tgcloud migrate` после push.
+
+### Проверка живого бота
+
+1. Открыть бота в Telegram → `/start` → справка + клавиатура настроек
+   (религии 🔔/🔕, 🗑 все события, ❌).
+2. Отправить «Лёша 2024-03-01» → юбилейный ответ с кнопками 🗑/🔍;
+   повтор с другим временем — обновление, не дубль.
+3. `/today` — события и религиозные праздники сегодня (МСК); `/list` — все
+   события чата.
+4. 🗑 под ответом → подтверждение → «🗑 Событие удалено»; 🔍 — подробный
+   расчёт.
+
 ## Развёртывание
 
 ### 1. Приложение Яндекс ID (единственный полностью ручной шаг)

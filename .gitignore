@@ -4,3 +4,5 @@ __pycache__/
 .vapid.env
 db.json
 .env
+.tgcloud/
+node_modules/
