@@ -80,7 +80,7 @@ globalThis.__tgdev = {
             m.markup = params.reply_markup;
             m.flat = flatButtons(m.markup);
             console.log(`[${m.n}] текст →`);
-            String(m.text).split('\n').slice(0, 3).forEach(l => console.log('    ' + l));
+            String(m.text).split('\n').forEach(l => console.log('    ' + l));
             if (m.flat.length) { console.log('    клавиатура →'); showButtons(m); }
         } else if (method === 'answerCallbackQuery') {
             const kind = params.show_alert ? 'alert' : 'toast';
