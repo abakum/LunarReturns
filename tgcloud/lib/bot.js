@@ -9,8 +9,7 @@ import { jubileeText } from './text.js';
 export const HELP = "Отправьте «Имя ГГГГ-ММ-ДД [ЧЧ:ММ]» — покажу лунно-солнечные юбилеи.\n"
     + "Можно с зоной: «… 12:30 (Пермь)» или «… 12:30 МСК+2», по одной строке на событие.\n"
     + "/today — события и религиозные праздники сегодня (МСК)\n"
-    + "/list — все события этого чата\n"
-    + "Кнопки под ответом: 🗑 удалить, 🔍 подробно.";
+    + "Кнопки под ответом: 👎 удалить, 👀 подробно.";
 
 const DEFAULT_SETTINGS = { orth: false, islam: false, bud: false, cath: false, jud: false };
 
@@ -19,17 +18,37 @@ export async function getSettings(chatId) {
     return row || { chatId, ...DEFAULT_SETTINGS };
 }
 
-// inline-клавиатура настроек: 🗑 (удалить всё) + религии (🔔/🔕) + ❌
+// inline-клавиатура настроек (личка): 🗑 (удалить всё) + 🔔 (список) + религии (🔔/🔕) + ❌
+// раскладка как в VK relKeyboard: [🗑, 🔔, orth, islam] / [bud, cath, jud, ❌]
 export function relMarkup(chatId, s) {
     const btn = (text, data) => ({ text, callback_data: data });
     const rel = key => btn(REL_DEFS[key].icon + (s[key] ? "🔔" : "🔕"), "rel:" + key);
-    const row = REL_ORDER.map(rel);
     return {
         inline_keyboard: [
-            [btn("🗑 все события", "del")],
-            row,
-            [btn("❌", "close")]
+            [btn("🗑", "del"), btn("🔔", "bell"), rel("orth"), rel("islam")],
+            [rel("bud"), rel("cath"), rel("jud"), btn("❌", "close")]
         ]
+    };
+}
+
+// клавиатура админа группы: 🗑 (удалить всё), 🔔 (список), ❌ (как ownerKeyboard VK)
+export function ownerMarkup() {
+    return {
+        inline_keyboard: [[
+            { text: "🗑", callback_data: "del" },
+            { text: "🔔", callback_data: "bell" },
+            { text: "❌", callback_data: "close" },
+        ]]
+    };
+}
+
+// клавиатура участника группы: 🔔 (список), ❌ (как bellKeyboard VK)
+export function bellMarkup() {
+    return {
+        inline_keyboard: [[
+            { text: "🔔", callback_data: "bell" },
+            { text: "❌", callback_data: "close" },
+        ]]
     };
 }
 
@@ -50,10 +69,12 @@ export async function todayText(chatId) {
     return parts.join("\n\n");
 }
 
-// «Имя ГГГГ-ММ-ДД[ ЧЧ:ММ]» по возрастанию ММ-ДД; "" — событий нет
-export async function upcomingText(chatId) {
+// «Имя ГГГГ-ММ-ДД[ ЧЧ:ММ]»; "" — событий нет.
+// byFullDate=false — по возрастанию ММ-ДД (список 🔔), true — по полной дате
+// ГГГГ-ММ-ДД (подтверждение удаления)
+export async function upcomingText(chatId, byFullDate = false) {
     const rows = await db.select().from(events).where(eq(events.chatId, chatId)).all();
-    const key = r => r.date.slice(5) + " " + (r.hour !== null && r.hour !== undefined ? String(r.hour).padStart(2, "0") + String(r.minute ?? 0).padStart(2, "0") : "");
+    const key = r => (byFullDate ? r.date : r.date.slice(5)) + " " + (r.hour !== null && r.hour !== undefined ? String(r.hour).padStart(2, "0") + String(r.minute ?? 0).padStart(2, "0") : "");
     return rows
         .sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0))
         .map(r => r.name + " " + r.date + (r.hour !== null && r.hour !== undefined ? " " + String(r.hour).padStart(2, "0") + ":" + String(r.minute).padStart(2, "0") : ""))
@@ -75,14 +96,34 @@ export async function upsertEvent(chatId, rec) {
     return row;
 }
 
-// кнопки под ответом бота на триггер
+// кнопки под ответом бота на триггер: 👎 — удалить событие (как реакция VK), 👀 — подробно
 export function eventMarkup(id) {
     return {
         inline_keyboard: [[
-            { text: "🗑", callback_data: "del1:" + id },
-            { text: "🔍", callback_data: "det:" + id },
+            { text: "👎", callback_data: "del1:" + id },
+            { text: "👀", callback_data: "det:" + id },
         ]]
     };
+}
+
+// админ ли пользователь в чате (в личке — да, роли нет)
+export async function chatAdmin(chat, userId) {
+    if (!chat || chat.type === 'private') return true;
+    if (!userId) return false;
+    try {
+        const m = await api.getChatMember({ chat_id: chat.id, user_id: userId });
+        return !!m && (m.status === 'creator' || m.status === 'administrator');
+    } catch (e) {
+        console.error('getChatMember:', e.message);
+        return false;
+    }
+}
+
+// клавиатура /start: личка — полная, админ группы — ownerMarkup, участник — bellMarkup
+// (паритет VK: relKeyboard/ownerKeyboard/bellKeyboard)
+export function startMarkup(chat, isAdmin, chatId, s) {
+    if (chat.type === 'private') return relMarkup(chatId, s);
+    return isAdmin ? ownerMarkup() : bellMarkup();
 }
 
 // sendMessage с разбиением длинного текста (лимит TG 4096)

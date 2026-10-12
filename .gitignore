@@ -6,3 +6,4 @@ db.json
 .env
 .tgcloud/
 node_modules/
+dev/mock-db.json

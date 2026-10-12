@@ -14,7 +14,7 @@
 tgcloud/
 ├─ schema.js               # таблицы SQLite
 ├─ handlers/
-│  ├─ message.js           # /start, /today, /list, триггеры «Имя ГГГГ-ММ-ДД [ЧЧ:ММ]»
+│  ├─ message.js           # /start, /today, триггеры «Имя ГГГГ-ММ-ДД [ЧЧ:ММ]»
 │  └─ callback_query.js    # кнопки: удаления, детально, настройки религий
 └─ lib/
    ├─ astro.js             # астро-расчёты (port из lunarreturns.js)
@@ -75,28 +75,34 @@ export const settings = table('settings', {
 
 Текст сообщения; всё в МСК (как в VK-боте):
 
-1. `/start` или `/` → HELP + inline-клавиатура настроек религий (toggle).
+1. `/start` или `/` → HELP + inline-клавиатура по роли: личка — религии
+   (`relMarkup`), админ группы — [🗑, 🔔, ❌] (`ownerMarkup`), участник —
+   [🔔, ❌] (`bellMarkup`); 🔔 — список записей.
 2. `/today` → события этого чата с сегодняшним MM-DD: по каждому `jubileeText(rec)`
    (плюс религиозный дайджест `religiousDigest(settings)`, если включены).
    Аналог dailyCheck, но без lastSentYear/записи в БД.
-3. `/list` → upcomingEvents(chatId): сортировка по MM-DD, «событий нет» если пусто.
-4. Иначе — по строкам, как `handleMessage`: `parseTrigger(line)`; ошибка →
+3. Иначе — по строкам, как `handleMessage`: `parseTrigger(line)`; ошибка →
    «💥 строка\nошибка»; успех → upsert в events + ответ `jubileeText(rec)`
-   с inline-кнопками [🗑 удалить] [🔍 детально] (callback_data
-   `del:<id>` / `det:<id>` — id строки events). Не-триггеры игнорируются.
+   с inline-кнопками [👎 удалить] [👀 детально] (callback_data
+   `del1:<id>` / `det:<id>` — id строки events). Не-триггеры игнорируются.
 
 ## handlers/callback_query.js
 
-- `rel:<key>` — toggle религии в settings (upsert строки настроек),
-  `answerCallbackQuery` + обновить клавиатуру `editMessageReplyMarkup`.
-- `del:<id>` → `del:yes:<id>` / `del:no` — подтверждение удаления события
-  (аналог payload del/del:yes/del:no VK): показать имя+дату, на `yes` —
-  `db.delete(events).where(eq(events.id, id))`, ответ «🗑 Событие удалено».
-- `det:<id>` — ответ `jubileeText(rec, '', true)` (detail) как
-  `answerCallbackQuery({ text, show_alert: true })`.
+- `rel:<key>` — первый тап: календарь религии на год (`religiousYear`); второй
+  тап (заголовок сообщения совпадает) — toggle религии в settings (upsert
+  строки настроек), `answerCallbackQuery` + `editMessageText` с календарём.
+- `bell` — список записей чата (`upcomingText`, по MM-DD) в этом же сообщении,
+  клавиатура сохраняется.
+- `del` — подтверждение удаления всех событий со списком (по ГГГГ-ММ-ДД):
+  `del:yes` — `db.delete(events).where(eq(events.chatId, chatId))`,
+  «🗑 Удалено событий: N»; `del:no` — вернуть клавиатуру по роли
+  (религии — только в личке).
+- `del1:<id>` — мгновенное удаление одного события (как реакция 👎 VK),
+  «🗑 Событие удалено».
+- `det:<id>` — ответ `jubileeText(rec, '', true)` (detail) через `sendLong`.
 
-Реакции 👎/👀 из VK НЕ переносятся: надёжнее кнопки под ответом бота
-(reaction-апдейты боту в группах приходят не всегда).
+Реакции 👎/👀 из VK перенесены кнопками под ответом бота: 👎 — удалить,
+👀 — детально (reaction-апдейты боту в группах приходят не всегда).
 
 ## Подготовка и деплой (ручные шаги, один раз)
 
@@ -116,20 +122,26 @@ export const settings = table('settings', {
   `node -e "import('./tgcloud/lib/parse.js').then(...)"` — сравнить вывод
   la()/parseTrigger() с lunarreturns.js на нескольких датах.
 - `npx tgcloud run handlers/message '{ chat: { id: 1 }, text: "Лёша 2024-03-01" }'`
-  и аналогично для /today, /list; callback — `run handlers/callback_query
-  '{ id: "1", data: "del:1", message: { chat: { id: 1 } } }'`.
+  и аналогично для /today; callback — `run handlers/callback_query
+  '{ id: "1", data: "del1:1", message: { chat: { id: 1 } } }'`.
 
 ## Валидация (живой бот)
 
-1. /start → справка + клавиатура религий; тогглы переключаются.
-2. «Имя ГГГГ-ММ-ДД» → юбилейный ответ с кнопками; повтор с другим временем —
-   обновление (upsert), не дубль.
-3. /list — сортировка по MM-DD; /today — сегодняшние события + дайджест.
-4. 🗑 → подтверждение → удаление; 🔍 → детальный ответ.
+1. /start → справка + клавиатура по роли; тогглы религий переключаются
+   (первый тап — календарь на год).
+2. «Имя ГГГГ-ММ-ДД» → юбилейный ответ с кнопками [👎] [👀]; повтор с другим
+   временем — обновление (upsert), не дубль.
+3. 🔔 — список записей по MM-DD; /today — сегодняшние события + дайджест.
+4. 🗑 (в клавиатуре) → подтверждение со списком (по ГГГГ-ММ-ДД) → удаление;
+   👎 под ответом — мгновенное удаление; 👀 — детальный ответ.
 5. `npx tgcloud status` — чисто после деплоя.
 
-## Вне объёма
+## Вне объёма (порта)
 
 - Ежедневная рассылка (нет планировщика; вернуться, когда Telegram добавит).
 - Mini App, endpoints/, синхронизация событий с VK-ботом (базы раздельные).
 - message_reaction (заменено кнопками).
+
+Локальная отладка без облака (REPL с моком sdk) — отдельный план:
+`.kilo/plans/20261012-tgdev-repl.md`.
+

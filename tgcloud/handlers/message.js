@@ -1,7 +1,7 @@
 import { api } from 'sdk';
 import { parseTrigger } from '../lib/parse.js';
 import { jubileeText } from '../lib/text.js';
-import { HELP, relMarkup, getSettings, todayText, upcomingText, upsertEvent, eventMarkup, sendLong } from '../lib/bot.js';
+import { HELP, startMarkup, chatAdmin, getSettings, todayText, upsertEvent, eventMarkup, sendLong } from '../lib/bot.js';
 
 export default async function (message, ctx) {
     const chatId = message.chat.id;
@@ -9,17 +9,17 @@ export default async function (message, ctx) {
     if (!text) return;
 
     if (text === "/start" || text === "/start@lunarreturns_bot" || text === "/") {
+        const admin = await chatAdmin(message.chat, message.from?.id);
         await api.sendMessage({
             chat_id: chatId, text: HELP,
-            reply_markup: relMarkup(chatId, await getSettings(chatId)),
+            reply_markup: startMarkup(message.chat, admin, chatId, await getSettings(chatId)),
         });
         return;
     }
 
-    if (text === "/today" || text === "/list") {
-        const body = text === "/today" ? await todayText(chatId) : await upcomingText(chatId);
-        const none = text === "/today" ? "Сегодня событий нет" : "Событий нет";
-        await api.sendMessage({ chat_id: chatId, text: body || none });
+    if (text === "/today") {
+        const body = await todayText(chatId);
+        await api.sendMessage({ chat_id: chatId, text: body || "Сегодня событий нет" });
         return;
     }
 

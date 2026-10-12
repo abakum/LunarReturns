@@ -1,8 +1,9 @@
-import { api } from 'sdk';
+import { api, db } from 'sdk';
 import { eq } from 'sdk/db';
 import { events, settings } from '../schema.js';
 import { jubileeText } from '../lib/text.js';
-import { relMarkup, upcomingText, getSettings, sendLong } from '../lib/bot.js';
+import { REL_DEFS, religiousYear } from '../lib/religion.js';
+import { relMarkup, upcomingText, getSettings, sendLong, startMarkup, chatAdmin } from '../lib/bot.js';
 
 export default async function (cq, ctx) {
     const chatId = cq.message?.chat?.id;
@@ -11,46 +12,75 @@ export default async function (cq, ctx) {
         api.answerCallbackQuery({ callback_query_id: cq.id, text, show_alert: !!alert }).catch(() => {});
     const editMarkup = markup =>
         api.editMessageReplyMarkup({ chat_id: chatId, message_id: cq.message.message_id, reply_markup: markup }).catch(() => {});
+    const editText = (text, markup) =>
+        api.editMessageText({ chat_id: chatId, message_id: cq.message.message_id, text, reply_markup: markup }).catch(() => {});
 
     if (data.startsWith("rel:")) {
         const key = data.slice(4);
-        const row = await db.select().from(settings).where(eq(settings.chatId, chatId)).get();
-        const cur = row ? row[key] : false;
-        if (row) {
-            await db.update(settings).set({ [key]: !cur }).where(eq(settings.chatId, chatId)).run();
+        if (!REL_DEFS[key]) { await answer(); return; }
+        const head = REL_DEFS[key].icon + " " + REL_DEFS[key].name + " дни";
+        // календарь уже показан в этом сообщении (заголовок совпадает) — toggle,
+        // иначе первый тап: показать календарь (как в VK-боте)
+        const cur = cq.message?.text;
+        const shown = cur !== undefined && cur.split("\n", 1)[0] === head;
+        if (shown) {
+            const row = await db.select().from(settings).where(eq(settings.chatId, chatId)).get();
+            const curVal = row ? row[key] : false;
+            if (row) {
+                await db.update(settings).set({ [key]: !curVal }).where(eq(settings.chatId, chatId)).run();
+            } else {
+                const vals = { chatId };
+                vals[key] = true;
+                await db.insert(settings).values(vals).run();
+            }
+            await answer((!curVal ? "🔔 " : "🔕 ") + key);
         } else {
-            const vals = { chatId };
-            vals[key] = true;
-            await db.insert(settings).values(vals).run();
+            await answer("календарь на год");
         }
+        await editText(head + "\n" + religiousYear(key), relMarkup(chatId, await getSettings(chatId)));
+        return;
+    }
 
-        await answer((!cur ? "🔔 " : "🔕 ") + key);
-        await editMarkup(relMarkup(chatId, await getSettings(chatId)));
+    if (data === "bell") {
+        const list = await upcomingText(chatId);
+        if (!list) { await answer("Событий нет"); return; }
+        await answer("список событий");
+        // как в VK: список в этом же сообщении, клавиатура остаётся
+        const parts = splitList(list);
+        await editText(parts[0], cq.message.reply_markup);
+        for (let i = 1; i < parts.length; i++) {
+            await api.sendMessage({ chat_id: chatId, text: parts[i] });
+        }
         return;
     }
 
     if (data === "del") {
-        const list = await upcomingText(chatId);
+        // сортировка по полной дате ГГГГ-ММ-ДД (в отличие от списка 🔔 — по ММ-ДД)
+        const list = await upcomingText(chatId, true);
         if (!list) { await answer("Событий нет"); return; }
-        await editMarkup({
+        await answer("Удалить все события чата?");
+        // как в VK: подтверждение с показом списка событий
+        await editText("Удалить все события чата?\n" + list, {
             inline_keyboard: [[
                 { text: "🗑 удалить всё", callback_data: "del:yes" },
                 { text: "❌ отмена", callback_data: "del:no" },
             ]]
         });
-        await answer("Удалить все события чата?");
         return;
     }
 
     if (data === "del:yes") {
+        const n = await db.$count(events, eq(events.chatId, chatId));
         await db.delete(events).where(eq(events.chatId, chatId)).run();
-        await editMarkup(undefined);
+        await editText("🗑 Удалено событий: " + n, undefined);
         await answer("🗑 События чата удалены");
         return;
     }
 
     if (data === "del:no") {
-        await editMarkup(relMarkup(chatId, await getSettings(chatId)));
+        // вернуть клавиатуру по чату/роли: религии — только в личке
+        const isAdmin = await chatAdmin(cq.message.chat, cq.from?.id);
+        await editMarkup(startMarkup(cq.message.chat, isAdmin, chatId, await getSettings(chatId)));
         await answer("Отменено");
         return;
     }
@@ -62,16 +92,14 @@ export default async function (cq, ctx) {
     }
 
     if (data.startsWith("del1:")) {
+        // мгновенное удаление одного события (как реакция 👎 в VK-боте)
         const id = Number(data.slice(5));
         const row = await db.select().from(events).where(eq(events.id, id)).get();
         if (!row || row.chatId !== chatId) { await answer("Событие не найдено"); return; }
-        await editMarkup({
-            inline_keyboard: [[
-                { text: "🗑 " + row.name + " — точно?", callback_data: "del1s:" + id },
-                { text: "❌", callback_data: "close" },
-            ]]
-        });
-        await answer("Подтвердите удаление");
+        await db.delete(events).where(eq(events.id, id)).run();
+        await editMarkup(undefined);
+        await answer("🗑 Событие удалено");
+        console.log("deleted:", row.name, row.date, "chat", chatId);
         return;
     }
 
@@ -99,4 +127,20 @@ export default async function (cq, ctx) {
     }
 
     await answer();
+}
+
+// разбить длинный список на куски < 4000 по границам строк (как splitText VK)
+function splitList(text) {
+    const MAX = 4000;
+    if (text.length <= MAX) return [text];
+    const parts = [];
+    let rest = text;
+    while (rest.length > MAX) {
+        let cut = rest.lastIndexOf("\n", MAX);
+        if (cut < MAX / 2) cut = MAX;
+        parts.push(rest.slice(0, cut));
+        rest = rest.slice(cut).replace(/^\n/, "");
+    }
+    if (rest) parts.push(rest);
+    return parts;
 }
