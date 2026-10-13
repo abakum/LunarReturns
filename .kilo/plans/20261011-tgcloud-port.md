@@ -121,7 +121,7 @@ export const settings = table('settings', {
 - Чистая логика (lib/) не импортирует `sdk` → проверяется в Node:
   `node -e "import('./tgcloud/lib/parse.js').then(...)"` — сравнить вывод
   la()/parseTrigger() с lunarreturns.js на нескольких датах.
-- `npx tgcloud run handlers/message '{ chat: { id: 1 }, text: "Лёша 2024-03-01" }'`
+- `npx tgcloud run handlers/message '{ chat: { id: 1 }, text: "Ада Байрон 1815-12-10" }'`
   и аналогично для /today; callback — `run handlers/callback_query
   '{ id: "1", data: "del1:1", message: { chat: { id: 1 } } }'`.
 

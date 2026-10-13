@@ -1,22 +1,53 @@
-// Мок sdk/db для локальной отладки (dev/repl.mjs копирует в node_modules/sdk).
-// In-memory таблицы с персистентностью в JSON (по умолчанию dev/mock-db.json),
-// ровно тот подвыбор Drizzle-билдера, который использует tgcloud/ этого бота.
+// Мок sdk/db для локальной отладки (dev/repl.mjs / dev/poll.mjs копируют
+// в node_modules/sdk). In-memory таблицы, персистентность — dev/db.json
+// в формате VK-бота (records/settings, поля peerId/n/d/h/m), маппинг на
+// границе persistence: схема и query-билдер работают с chatId/name/date.
 import fs from 'node:fs';
 import path from 'node:path';
 
-const DB_FILE = process.env.LR_MOCK_DB || 'dev/mock-db.json';
+const DB_FILE = process.env.LR_DEV_DB || 'dev/db.json';
 const state = { tables: {} };
+
+// events → records (peerId/n/d[, h, m]/id), settings → объект по peerId
+function save() {
+    const out = { records: [], settings: {} };
+    for (const r of tables().events || []) {
+        const rec = { peerId: r.chatId, n: r.name, d: r.date };
+        if (r.hour !== null && r.hour !== undefined) { rec.h = r.hour; rec.m = r.minute; }
+        rec.id = r.id;
+        out.records.push(rec);
+    }
+    for (const s of tables().settings || []) {
+        const v = {};
+        for (const k of ['orth', 'islam', 'bud', 'cath', 'jud']) if (s[k]) v[k] = true;
+        out.settings[String(s.chatId)] = v;
+    }
+    fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
+    fs.writeFileSync(DB_FILE, JSON.stringify(out, null, 1) + '\n');
+}
 
 function load() {
     try {
         const parsed = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-        if (parsed && typeof parsed === 'object') state.tables = parsed;
+        if (!parsed || typeof parsed !== 'object') return;
+        const events = [];
+        for (const rec of parsed.records || []) {
+            const row = { chatId: rec.peerId, name: rec.n, date: rec.d, hour: rec.h ?? null, minute: rec.m ?? null };
+            row.id = rec.id ?? 0;
+            events.push(row);
+        }
+        // id: сохранить числовую монотонность (autoincrement = max+1)
+        let maxId = events.reduce((m, r) => Math.max(m, r.id || 0), 0);
+        for (const r of events) if (!r.id) r.id = ++maxId;
+        state.tables.events = events;
+        const settings = [];
+        for (const [peer, v] of Object.entries(parsed.settings || {})) {
+            const row = { chatId: Number(peer) };
+            for (const k of ['orth', 'islam', 'bud', 'cath', 'jud']) row[k] = !!v[k];
+            settings.push(row);
+        }
+        state.tables.settings = settings;
     } catch { /* нет файла или повреждён — пусто */ }
-}
-
-function save() {
-    fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
-    fs.writeFileSync(DB_FILE, JSON.stringify(state.tables, null, 1) + '\n');
 }
 load();
 

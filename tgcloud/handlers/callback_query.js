@@ -3,7 +3,7 @@ import { eq } from 'sdk/db';
 import { events, settings } from '../schema.js';
 import { jubileeText } from '../lib/text.js';
 import { REL_DEFS, religiousYear } from '../lib/religion.js';
-import { relMarkup, upcomingText, getSettings, startMarkup, chatAdmin, eventMarkup } from '../lib/bot.js';
+import { HELP, relMarkup, upcomingText, getSettings, startMarkup, chatAdmin, eventMarkup } from '../lib/bot.js';
 
 export default async function (cq, ctx) {
     const chatId = cq.message?.chat?.id;
@@ -14,8 +14,8 @@ export default async function (cq, ctx) {
         api.editMessageReplyMarkup({ chat_id: chatId, message_id: cq.message.message_id, reply_markup: markup }).catch(() => {});
     // как editOrigin в VK: при неудачной правке (сообщение старое/удалено) —
     // новым сообщением; «message is not modified» (повторное нажатие) глушим
-    const editText = (text, markup) =>
-        api.editMessageText({ chat_id: chatId, message_id: cq.message.message_id, text, reply_markup: markup })
+    const editText = (text, markup, parseMode) =>
+        api.editMessageText({ chat_id: chatId, message_id: cq.message.message_id, text, parse_mode: parseMode, reply_markup: markup })
             .catch(e => {
                 if (e && /not modified/i.test(e.description || e.message || "")) return;
                 console.error("editMessageText:", e.message, "— отправляю сообщением");
@@ -48,9 +48,17 @@ export default async function (cq, ctx) {
         return;
     }
 
+    // сообщение со справкой (/start) редактировать нельзя — только тост;
+    // в остальных (со списком событий) при пустом списке стираем показанное
+    const isHelp = cq.message?.text === HELP;
+
     if (data === "bell") {
         const list = await upcomingText(chatId);
-        if (!list) { await answer("Событий нет"); return; }
+        if (!list) {
+            if (!isHelp) await editText("Событий нет", cq.message.reply_markup);
+            await answer("Событий нет");
+            return;
+        }
         await answer("список событий");
         // как в VK: список в этом же сообщении, клавиатура остаётся
         const parts = splitList(list);
@@ -73,7 +81,11 @@ export default async function (cq, ctx) {
     if (data === "del") {
         // сортировка по полной дате ГГГГ-ММ-ДД (в отличие от списка 🔔 — по ММ-ДД)
         const list = await upcomingText(chatId, true);
-        if (!list) { await answer("Событий нет"); return; }
+        if (!list) {
+            if (!isHelp) await editText("Событий нет", cq.message.reply_markup);
+            await answer("Событий нет");
+            return;
+        }
         await answer("Удалить все события чата?");
         // как в VK: подтверждение с показом списка событий
         await editText("Удалить все события чата?\n" + list, {
@@ -127,14 +139,13 @@ export default async function (cq, ctx) {
         if (!row || row.chatId !== chatId) { await answer("Событие не найдено"); return; }
         const rec = { n: row.name, d: row.date };
         if (row.hour !== null && row.hour !== undefined) { rec.h = row.hour; rec.m = row.minute; }
-        const t = cq.message?.text || "";
-        // признак детальности: текст сообщения совпадает с детальной версией
-        // (в проде .text без тегов/ентитей, в моке — с буквальными тегами)
-        const norm = s => s.replace(/<\/?tg-spoiler>/g, "");
-        const isDetail = t !== "" && norm(t) === norm(jubileeText(rec, "", true));
+        // сжатый вид отличается от детального спойлером: если в сообщении нет
+        // spoiler-entity — оно детальное (в моке entity эмулирует repl)
+        const ent = cq.message?.entities || [];
+        const isDetail = !ent.some(e => e.type === 'spoiler');
         await editText(
             jubileeText(rec, "", !isDetail),
-            eventMarkup(id));
+            eventMarkup(id), 'HTML');
         await answer(isDetail ? "сжато" : "подробно");
         return;
     }

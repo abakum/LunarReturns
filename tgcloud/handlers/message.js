@@ -8,7 +8,10 @@ export default async function (message, ctx) {
     const text = (message.text || "").trim();
     if (!text) return;
 
-    if (text === "/start" || text === "/start@lunarreturns_bot" || text === "/") {
+    // в группах команда приходит с упоминанием бота: /start@botname
+    const cmd = (text.match(/^\/[a-z_]+/i) || [""])[0].toLowerCase();
+
+    if (cmd === "/start" || text === "/") {
         const admin = await chatAdmin(message.chat, message.from?.id);
         await api.sendMessage({
             chat_id: chatId, text: HELP,

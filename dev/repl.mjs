@@ -33,7 +33,7 @@ const MOCK_DST = path.join(ROOT, 'node_modules', 'sdk');
 fs.cpSync(MOCK_SRC, MOCK_DST, { recursive: true });
 
 // ---- сброс БД по --fresh ----
-const DB_FILE = process.env.LR_MOCK_DB || path.join('dev', 'mock-db.json');
+const DB_FILE = process.env.LR_DEV_DB || path.join('dev', 'db.json');
 const dbAbs = path.isAbsolute(DB_FILE) ? DB_FILE : path.join(ROOT, DB_FILE);
 if (fresh && fs.existsSync(dbAbs)) fs.unlinkSync(dbAbs);
 
@@ -53,10 +53,32 @@ function showButtons(m) {
     console.log('    ' + m.flat.map((b, i) => `[${m.n}.${i + 1}] ${b.label}`).join('  '));
 }
 
+// как настоящий клиент: <tg-spoiler>…</tg-spoiler> → plain-текст + entity
+// (тексты бота всегда HTML — parse_mode шлётся во всех sendMessage/editText)
+function tgRender(text) {
+    const entities = [];
+    let plain = '';
+    let i = 0;
+    for (;;) {
+        const open = text.indexOf('<tg-spoiler>', i);
+        if (open === -1) break;
+        const close = text.indexOf('</tg-spoiler>', open);
+        if (close === -1) break;
+        plain += text.slice(i, open);
+        entities.push({ type: 'spoiler', offset: plain.length, length: close - open - '<tg-spoiler>'.length });
+        plain += text.slice(open + '<tg-spoiler>'.length, close);
+        i = close + '</tg-spoiler>'.length;
+    }
+    plain += text.slice(i);
+    return { text: plain, entities };
+}
+
 globalThis.__tgdev = {
+    role: ADMIN ? 'administrator' : 'member',
     onApi(method, params) {
         if (method === 'sendMessage') {
-            const m = { n: ++counter, text: params.text, markup: params.reply_markup };
+            const { text, entities } = tgRender(params.text);
+            const m = { n: ++counter, text, entities, markup: params.reply_markup };
             m.flat = flatButtons(m.markup);
             messages.push(m);
             console.log(`[${m.n}] sendMessage:`);
@@ -76,7 +98,9 @@ globalThis.__tgdev = {
         } else if (method === 'editMessageText') {
             const m = messages.find(x => x.n === params.message_id);
             if (!m) { console.log(`    editMessageText: нет сообщения ${params.message_id}`); return; }
-            m.text = params.text;
+            const r = tgRender(params.text);
+            m.text = r.text;
+            m.entities = r.entities;
             m.markup = params.reply_markup;
             m.flat = flatButtons(m.markup);
             console.log(`[${m.n}] текст →`);
@@ -117,7 +141,7 @@ const press = async (n, m) => {
         id: String(++updSeq),
         from: { id: 1, first_name: 'dev' },
         data: btn.data,
-        message: { chat: { id: CHAT, type: CHAT_TYPE }, message_id: n, text: msg.text, reply_markup: msg.markup },
+        message: { chat: { id: CHAT, type: CHAT_TYPE }, message_id: n, text: msg.text, entities: msg.entities || [], reply_markup: msg.markup },
     };
     try {
         await callbackHandler(cq, { update: { update_id: counter } });

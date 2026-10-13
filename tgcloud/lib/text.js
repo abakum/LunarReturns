@@ -9,18 +9,24 @@ function jubileeText(rec, note, detail = false) {
     const head = rec.n + " " + rec.d + (hasTime ? " " + String(rec.h).padStart(2, "0") + ":" + String(rec.m).padStart(2, "0") : "")
         + ageSuffix(rec.n, rec.d)
         + (note ? "\n" + note : "");
-    // годы до текущего включительно видны, спойлер — только будущие юбилеи
+    // годы до текущего включительно видны; сжатый вид — будущие юбилеи под
+    // спойлером, детальный — всё открыто (по наличию спойлера callback и
+    // различает сжатое/детальное)
     const years = la(t, detail);
     const thisYear = new Date().getFullYear();
     const parts = [];
     let future = [];
+    const futureBlock = () => {
+        const body = htmlEsc(future.join("\n"));
+        return detail ? body : "<tg-spoiler>" + body + "</tg-spoiler>";
+    };
     for (const line of years) {
         const m = line.match(/#(\d{4})г/);
         if (m && Number(m[1]) > thisYear) { future.push(line); continue; }
-        if (future.length) { parts.push("<tg-spoiler>" + htmlEsc(future.join("\n")) + "</tg-spoiler>"); future = []; }
+        if (future.length) { parts.push(futureBlock()); future = []; }
         parts.push(htmlEsc(line));
     }
-    if (future.length) parts.push("<tg-spoiler>" + htmlEsc(future.join("\n")) + "</tg-spoiler>");
+    if (future.length) parts.push(futureBlock());
     return htmlEsc(head) + "\n" + parts.join("\n");
 }
 
