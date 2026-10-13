@@ -1,5 +1,7 @@
 import { la, ageSuffix } from './astro.js';
 
+const htmlEsc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
 function jubileeText(rec, note, detail = false) {
     const hasTime = rec.h !== undefined && rec.m !== undefined;
     const [y, mo, d] = rec.d.split("-").map(Number);
@@ -7,7 +9,19 @@ function jubileeText(rec, note, detail = false) {
     const head = rec.n + " " + rec.d + (hasTime ? " " + String(rec.h).padStart(2, "0") + ":" + String(rec.m).padStart(2, "0") : "")
         + ageSuffix(rec.n, rec.d)
         + (note ? "\n" + note : "");
-    return head + "\n" + la(t, detail).join("\n");
+    // годы до текущего включительно видны, спойлер — только будущие юбилеи
+    const years = la(t, detail);
+    const thisYear = new Date().getFullYear();
+    const parts = [];
+    let future = [];
+    for (const line of years) {
+        const m = line.match(/#(\d{4})г/);
+        if (m && Number(m[1]) > thisYear) { future.push(line); continue; }
+        if (future.length) { parts.push("<tg-spoiler>" + htmlEsc(future.join("\n")) + "</tg-spoiler>"); future = []; }
+        parts.push(htmlEsc(line));
+    }
+    if (future.length) parts.push("<tg-spoiler>" + htmlEsc(future.join("\n")) + "</tg-spoiler>");
+    return htmlEsc(head) + "\n" + parts.join("\n");
 }
 
 export { jubileeText };

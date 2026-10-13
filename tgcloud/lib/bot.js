@@ -126,11 +126,12 @@ export function startMarkup(chat, isAdmin, chatId, s) {
     return isAdmin ? ownerMarkup() : bellMarkup();
 }
 
-// sendMessage с разбиением длинного текста (лимит TG 4096)
+// sendMessage с разбиением длинного текста (лимит TG 4096);
+// текст jubileeText — HTML со спойлерами, поэтому parse_mode всегда HTML
 export async function sendLong(chatId, text, replyMarkup) {
     const MAX = 4000;
     if (text.length <= MAX) {
-        await api.sendMessage({ chat_id: chatId, text, reply_markup: replyMarkup });
+        await api.sendMessage({ chat_id: chatId, text, parse_mode: 'HTML', reply_markup: replyMarkup });
         return;
     }
     const parts = [];
@@ -144,7 +145,7 @@ export async function sendLong(chatId, text, replyMarkup) {
     if (rest) parts.push(rest);
     for (let i = 0; i < parts.length; i++) {
         await api.sendMessage({
-            chat_id: chatId, text: parts[i],
+            chat_id: chatId, text: parts[i], parse_mode: 'HTML',
             reply_markup: i === parts.length - 1 ? replyMarkup : undefined,
         });
     }

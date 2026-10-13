@@ -3,7 +3,7 @@ import { eq } from 'sdk/db';
 import { events, settings } from '../schema.js';
 import { jubileeText } from '../lib/text.js';
 import { REL_DEFS, religiousYear } from '../lib/religion.js';
-import { relMarkup, upcomingText, getSettings, sendLong, startMarkup, chatAdmin } from '../lib/bot.js';
+import { relMarkup, upcomingText, getSettings, startMarkup, chatAdmin, eventMarkup } from '../lib/bot.js';
 
 export default async function (cq, ctx) {
     const chatId = cq.message?.chat?.id;
@@ -12,8 +12,15 @@ export default async function (cq, ctx) {
         api.answerCallbackQuery({ callback_query_id: cq.id, text, show_alert: !!alert }).catch(() => {});
     const editMarkup = markup =>
         api.editMessageReplyMarkup({ chat_id: chatId, message_id: cq.message.message_id, reply_markup: markup }).catch(() => {});
+    // как editOrigin в VK: при неудачной правке (сообщение старое/удалено) —
+    // новым сообщением; «message is not modified» (повторное нажатие) глушим
     const editText = (text, markup) =>
-        api.editMessageText({ chat_id: chatId, message_id: cq.message.message_id, text, reply_markup: markup }).catch(() => {});
+        api.editMessageText({ chat_id: chatId, message_id: cq.message.message_id, text, reply_markup: markup })
+            .catch(e => {
+                if (e && /not modified/i.test(e.description || e.message || "")) return;
+                console.error("editMessageText:", e.message, "— отправляю сообщением");
+                return api.sendMessage({ chat_id: chatId, text, reply_markup: markup }).catch(() => {});
+            });
 
     if (data.startsWith("rel:")) {
         const key = data.slice(4);
@@ -54,6 +61,15 @@ export default async function (cq, ctx) {
         return;
     }
 
+    if (data === "del" || data === "del:yes") {
+        // 🗑 в групповом чате — только админ (кнопка висит на сообщении в чате,
+        // нажать может любой участник); в личке chatAdmin всегда true
+        if (!(await chatAdmin(cq.message.chat, cq.from?.id))) {
+            await answer("только владелец");
+            return;
+        }
+    }
+
     if (data === "del") {
         // сортировка по полной дате ГГГГ-ММ-ДД (в отличие от списка 🔔 — по ММ-ДД)
         const list = await upcomingText(chatId, true);
@@ -92,37 +108,34 @@ export default async function (cq, ctx) {
     }
 
     if (data.startsWith("del1:")) {
-        // мгновенное удаление одного события (как реакция 👎 в VK-боте)
+        // 👎 — удалить событие, правкой самого сообщения (как реакция 👎 в VK-боте)
         const id = Number(data.slice(5));
         const row = await db.select().from(events).where(eq(events.id, id)).get();
         if (!row || row.chatId !== chatId) { await answer("Событие не найдено"); return; }
         await db.delete(events).where(eq(events.id, id)).run();
-        await editMarkup(undefined);
-        await answer("🗑 Событие удалено");
-        console.log("deleted:", row.name, row.date, "chat", chatId);
-        return;
-    }
-
-    if (data.startsWith("del1s:")) {
-        const id = Number(data.slice(6));
-        const row = await db.select().from(events).where(eq(events.id, id)).get();
-        if (!row || row.chatId !== chatId) { await answer("Событие не найдено"); return; }
-        await db.delete(events).where(eq(events.id, id)).run();
-        await editMarkup(undefined);
-        await answer("🗑 Событие удалено");
+        await editText("🗑 Событие удалено: " + row.name + " " + row.date, undefined);
+        await answer();
         console.log("deleted:", row.name, row.date, "chat", chatId);
         return;
     }
 
     if (data.startsWith("det:")) {
+        // 👀 — детализировать правкой сообщения, кнопки сохраняются;
+        // повторное нажатие сворачивает обратно (как снятие реакции в VK)
         const id = Number(data.slice(4));
         const row = await db.select().from(events).where(eq(events.id, id)).get();
         if (!row || row.chatId !== chatId) { await answer("Событие не найдено"); return; }
         const rec = { n: row.name, d: row.date };
         if (row.hour !== null && row.hour !== undefined) { rec.h = row.hour; rec.m = row.minute; }
-
-        await sendLong(chatId, jubileeText(rec, "", true));
-        await answer();
+        const t = cq.message?.text || "";
+        // признак детальности: текст сообщения совпадает с детальной версией
+        // (в проде .text без тегов/ентитей, в моке — с буквальными тегами)
+        const norm = s => s.replace(/<\/?tg-spoiler>/g, "");
+        const isDetail = t !== "" && norm(t) === norm(jubileeText(rec, "", true));
+        await editText(
+            jubileeText(rec, "", !isDetail),
+            eventMarkup(id));
+        await answer(isDetail ? "сжато" : "подробно");
         return;
     }
 

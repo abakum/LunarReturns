@@ -17,9 +17,12 @@ export default async function (message, ctx) {
         return;
     }
 
-    if (text === "/today") {
+    // /today и /today@имя_бота (пишут и планировщики вроде Crondule)
+    if (text === "/today" || text.startsWith("/today@")) {
         const body = await todayText(chatId);
-        await api.sendMessage({ chat_id: chatId, text: body || "Сегодня событий нет" });
+        // как в VK: нечего показать — молчание (тело содержит jubileeText,
+        // HTML со спойлерами; дайджест — простой текст)
+        if (body) await api.sendMessage({ chat_id: chatId, text: body, parse_mode: 'HTML' });
         return;
     }
 
