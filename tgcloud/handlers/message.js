@@ -1,7 +1,12 @@
 import { api } from 'sdk';
-import { parseTrigger } from '../lib/parse.js';
+import { parseTrigger, parseGedcom } from '../lib/parse.js';
 import { jubileeText } from '../lib/text.js';
-import { HELP, startMarkup, chatAdmin, getSettings, todayText, upsertEvent, eventMarkup, sendLong } from '../lib/bot.js';
+import {
+    HELP, startMarkup, chatAdmin, getSettings, todayText, upsertEvent, eventMarkup, sendLong,
+    addLink, setLinkCand, ensureFam, pairRecords, linkText, linkMarkup, gedcomText, importGedcom,
+} from '../lib/bot.js';
+
+const recOfRow = row => ({ n: row.name, d: row.date, h: row.hour ?? undefined, m: row.minute ?? undefined });
 
 export default async function (message, ctx) {
     const chatId = message.chat.id;
@@ -29,7 +34,36 @@ export default async function (message, ctx) {
         return;
     }
 
+    // гедком-древо чата (то же выводит кнопка 🧬)
+    if (text === "/gedcom" || text.startsWith("/gedcom@")) {
+        const g = await gedcomText(chatId);
+        if (!g.includes("FAM")) {
+            await api.sendMessage({ chat_id: chatId, text: "связей пока нет — ответьте триггером на триггер" });
+            return;
+        }
+        await sendLong(chatId, g);
+        return;
+    }
+
+    // сообщение-гедком → импорт древа (до разбора триггеров)
+    const g = parseGedcom(text);
+    if (g) {
+        const r = await importGedcom(chatId, g);
+        if (r.persons || r.links) {
+            await api.sendMessage({ chat_id: chatId, text: "📦 Гедком импортирован: персон " + r.persons
+                + ", связей " + r.links + (r.weddings ? ", свадеб " + r.weddings : "") });
+            return;
+        }
+        // гедком без персон с датами — дальше как триггеры
+    }
+
     if (text.startsWith("/")) return;
+
+    // ответ триггером на триггер = связь родитель→ребёнок: заголовок события
+    // в ответе бота «Имя ГГГГ-ММ-ДД…»
+    const reply = message.reply_to_message;
+    const replyHead = reply && reply.from?.is_bot
+        ? String(reply.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
 
     const lines = text.split(/\s*\n+\s*/).filter(Boolean);
     for (const line of lines) {
@@ -40,7 +74,33 @@ export default async function (message, ctx) {
             continue;
         }
         const row = await upsertEvent(chatId, parsed.rec);
-        await sendLong(chatId, jubileeText({ n: row.name, d: row.date, h: row.hour ?? undefined, m: row.minute ?? undefined }, parsed.note), eventMarkup(row.id));
+        if (replyHead) {
+            const otherKey = replyHead[1].trim() + " " + replyHead[2];
+            const newKey = row.name + " " + row.date;
+            if (row.date === replyHead[2]) {
+                // близнецы: даты рождения совпали — связь не добавляем
+                await sendLong(chatId, jubileeText(recOfRow(row), parsed.note)
+                    + "\n🔗 связь не добавлена: даты рождения совпадают (близнецы?)");
+                continue;
+            }
+            const parentFirst = row.date < replyHead[2]; // старшая дата — родитель
+            const { link, dup } = await addLink(chatId,
+                parentFirst ? newKey : otherKey,
+                parentFirst ? otherKey : newKey,
+                parentFirst ? 'p' : 'c');
+            if (!dup) {
+                const f = await ensureFam(chatId, link.child); // 2 родителя — семья
+                if (f) link.famId = f.id;
+                await setLinkCand(link, await pairRecords(chatId, link));
+            }
+            const txt = (dup ? await linkText(chatId, link) + "\n🔗 связь уже записана" : await linkText(chatId, link))
+                + "\n" + await gedcomText(chatId, [link.parent, link.child]);
+            await sendLong(chatId, txt,
+                dup ? eventMarkup(row.id) : await linkMarkup(chatId, link));
+            console.log("link:", link.parent, "→", link.child, "chat", chatId, dup ? "(повтор)" : "");
+            continue;
+        }
+        await sendLong(chatId, jubileeText(recOfRow(row), parsed.note), eventMarkup(row.id));
         console.log("record:", row.name, row.date, "chat", chatId);
     }
 }

@@ -1,9 +1,12 @@
 import { api, db } from 'sdk';
 import { eq } from 'sdk/db';
-import { events, settings } from '../schema.js';
+import { events, settings, links, fams } from '../schema.js';
 import { jubileeText } from '../lib/text.js';
 import { REL_DEFS, religiousYear } from '../lib/religion.js';
-import { HELP, relMarkup, upcomingText, getSettings, startMarkup, chatAdmin, eventMarkup } from '../lib/bot.js';
+import {
+        HELP, relMarkup, upcomingText, getSettings, startMarkup, chatAdmin, eventMarkup,
+        recordOf, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong,
+} from '../lib/bot.js';
 
 export default async function (cq, ctx) {
     const chatId = cq.message?.chat?.id;
@@ -147,6 +150,81 @@ export default async function (cq, ctx) {
             jubileeText(rec, "", !isDetail),
             eventMarkup(id), 'HTML');
         await answer(isDetail ? "сжато" : "подробно");
+        return;
+    }
+
+    // 🧬 — гедком-древо чата (как /gedcom); /start править нельзя — тост
+    if (data === "tree") {
+        const g = await gedcomText(chatId);
+        if (!g.includes("FAM")) {
+            await answer("связей пока нет");
+            return;
+        }
+        await answer("гедком-древо чата");
+        if (cq.message?.text !== HELP) {
+            const parts = g.length > 4000 ? [g.slice(0, 4000), g.slice(4000)] : [g];
+            await editText(parts[0], cq.message.reply_markup);
+            for (let i = 1; i < parts.length; i++) await api.sendMessage({ chat_id: chatId, text: parts[i] });
+        } else {
+            await sendLong(chatId, g);
+        }
+        return;
+    }
+
+    // кнопки сообщения-связи: пол нового лица (♂/♀), свадьба (Да/Нет, 1 2…),
+    // 👎 — удалить связь
+    if (data.startsWith("sex:") || data.startsWith("pair:") || data.startsWith("adop:") || data.startsWith("dell:")) {
+        const [act, idStr, arg] = data.split(":");
+        const link = (await db.select().from(links).where(eq(links.id, Number(idStr))).get());
+        if (!link || link.chatId !== chatId) { await answer("связь не найдена"); return; }
+        if (act === "sex") {
+            const rec = await recordOf(chatId, link[link.who === 'p' ? 'parent' : 'child']);
+            if (rec) await db.update(events).set({ sex: arg === 'F' ? 'F' : 'M' }).where(eq(events.id, rec.id)).run();
+            await answer("пол: " + (arg === 'F' ? "♀" : "♂"));
+        } else if (act === "adop") {
+            await db.update(links).set({ adopted: !link.adopted }).where(eq(links.id, link.id)).run();
+            link.adopted = !link.adopted;
+            await answer(link.adopted ? "🤱 усыновление" : "усыновление снято");
+        } else if (act === "pair") {
+            const i = Number(arg);
+            let fragKeys = [link.parent, link.child];
+            const cand = link.pairCand ? JSON.parse(link.pairCand) : null;
+            if (i >= 0 && cand && cand[i]) {
+                const f = await confirmPair(chatId, link, cand[i]);
+                await answer(f && f.marrD ? "💍 " + f.marrD + (f.marrPlac ? ", " + f.marrPlac : "") : "не найдено");
+                if (f) fragKeys = [...f.parents, ...f.children]; // все трое
+            } else {
+                await setLinkCand(link, null);
+                await answer("без свадьбы");
+            }
+            const fresh = await db.select().from(links).where(eq(links.id, link.id)).get();
+            if (fresh) await editText(await linkText(chatId, fresh) + "\n" + await gedcomText(chatId, fragKeys), await linkMarkup(chatId, fresh), 'HTML');
+            return;
+        } else { // dell — удалить связь, событие остаётся
+            await db.delete(links).where(eq(links.id, link.id)).run();
+            // почистить семьи: ребёнок в семье, пока есть связь с famId
+            const famRows = await db.select().from(fams).where(eq(fams.chatId, chatId)).all();
+            const linksLeft = await db.select().from(links).where(eq(links.chatId, chatId)).all();
+            for (const f of famRows) {
+                const children = JSON.parse(f.children).filter(c =>
+                    linksLeft.some(l => l.famId === f.id && l.child === c));
+                await db.update(fams).set({ children: JSON.stringify(children) }).where(eq(fams.id, f.id)).run();
+                if (!children.length) await db.delete(fams).where(eq(fams.id, f.id)).run();
+            }
+            const rec = await recordOf(chatId, link[link.who === 'p' ? 'parent' : 'child']);
+            await editText("🔗 Связь удалена: " + link.parent + " → " + link.child
+                + (rec ? "\n" + jubileeText({ n: rec.name, d: rec.date, h: rec.hour ?? undefined, m: rec.minute ?? undefined }, "") : ""),
+                undefined, 'HTML');
+            await answer();
+            console.log("link deleted:", link.parent, "→", link.child, "chat", chatId);
+            return;
+        }
+        const fresh = await db.select().from(links).where(eq(links.id, link.id)).get();
+        if (fresh) {
+            // sex/adop: фрагмент — новое лицо (с полом) либо родитель+ребёнок
+            const fragKeys = act === "sex" ? [fresh[fresh.who === 'p' ? 'parent' : 'child']] : [fresh.parent, fresh.child];
+            await editText(await linkText(chatId, fresh) + "\n" + await gedcomText(chatId, fragKeys), await linkMarkup(chatId, fresh), 'HTML');
+        }
         return;
     }
 

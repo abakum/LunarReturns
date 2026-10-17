@@ -155,7 +155,7 @@ rl.on('SIGINT', () => { console.log(); rl.close(); });
 
 const role = PRIVATE ? 'личка' : (ADMIN ? 'админ группы' : 'участник группы');
 console.log(`tgdev: chat=${CHAT} (${role}), db=${path.relative(ROOT, dbAbs)}${fresh ? ' (fresh)' : ''}`);
-console.log('Ввод: текст | /N M — кнопка | !dump — база | Ctrl-C — выход\n');
+console.log('Ввод: текст | /N M — кнопка | >N текст — ответ на N | !dump — база | Ctrl-C — выход\n');
 
 const handle = async raw => {
     const input = String(raw || '').replace(/\\n/g, '\n').trim();
@@ -166,8 +166,20 @@ const handle = async raw => {
         await press(Number(bm[1]), Number(bm[2]));
         return;
     }
+    // >N текст — ответ на сообщение N (как reply; N — бот)
+    const rm = input.match(/^>(\d+)\s+([\s\S]+)$/);
+    const reply = rm ? (() => {
+        const m = messages.find(x => x.n === Number(rm[1]));
+        if (!m) { console.log(`ERROR: нет сообщения ${rm[1]}`); return null; }
+        return { chat: { id: CHAT, type: CHAT_TYPE }, message_id: m.n, text: m.text, from: { id: 999, is_bot: true } };
+    })() : undefined;
+    if (rm && !reply) return;
     try {
-        await messageHandler({ chat: { id: CHAT, type: CHAT_TYPE }, from: { id: 1 }, text: input }, { update: { update_id: ++updSeq } });
+        await messageHandler({
+            chat: { id: CHAT, type: CHAT_TYPE }, from: { id: 1 },
+            text: rm ? rm[2] : input,
+            ...(reply ? { reply_to_message: reply } : {}),
+        }, { update: { update_id: ++updSeq } });
     } catch (e) {
         console.log('ERROR:', e.message);
     }

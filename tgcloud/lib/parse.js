@@ -21,29 +21,50 @@ function explicitZoneMinutes(s) {
     return (base + (m[2] === "+" ? 1 : -1) * Number(m[3])) * 60;
 }
 
-// 1: имя, 2-4: дата, 5-6: время, 7: зона в скобках, 8: зона без скобок.
-// Без \b вокруг группы зоны: в юникод-режиме \b ASCII-only и не срабатывает
-// на кириллице («МСК+2» без скобок не разбиралось).
-const TRIGGER_RE = /^(.+?)\s+(\d{4})[-./]?(\d{2})[-./]?(\d{2})(?:\s+(\d{1,2})(?:[:.\u0433]?(\d{2}))?)?\s*(?:\(\s*([^)]+?)\s*\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\s*[+-]\s*\d{1,2}))?\s*$/iu;
+// 1: имя; 2-4: дата рождения, 5-6: время, 7: зона в скобках, 8: зона без
+// скобок; 9-15: то же для смерти — необязательный второй хвост.
+const DATE_TAIL = "(\\d{4})[-./]?(\\d{2})[-./]?(\\d{2})(?:\\s+(\\d{1,2})(?:[:.\\u0433]?(\\d{2}))?)?\\s*(?:\\(\\s*([^)]+?)\\s*\\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\\s*[+-]\\s*\\d{1,2}))?";
+const TRIGGER_RE = new RegExp("^(.+?)\\s+" + DATE_TAIL + "(?:\\s+" + DATE_TAIL + ")?\\s*$", "iu");
 
-function parseTrigger(text) {
-    const m = text.trim().match(TRIGGER_RE);
-    if (!m) return null;
-    const n = m[1].trim();
-    const y = Number(m[2]), mo = Number(m[3]), dd = Number(m[4]);
-    if (mo < 1 || mo > 12 || dd < 1 || dd > 31) return { n, error: "некорректная дата: " + m[2] + "-" + m[3] + "-" + m[4] };
-    const givenTime = m[5] !== undefined;
+// ГГГГММДД[ ЧЧ:ММ][ зона] → дата/время в МСК; без времени и зоны — только d
+function dateTimeToMsk(y, mo, dd, hh, mm, givenTime, diffMin, hasZone) {
+    const pad = (x, l) => String(x).padStart(l, "0");
+    const srcD = y + "-" + pad(mo, 2) + "-" + pad(dd, 2);
+    const rec = {};
+    if (givenTime || hasZone) {
+        if (hasZone) {
+            const msk = new Date(Date.UTC(y, mo - 1, dd, hh, mm, 0) - diffMin * 60000);
+            rec.d = msk.getUTCFullYear() + "-" + pad(msk.getUTCMonth() + 1, 2) + "-" + pad(msk.getUTCDate(), 2);
+            rec.h = msk.getUTCHours();
+            rec.m = msk.getUTCMinutes();
+        } else {
+            rec.d = srcD;
+            rec.h = hh;
+            rec.m = mm;
+        }
+    } else {
+        rec.d = srcD;
+    }
+    return rec;
+}
+
+// разобрать одну группу «дата [время] [зона]» из групп m[gi..gi+6]
+function parseDateGroups(m, gi, what) {
+    const y = Number(m[gi]), mo = Number(m[gi + 1]), dd = Number(m[gi + 2]);
+    if (mo < 1 || mo > 12 || dd < 1 || dd > 31) return { error: "некорректная дата" + what + ": " + m[gi] + "-" + m[gi + 1] + "-" + m[gi + 2] };
+    const givenTime = m[gi + 3] !== undefined;
     let hh = 12, mm = 0;
     if (givenTime) {
-        hh = Number(m[5]);
-        mm = m[6] !== undefined ? Number(m[6]) : 0;
-        if (hh > 23 || mm > 59) return { n, error: "некорректное время: " + m[5] + (m[6] || "") };
+        hh = Number(m[gi + 3]);
+        mm = m[gi + 4] !== undefined ? Number(m[gi + 4]) : 0;
+        if (hh > 23 || mm > 59) return { error: "некорректное время" + what + ": " + m[gi + 3] + (m[gi + 4] || "") };
     }
-    const d = y + "-" + String(mo).padStart(2, "0") + "-" + String(dd).padStart(2, "0");
-    let zone = (m[7] || m[8] || "").trim();
+    const zone = (m[gi + 5] || m[gi + 6] || "").trim();
+    const hasZone = !!zone;
     let diffMin = 3 * 60; // по умолчанию МСК
     let zoneLabel = "";
-    if (zone) {
+    let city = null;
+    if (hasZone) {
         const explicit = explicitZoneMinutes(zone);
         if (explicit !== null) {
             // explicit — абсолютное смещение от UTC; cityDiffMin даёт смещение
@@ -51,36 +72,108 @@ function parseTrigger(text) {
             diffMin = explicit - 3 * 60;
             zoneLabel = zone;
         } else if (CITY_INDEX[zone.toLowerCase()]) {
-            diffMin = cityDiffMin(CITY_INDEX[zone.toLowerCase()], d);
-            zoneLabel = CITY_INDEX[zone.toLowerCase()];
+            city = CITY_INDEX[zone.toLowerCase()];
+            diffMin = cityDiffMin(city, y + "-" + String(mo).padStart(2, "0") + "-" + String(dd).padStart(2, "0"));
+            zoneLabel = city;
         } else {
-            return { n, error: "не знаю места «" + zone + "» — укажите город из списка приложения или сдвиг вида МСК+2 / UTC+5" };
+            return { error: "не знаю места «" + zone + "» — укажите город из списка приложения или сдвиг вида МСК+2 / UTC+5" };
         }
     }
+    const rec = dateTimeToMsk(y, mo, dd, hh, mm, givenTime, diffMin, hasZone);
     const pad = (x, l) => String(x).padStart(l, "0");
-    // без времени и пояса — как в приложении: { n, d }, расчёт в полдень;
-    // время без пояса уже МСК — сдвиг только при явной зоне
-    const rec = { n };
-    if (givenTime || zone) {
-        if (zone) {
-            const msk = new Date(Date.UTC(y, mo - 1, dd, hh, mm, 0) - diffMin * 60000);
-            rec.d = msk.getUTCFullYear() + "-" + pad(msk.getUTCMonth() + 1, 2) + "-" + pad(msk.getUTCDate(), 2);
-            rec.h = msk.getUTCHours();
-            rec.m = msk.getUTCMinutes();
-        } else {
-            rec.d = d;
-            rec.h = hh;
-            rec.m = mm;
-        }
-    } else {
-        rec.d = d;
-    }
-    let note = "";
-    if (zone) {
-        note = zoneLabel + " " + pad(hh, 2) + ":" + pad(mm, 2) + " → МСК " + pad(rec.h, 2) + ":" + pad(rec.m, 2)
-            + (rec.d !== d ? " " + rec.d : "");
+    const srcD = y + "-" + pad(mo, 2) + "-" + pad(dd, 2);
+    const note = zoneLabel
+        ? zoneLabel + " " + pad(hh, 2) + ":" + pad(mm, 2) + " → МСК " + pad(rec.h, 2) + ":" + pad(rec.m, 2)
+            + (rec.d !== srcD ? " " + rec.d : "")
+        : "";
+    return { rec, note, city };
+}
+
+function parseTrigger(text) {
+    const m = text.trim().match(TRIGGER_RE);
+    if (!m) return null;
+    const n = m[1].trim();
+    const b = parseDateGroups(m, 2, "");
+    if (b.error) return { n, error: b.error };
+    const rec = Object.assign({ n }, b.rec);
+    if (b.city) rec.plac = b.city; // место — только для гедком (PLAC)
+    let note = b.note;
+    if (m[9] !== undefined) { // хвост смерти — только для гедком (DEAT),
+        // результат события (юбилеи) не меняет
+        const s = parseDateGroups(m, 9, " смерти");
+        if (s.error) return { n, error: s.error };
+        rec.dd = s.rec.d;
+        if (s.rec.h !== undefined) { rec.dh = s.rec.h; rec.dm = s.rec.m; }
+        if (s.city && !rec.plac) rec.plac = s.city;
     }
     return { rec, note };
 }
 
-export { parseTrigger };
+// ============================== ГЕДКОМ-ИМПОРТ ==============================
+// «10 MAY 1985» → «1985-05-10»; без полной даты — null
+const GED_MONTHS = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 };
+function gdateToISO(s) {
+    const m = String(s).trim().match(/(\d{1,2})\s+([A-Za-z]{3})\.?\s+(\d{4})/);
+    if (!m) return null;
+    const mo = GED_MONTHS[m[2].toUpperCase()];
+    if (!mo) return null;
+    return m[3] + "-" + String(mo).padStart(2, "0") + "-" + String(m[1]).padStart(2, "0");
+}
+
+// валидный гедком → { indis, fams }; иначе null. Берт только BIRT/DEAT/SEX
+// у INDI и HUSB/WIFE/CHIL/MARR/DIV (DATE, PLAC) у FAM
+function parseGedcom(text) {
+    const lines = String(text).split(/\r?\n/).map(l => l.trim());
+    if (!lines.some(l => /^0\s+HEAD\b/i.test(l))) return null;
+    if (!lines.some(l => /^1\s+(?:GEDC|FAM|INDI)\b/i.test(l) || /@\s+(?:INDI|FAM)\s*$/i.test(l))) return null;
+    const indis = new Map(), fams = new Map();
+    let cur = null, curTag = null;
+    for (const l of lines) {
+        const m = l.match(/^(\d)\s+(?:@([^@]+)@\s+)?([A-Za-z]+)?(?:\s(.*))?$/);
+        if (!m) continue;
+        const lvl = Number(m[1]), xref = m[2], tag = (m[3] || "").toUpperCase(), val = (m[4] || "").trim();
+        if (lvl === 0) {
+            curTag = null;
+            cur = null;
+            if (xref && tag === "INDI") { cur = { __xref: xref, name: "", sex: null, birt: null, deat: null, adopFams: [] }; indis.set(xref, cur); }
+            else if (xref && tag === "FAM") { cur = { __xref: xref, husb: null, wife: null, chil: [], adopted: [], marr: null, div: null }; fams.set(xref, cur); }
+            continue;
+        }
+        if (!cur) continue;
+        if (lvl === 1) curTag = tag;
+        if (lvl === 1) {
+            if (tag === "NAME") cur.name = val.replace(/\/(.*?)\//g, "$1").trim();
+            else if (tag === "SEX") cur.sex = val.toUpperCase().startsWith("F") ? "F" : "M";
+            else if (tag === "BIRT") cur.birt = cur.birt || {};
+            else if (tag === "DEAT") cur.deat = cur.deat || {};
+            else if (tag === "MARR") cur.marr = cur.marr || {};
+            else if (tag === "DIV") cur.div = cur.div || {};
+            else if (tag === "HUSB" || tag === "WIFE" || tag === "CHIL") {
+                const r = val.match(/@([^@]+)@/);
+                if (r) {
+                    if (tag === "CHIL") { cur.chil.push(r[1]); cur.lastChil = r[1]; }
+                    else cur[tag.toLowerCase()] = r[1];
+                }
+            } else if (tag === "ADOP") cur.adop = true;
+        } else if (lvl === 2 && tag === "PEDI" && /adopt/i.test(val)) {
+            if (curTag === "CHIL" && cur.lastChil && !cur.adopted.includes(cur.lastChil)) cur.adopted.push(cur.lastChil);
+        } else if (lvl === 2 && tag === "FAMC" && curTag === "ADOP") {
+            const r = val.match(/@([^@]+)@/);
+            if (r && cur.adopFams && !cur.adopFams.includes(r[1])) cur.adopFams.push(r[1]);
+        } else if (lvl === 2 && tag === "DATE") {
+            const iso = gdateToISO(val);
+            if (!iso) continue;
+            if (curTag === "BIRT" && cur.birt) cur.birt.date = iso;
+            else if (curTag === "DEAT" && cur.deat) cur.deat.date = iso;
+            else if (curTag === "MARR" && cur.marr) cur.marr.date = iso;
+            else if (curTag === "DIV" && cur.div) cur.div.date = iso;
+        } else if (lvl === 2 && tag === "PLAC") {
+            if (curTag === "MARR" && cur.marr) cur.marr.plac = val;
+            else if (curTag === "DIV" && cur.div) cur.div.plac = val;
+        }
+    }
+    if (!indis.size && !fams.size) return null;
+    return { indis: [...indis.values()], fams: [...fams.values()] };
+}
+
+export { parseTrigger, parseGedcom };

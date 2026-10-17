@@ -1,14 +1,15 @@
 // Общий код TG-бота: настройки, клавиатуры, тексты «сегодня»/«список».
 import { db, api } from 'sdk';
 import { eq } from 'sdk/db';
-import { events, settings } from '../schema.js';
+import { events, settings, links, fams } from '../schema.js';
 import { mskToday } from './astro.js';
 import { REL_DEFS, REL_ORDER, religiousDigest } from './religion.js';
 import { jubileeText } from './text.js';
 
-export const HELP = "Отправьте «Имя ГГГГ-ММ-ДД [ЧЧ:ММ]» — покажу лунно-солнечные юбилеи.\n"
+export const HELP = "Отправьте «Имя ГГГГ-ММ-ДД [ЧЧ:ММ] [дата смерти]» — покажу лунно-солнечные юбилеи.\n"
     + "Можно с зоной: «… 12:30 (Пермь)» или «… 12:30 МСК+2», по одной строке на событие.\n"
-    + "/today — события и религиозные праздники сегодня (МСК)\n"
+    + "Ответ триггером на триггер — связь родитель→ребёнок (гедком-древо чата).\n"
+    + "/today — события и религиозные праздники сегодня (МСК), /gedcom — древо чата\n"
     + "Кнопки под ответом: 👎 удалить, 👀 подробно.";
 
 const DEFAULT_SETTINGS = { orth: false, islam: false, bud: false, cath: false, jud: false };
@@ -26,27 +27,30 @@ export function relMarkup(chatId, s) {
     return {
         inline_keyboard: [
             [btn("🗑", "del"), btn("🔔", "bell"), rel("orth"), rel("islam")],
-            [rel("bud"), rel("cath"), rel("jud"), btn("❌", "close")]
+            [rel("bud"), rel("cath"), rel("jud"), btn("🧬", "tree")],
+            [btn("❌", "close")]
         ]
     };
 }
 
-// клавиатура админа группы: 🗑 (удалить всё), 🔔 (список), ❌ (как ownerKeyboard VK)
+// клавиатура админа группы: 🗑 (удалить всё), 🔔 (список), 🧬 (гедком), ❌
 export function ownerMarkup() {
     return {
         inline_keyboard: [[
             { text: "🗑", callback_data: "del" },
             { text: "🔔", callback_data: "bell" },
+            { text: "🧬", callback_data: "tree" },
             { text: "❌", callback_data: "close" },
         ]]
     };
 }
 
-// клавиатура участника группы: 🔔 (список), ❌ (как bellKeyboard VK)
+// клавиатура участника группы: 🔔 (список), 🧬 (гедком), ❌
 export function bellMarkup() {
     return {
         inline_keyboard: [[
             { text: "🔔", callback_data: "bell" },
+            { text: "🧬", callback_data: "tree" },
             { text: "❌", callback_data: "close" },
         ]]
     };
@@ -86,11 +90,15 @@ export async function upsertEvent(chatId, rec) {
     const vals = {
         chatId, name: rec.n, date: rec.d,
         hour: rec.h ?? null, minute: rec.m ?? null,
+        sex: rec.sex ?? null,
+        deathDate: rec.dd ?? null,
+        plac: rec.plac ?? null,
+        plac2: rec.plac2 ?? null,
     };
     const [row] = await db.insert(events).values(vals)
         .onConflictDoUpdate({
             target: [events.chatId, events.name, events.date],
-            set: { hour: vals.hour, minute: vals.minute },
+            set: { hour: vals.hour, minute: vals.minute, deathDate: vals.deathDate, plac: vals.plac, plac2: vals.plac2 },
         })
         .returning().run();
     return row;
@@ -124,6 +132,287 @@ export async function chatAdmin(chat, userId) {
 export function startMarkup(chat, isAdmin, chatId, s) {
     if (chat.type === 'private') return relMarkup(chatId, s);
     return isAdmin ? ownerMarkup() : bellMarkup();
+}
+
+// ---- гедком-база: персоны/связи/семьи, дерево в рамках чата ----
+// (перенос логики VK-бота: pkey/addLink/ensureFam/pairRecords/confirmPair/gedcomText)
+
+const pkey = r => r.name + " " + r.date;         // ключ персоны «Имя ГГГГ-ММ-ДД»
+const keyN = k => k.slice(0, -11);               // имя из ключа
+const keyY = k => Number(k.slice(-10, -6));      // год рождения из ключа
+
+const chatLinks = async chatId => db.select().from(links).where(eq(links.chatId, chatId)).all();
+const chatFams = async chatId => db.select().from(fams).where(eq(fams.chatId, chatId)).all();
+
+export async function recordOf(chatId, key) {
+    const rows = await db.select().from(events).where(eq(events.chatId, chatId)).all();
+    return rows.find(r => r.name + " " + r.date === key) || null;
+}
+
+// добавить связь родитель→ребёнок; who — кто из двоих пришёл новым триггером
+export async function addLink(chatId, parentKey, childKey, who) {
+    const existing = await chatLinks(chatId);
+    const same = existing.find(l => l.parent === parentKey && l.child === childKey);
+    if (same) return { link: same, dup: true };
+    const [row] = await db.insert(links)
+        .values({ chatId, parent: parentKey, child: childKey, who })
+        .returning().run();
+    return { link: row, dup: false };
+}
+
+export async function setLinkCand(link, cand) {
+    await db.update(links).set({ pairCand: cand ? JSON.stringify(cand) : null })
+        .where(eq(links.id, link.id)).run();
+    link.pairCand = cand ? JSON.stringify(cand) : null;
+}
+
+// все родители ребёнка в чате
+export async function parentKeys(chatId, childKey) {
+    return [...new Set((await chatLinks(chatId)).filter(l => l.child === childKey).map(l => l.parent))];
+}
+
+// двое родителей — уже семья: собрать всех родителей ребёнка в один FAM
+export async function ensureFam(chatId, childKey) {
+    const ps = await parentKeys(chatId, childKey);
+    if (ps.length < 2) return null;
+    const existing = await chatFams(chatId);
+    let f = existing.find(x => JSON.parse(x.children).includes(childKey));
+    if (!f) {
+        const [row] = await db.insert(fams)
+            .values({ chatId, parents: JSON.stringify([]), children: JSON.stringify([childKey]) })
+            .returning().run();
+        f = row;
+    }
+    const parents = JSON.parse(f.parents), children = JSON.parse(f.children);
+    for (const p of ps) if (!parents.includes(p)) parents.push(p);
+    if (!children.includes(childKey)) children.push(childKey);
+    await db.update(fams).set({ parents: JSON.stringify(parents), children: JSON.stringify(children) })
+        .where(eq(fams.id, f.id)).run();
+    for (const l of (await chatLinks(chatId)).filter(l => l.child === childKey))
+        await db.update(links).set({ famId: f.id }).where(eq(links.id, l.id)).run();
+    return { ...f, parents, children };
+}
+
+// кандидаты-свадьбы: триггеры «Иван+Мария ГГГГММДД» в базе, где одна половина —
+// текущий родитель, другая — другой родитель ребёнка; свадьба позже рождения
+// обоих (но может быть позже рождения ребёнка — это жизнь); релевантные — по
+// близости года свадьбы к году рождения ребёнка
+export async function pairRecords(chatId, link) {
+    const cy = keyY(link.child), out = [], seen = new Set();
+    const rows = await db.select().from(events).where(eq(events.chatId, chatId)).all();
+    for (const o of await parentKeys(chatId, link.child)) {
+        if (o === link.parent) continue;
+        for (const name of [keyN(link.parent) + "+" + keyN(o), keyN(o) + "+" + keyN(link.parent)]) {
+            for (const r of rows.filter(r => r.name === name)) {
+                const pk = r.name + " " + r.date, wy = keyY(pk);
+                if (wy <= keyY(link.parent) || wy <= keyY(o)) continue;
+                if (seen.has(pk)) continue;
+                seen.add(pk);
+                out.push({ pair: pk, other: o, wy });
+            }
+        }
+    }
+    return out.sort((a, b) => Math.abs(a.wy - cy) - Math.abs(b.wy - cy)).slice(0, 5);
+}
+
+// подтвердить свадьбу: связывает Ивана и Марию с «Иван+Мария ГГГГММДД»,
+// первый в имени — М, второй — Ж; в гедком пишется MARR/DIV DATE/PLAC
+export async function confirmPair(chatId, link, cand) {
+    const f = await ensureFam(chatId, link.child);
+    if (!f) return null;
+    const [pairName, pairDate] = [cand.pair.slice(0, -11), cand.pair.slice(-10)];
+    const rows = await db.select().from(events).where(eq(events.chatId, chatId)).all();
+    const pairRec = rows.find(r => r.name === pairName && r.date === pairDate);
+    if (!pairRec) return null;
+    const upd = { marrD: pairRec.date, marrPlac: pairRec.plac };
+    if (pairRec.deathDate) { upd.divD = pairRec.deathDate; upd.divPlac = pairRec.plac2; }
+    await db.update(fams).set(upd).where(eq(fams.id, f.id)).run();
+    const [n1, n2] = pairRec.name.split("+");
+    for (const pk of f.parents) {
+        const rec = rows.find(r => r.name + " " + r.date === pk);
+        if (!rec) continue;
+        if (keyN(pk) === n1) await db.update(events).set({ sex: 'M' }).where(eq(events.id, rec.id)).run();
+        else if (keyN(pk) === n2) await db.update(events).set({ sex: 'F' }).where(eq(events.id, rec.id)).run();
+    }
+    await setLinkCand(link, null);
+    return { ...f, ...upd };
+}
+
+// текст сообщения-связи: строки связи (+ семья/вопрос), без юбилеев события —
+// гедком-фрагмент добавляется отдельно (gedcomText с ключами)
+export async function linkText(chatId, link) {
+    let t = "🔗 Родитель: " + link.parent + " → ребёнок: " + link.child + (link.adopted ? " 🤱 (усыновление)" : "");
+    if (link.famId) {
+        const f = (await chatFams(chatId)).find(x => x.id === link.famId);
+        if (f) t += "\n🧬 " + JSON.parse(f.parents).map(keyN).join("+") + " — родители: " + keyN(link.child)
+            + (f.marrD ? " (свадьба " + f.marrD + (f.marrPlac ? ", " + f.marrPlac : "") + ")" : "")
+            + (f.divD ? " (развод " + f.divD + ")" : "");
+    }
+    const cand = link.pairCand ? JSON.parse(link.pairCand) : null;
+    if (cand && cand.length) {
+        if (cand.length === 1)
+            t += "\n🧬 Свадьба его родителей: " + cand[0].pair + "?";
+        else
+            t += "\n🧬 Свадьба его родителей?\n" + cand.map((k, i) => (i + 1) + ") " + k.pair).join("\n");
+    }
+    return t;
+}
+
+// клавиатура сообщения-связи: ♂/♀ для нового лица, Да/Нет или 1 2… Нет для
+// свадьбы, 👎 — удалить связь
+export async function linkMarkup(chatId, link) {
+    const btn = (text, data) => ({ text, callback_data: data });
+    const rows = [[btn("👎", "dell:" + link.id)], [btn("🤱", "adop:" + link.id)]];
+    const rec = await recordOf(chatId, link[link.who === 'p' ? 'parent' : 'child']);
+    if (rec && !rec.sex)
+        rows.push([btn("♂", "sex:" + link.id + ":M"), btn("♀", "sex:" + link.id + ":F")]);
+    const cand = link.pairCand ? JSON.parse(link.pairCand) : null;
+    if (cand && cand.length) {
+        const btns = cand.length === 1
+            ? [btn("Да", "pair:" + link.id + ":0")]
+            : cand.map((k, i) => btn(String(i + 1), "pair:" + link.id + ":" + i));
+        btns.push(btn("Нет", "pair:" + link.id + ":-1"));
+        rows.push(btns);
+    }
+    return { inline_keyboard: rows };
+}
+
+// GEDCOM 5.5.1 по чату: INDI из записей (кроме свадеб «Иван+Мария»), FAM из
+// семей (MARR/DIV), неподтверждённые связи — по семье на каждого родителя.
+// keys — необязательный набор персон: фрагмент только по ним (для
+// сообщений-связей), семьи усекаются до выбранных персон
+export async function gedcomText(chatId, keys) {
+    const MON = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+    const gdate = d => { const [y, mo, dd] = d.split("-").map(Number); return dd + " " + MON[mo - 1] + " " + y; };
+    const hasKeys = Array.isArray(keys) && keys.length > 0;
+    const recs = (await db.select().from(events).where(eq(events.chatId, chatId)).all())
+        .filter(r => !r.name.includes("+") && (!hasKeys || keys.includes(r.name + " " + r.date)));
+    const idOf = new Map(recs.map((r, i) => [r.name + " " + r.date, "I" + (i + 1)]));
+    const lk = (await chatLinks(chatId)).filter(l => idOf.has(l.parent) && idOf.has(l.child));
+    const frows = (await chatFams(chatId))
+        .filter(f => JSON.parse(f.parents).every(p => idOf.has(p)) && JSON.parse(f.children).every(c => idOf.has(c)));
+    const famsOut = [];
+    for (const f of frows) {
+        const allP = JSON.parse(f.parents), allC = JSON.parse(f.children);
+        const ps = hasKeys ? allP.filter(p => keys.includes(p)) : allP;
+        const cs = hasKeys ? allC.filter(c => keys.includes(c)) : allC;
+        if (!hasKeys || (ps.length && cs.length))
+            famsOut.push({
+                parents: ps, children: cs,
+                marr: f.marrD ? { d: f.marrD, plac: f.marrPlac } : null,
+                div: f.divD ? { d: f.divD, plac: f.divPlac } : null,
+            });
+    }
+    for (const l of lk) {
+        if (famsOut.some(f => f.parents.includes(l.parent) && f.children.includes(l.child))) continue;
+        let f = famsOut.find(f => f.parents.length === 1 && f.parents[0] === l.parent);
+        if (!f) { f = { parents: [l.parent], children: [], marr: null, div: null }; famsOut.push(f); }
+        if (!f.children.includes(l.child)) f.children.push(l.child);
+    }
+    const fidOf = new Map(famsOut.map((f, i) => [f, "F" + (i + 1)]));
+    const adopted = new Map(lk.filter(l => l.adopted).map(l => [l.child, true]));
+    const out = ["0 HEAD", "1 SOUR LunarReturns", "1 GEDC", "2 VERS 5.5.1", "2 FORM LINEAGE-LINKED", "1 CHAR UTF-8"];
+    for (const r of recs) {
+        const pk = r.name + " " + r.date;
+        out.push("0 @" + idOf.get(pk) + "@ INDI");
+        out.push("1 NAME " + r.name);
+        if (r.sex) out.push("1 SEX " + r.sex);
+        out.push("1 BIRT", "2 DATE " + gdate(r.date));
+        if (r.deathDate && !r.name.includes("+")) out.push("1 DEAT", "2 DATE " + gdate(r.deathDate));
+        for (const f of famsOut) {
+            if (f.children.includes(pk)) {
+                out.push("1 FAMC @" + fidOf.get(f) + "@");
+                if (adopted.get(pk)) out.push("1 ADOP", "2 FAMC @" + fidOf.get(f) + "@");
+            }
+            if (f.parents.includes(pk)) out.push("1 FAMS @" + fidOf.get(f) + "@");
+        }
+    }
+    for (const f of famsOut) {
+        out.push("0 @" + fidOf.get(f) + "@ FAM");
+        // по практике 5.5.1: сначала HUSB, затем WIFE
+        const ps = f.parents.map(p => ({ p, r: recs.find(x => x.name + " " + x.date === p) }));
+        for (const x of ps.filter(x => !(x.r && x.r.sex === 'F')))
+            out.push("1 HUSB @" + idOf.get(x.p) + "@");
+        for (const x of ps.filter(x => x.r && x.r.sex === 'F'))
+            out.push("1 WIFE @" + idOf.get(x.p) + "@");
+        for (const c of f.children) {
+            out.push("1 CHIL @" + idOf.get(c) + "@");
+            if (adopted.get(c)) out.push("2 PEDI adopted");
+        }
+        if (f.marr) {
+            out.push("1 MARR", "2 DATE " + gdate(f.marr.d));
+            if (f.marr.plac) out.push("2 PLAC " + f.marr.plac);
+        }
+        if (f.div) {
+            out.push("1 DIV", "2 DATE " + gdate(f.div.d));
+            if (f.div.plac) out.push("2 PLAC " + f.div.plac);
+        }
+    }
+    out.push("0 TRLR");
+    return out.join("\n");
+}
+
+// импорт разобранного гедкома: персоны (кроме свадеб «Имя+Имя»), связи
+// родитель→ребёнок, семьи (2 родителя) и свадьбы «Имя+Имя ДАТА» с разводом;
+// возвращает краткий отчёт
+export async function importGedcom(chatId, g) {
+    const byId = new Map(); // xref → ключ «Имя ГГГГ-ММ-ДД»
+    let persons = 0;
+    for (const ind of g.indis) {
+        if (!ind.name || !ind.birt || !ind.birt.date) continue;
+        await upsertEvent(chatId, {
+            n: ind.name, d: ind.birt.date,
+            sex: ind.sex, dd: ind.deat && ind.deat.date ? ind.deat.date : undefined,
+        });
+        byId.set(ind.__xref, ind.name + " " + ind.birt.date);
+        persons++;
+    }
+    let linkCount = 0, weddings = 0;
+    for (const f of g.fams) {
+        const parents = [f.husb, f.wife].filter(Boolean).map(x => byId.get(x)).filter(Boolean);
+        const kids = f.chil.map(x => byId.get(x)).filter(Boolean);
+        for (const p of parents) for (const cx of f.chil) {
+            const c = byId.get(cx);
+            if (!c || p === c) continue;
+            const { link } = await addLink(chatId, p, c, 'c');
+            if (f.adopted.includes(cx)) await db.update(links).set({ adopted: true }).where(eq(links.id, link.id)).run();
+            linkCount++;
+        }
+        for (const c of kids) await ensureFam(chatId, c);
+        // свадьба → запись «Имя+Имя ДАТА», развод — хвостом; MARR/DIV в семью
+        if (parents.length === 2 && f.marr && f.marr.date) {
+            await upsertEvent(chatId, {
+                n: keyN(parents[0]) + "+" + keyN(parents[1]), d: f.marr.date,
+                plac: f.marr.plac,
+                dd: f.div && f.div.date ? f.div.date : undefined,
+                plac2: f.div && f.div.plac ? f.div.plac : undefined,
+            });
+            const famRows = await chatFams(chatId);
+            const fam = famRows.find(f2 => parents.every(p => JSON.parse(f2.parents).includes(p))
+                && kids.some(c => JSON.parse(f2.children).includes(c)));
+            if (fam) {
+                const upd = { marrD: f.marr.date, marrPlac: f.marr.plac || null };
+                if (f.div && f.div.date) { upd.divD = f.div.date; upd.divPlac = f.div.plac || null; }
+                await db.update(fams).set(upd).where(eq(fams.id, fam.id)).run();
+            }
+            weddings++;
+        }
+    }
+    // ADOP + FAMC у персоны: связь с этой семьёй — усыновление
+    for (const ind of g.indis) {
+        if (!ind.adopFams || !ind.adopFams.length) continue;
+        const c = byId.get(ind.__xref);
+        if (!c) continue;
+        for (const fx of ind.adopFams) {
+            const f = g.fams.find(x => x.__xref === fx);
+            if (!f) continue;
+            const ps = [f.husb, f.wife].map(x => byId.get(x));
+            for (const l of await chatLinks(chatId))
+                if (l.c === c && ps.includes(l.p))
+                    await db.update(links).set({ adopted: true }).where(eq(links.id, l.id)).run();
+        }
+    }
+    return { persons, links: linkCount, weddings };
 }
 
 // sendMessage с разбиением длинного текста (лимит TG 4096);

@@ -476,26 +476,50 @@ function explicitZoneMinutes(s) {
 // 1: имя, 2-4: дата, 5-6: время, 7: зона в скобках, 8: зона без скобок.
 // Без \b вокруг группы зоны: в юникод-режиме \b ASCII-only и не срабатывает
 // на кириллице («МСК+2» без скобок не разбиралось).
-const TRIGGER_RE = /^(.+?)\s+(\d{4})[-./]?(\d{2})[-./]?(\d{2})(?:\s+(\d{1,2})(?:[:.\u0433]?(\d{2}))?)?\s*(?:\(\s*([^)]+?)\s*\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\s*[+-]\s*\d{1,2}))?\s*$/iu;
+// 1: имя; 2-4: дата рождения, 5-6: время, 7: зона в скобках, 8: зона без
+// скобок; 9-15: то же для смерти — необязательный второй хвост.
+const DATE_TAIL = "(\\d{4})[-./]?(\\d{2})[-./]?(\\d{2})(?:\\s+(\\d{1,2})(?:[:.\\u0433]?(\\d{2}))?)?\\s*(?:\\(\\s*([^)]+?)\\s*\\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\\s*[+-]\\s*\\d{1,2}))?";
+const TRIGGER_RE = new RegExp("^(.+?)\\s+" + DATE_TAIL + "(?:\\s+" + DATE_TAIL + ")?\\s*$", "iu");
 
-function parseTrigger(text) {
-    const m = text.trim().match(TRIGGER_RE);
-    if (!m) return null;
-    const n = m[1].trim();
-    const y = Number(m[2]), mo = Number(m[3]), dd = Number(m[4]);
-    if (mo < 1 || mo > 12 || dd < 1 || dd > 31) return { n, error: "некорректная дата: " + m[2] + "-" + m[3] + "-" + m[4] };
-    const givenTime = m[5] !== undefined;
+// ГГГГММДД[ ЧЧ:ММ][ зона] → дата/время в МСК; без времени и зоны — только d
+function dateTimeToMsk(y, mo, dd, hh, mm, givenTime, diffMin, hasZone) {
+    const pad = (x, l) => String(x).padStart(l, "0");
+    const srcD = y + "-" + pad(mo, 2) + "-" + pad(dd, 2);
+    const rec = {};
+    if (givenTime || hasZone) {
+        if (hasZone) {
+            const msk = new Date(Date.UTC(y, mo - 1, dd, hh, mm, 0) - diffMin * 60000);
+            rec.d = msk.getUTCFullYear() + "-" + pad(msk.getUTCMonth() + 1, 2) + "-" + pad(msk.getUTCDate(), 2);
+            rec.h = msk.getUTCHours();
+            rec.m = msk.getUTCMinutes();
+        } else {
+            rec.d = srcD;
+            rec.h = hh;
+            rec.m = mm;
+        }
+    } else {
+        rec.d = srcD;
+    }
+    return rec;
+}
+
+// разобрать одну группу «дата [время] [зона]» из групп m[gi..gi+6]
+function parseDateGroups(m, gi, what) {
+    const y = Number(m[gi]), mo = Number(m[gi + 1]), dd = Number(m[gi + 2]);
+    if (mo < 1 || mo > 12 || dd < 1 || dd > 31) return { error: "некорректная дата" + what + ": " + m[gi] + "-" + m[gi + 1] + "-" + m[gi + 2] };
+    const givenTime = m[gi + 3] !== undefined;
     let hh = 12, mm = 0;
     if (givenTime) {
-        hh = Number(m[5]);
-        mm = m[6] !== undefined ? Number(m[6]) : 0;
-        if (hh > 23 || mm > 59) return { n, error: "некорректное время: " + m[5] + (m[6] || "") };
+        hh = Number(m[gi + 3]);
+        mm = m[gi + 4] !== undefined ? Number(m[gi + 4]) : 0;
+        if (hh > 23 || mm > 59) return { error: "некорректное время" + what + ": " + m[gi + 3] + (m[gi + 4] || "") };
     }
-    const d = y + "-" + String(mo).padStart(2, "0") + "-" + String(dd).padStart(2, "0");
-    let zone = (m[7] || m[8] || "").trim();
+    const zone = (m[gi + 5] || m[gi + 6] || "").trim();
+    const hasZone = !!zone;
     let diffMin = 3 * 60; // по умолчанию МСК
     let zoneLabel = "";
-    if (zone) {
+    let city = null;
+    if (hasZone) {
         const explicit = explicitZoneMinutes(zone);
         if (explicit !== null) {
             // explicit — абсолютное смещение от UTC; cityDiffMin даёт смещение
@@ -503,36 +527,114 @@ function parseTrigger(text) {
             diffMin = explicit - 3 * 60;
             zoneLabel = zone;
         } else if (CITY_INDEX[zone.toLowerCase()]) {
-            diffMin = cityDiffMin(CITY_INDEX[zone.toLowerCase()], d);
-            zoneLabel = CITY_INDEX[zone.toLowerCase()];
+            city = CITY_INDEX[zone.toLowerCase()];
+            diffMin = cityDiffMin(city, y + "-" + String(mo).padStart(2, "0") + "-" + String(dd).padStart(2, "0"));
+            zoneLabel = city;
         } else {
-            return { n, error: "не знаю места «" + zone + "» — укажите город из списка приложения или сдвиг вида МСК+2 / UTC+5" };
+            return { error: "не знаю места «" + zone + "» — укажите город из списка приложения или сдвиг вида МСК+2 / UTC+5" };
         }
     }
+    const rec = dateTimeToMsk(y, mo, dd, hh, mm, givenTime, diffMin, hasZone);
     const pad = (x, l) => String(x).padStart(l, "0");
-    // без времени и пояса — как в приложении: { n, d }, расчёт в полдень;
-    // время без пояса уже МСК — сдвиг только при явной зоне
-    const rec = { n };
-    if (givenTime || zone) {
-        if (zone) {
-            const msk = new Date(Date.UTC(y, mo - 1, dd, hh, mm, 0) - diffMin * 60000);
-            rec.d = msk.getUTCFullYear() + "-" + pad(msk.getUTCMonth() + 1, 2) + "-" + pad(msk.getUTCDate(), 2);
-            rec.h = msk.getUTCHours();
-            rec.m = msk.getUTCMinutes();
-        } else {
-            rec.d = d;
-            rec.h = hh;
-            rec.m = mm;
-        }
-    } else {
-        rec.d = d;
-    }
-    let note = "";
-    if (zone) {
-        note = zoneLabel + " " + pad(hh, 2) + ":" + pad(mm, 2) + " → МСК " + pad(rec.h, 2) + ":" + pad(rec.m, 2)
-            + (rec.d !== d ? " " + rec.d : "");
+    const srcD = y + "-" + pad(mo, 2) + "-" + pad(dd, 2);
+    const note = zoneLabel
+        ? zoneLabel + " " + pad(hh, 2) + ":" + pad(mm, 2) + " → МСК " + pad(rec.h, 2) + ":" + pad(rec.m, 2)
+            + (rec.d !== srcD ? " " + rec.d : "")
+        : "";
+    // исходное местное время — для гедкома (2 TIME); без введённого времени — нет
+    const src = givenTime ? { srcH: hh, srcM: mm } : {};
+    return { rec: Object.assign(rec, src), note, city };
+}
+
+function parseTrigger(text) {
+    const m = text.trim().match(TRIGGER_RE);
+    if (!m) return null;
+    const n = m[1].trim();
+    const b = parseDateGroups(m, 2, "");
+    if (b.error) return { n, error: b.error };
+    const rec = Object.assign({ n }, b.rec);
+    if (b.city) rec.plac = b.city; // место — только для гедком (PLAC)
+    let note = b.note;
+    if (m[9] !== undefined) { // хвост смерти — только для гедком (DEAT),
+        // результат события (юбилеи) не меняет
+        const s = parseDateGroups(m, 9, " смерти");
+        if (s.error) return { n, error: s.error };
+        rec.dd = s.rec.d;
+        if (s.rec.h !== undefined) { rec.dh = s.rec.h; rec.dm = s.rec.m; }
+        if (s.rec.srcH !== undefined) { rec.dsrcH = s.rec.srcH; rec.dsrcM = s.rec.srcM; }
+        if (s.city) rec.plac2 = s.city; // место хвоста: развод для «Иван+Мария»
     }
     return { rec, note };
+}
+
+// ============================== ГЕДКОМ-ИМПОРТ ==============================
+// «10 MAY 1985» → «1985-05-10»; без полной даты — null
+const GED_MONTHS = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 };
+function gdateToISO(s) {
+    const m = String(s).trim().match(/(\d{1,2})\s+([A-Za-z]{3})\.?\s+(\d{4})/);
+    if (!m) return null;
+    const mo = GED_MONTHS[m[2].toUpperCase()];
+    if (!mo) return null;
+    return m[3] + "-" + String(mo).padStart(2, "0") + "-" + String(m[1]).padStart(2, "0");
+}
+
+// валидный гедком → { indis, fams }; иначе null. Берт только BIRT/DEAT/SEX
+// у INDI и HUSB/WIFE/CHIL/MARR/DIV (DATE, PLAC) у FAM
+function parseGedcom(text) {
+    const lines = String(text).split(/\r?\n/).map(l => l.trim());
+    if (!lines.some(l => /^0\s+HEAD\b/i.test(l))) return null;
+    if (!lines.some(l => /^1\s+(?:GEDC|FAM|INDI)\b/i.test(l) || /@\s+(?:INDI|FAM)\s*$/i.test(l))) return null;
+    const indis = new Map(), fams = new Map();
+    let cur = null, curTag = null;
+    for (const l of lines) {
+        const m = l.match(/^(\d)\s+(?:@([^@]+)@\s+)?([A-Za-z]+)?(?:\s(.*))?$/);
+        if (!m) continue;
+        const lvl = Number(m[1]), xref = m[2], tag = (m[3] || "").toUpperCase(), val = (m[4] || "").trim();
+        if (lvl === 0) {
+            curTag = null;
+            cur = null;
+            if (xref && tag === "INDI") { cur = { __xref: xref, name: "", sex: null, birt: null, deat: null, adopFams: [] }; indis.set(xref, cur); }
+            else if (xref && tag === "FAM") { cur = { __xref: xref, husb: null, wife: null, chil: [], adopted: [], marr: null, div: null }; fams.set(xref, cur); }
+            continue;
+        }
+        if (!cur) continue;
+        if (lvl === 1) curTag = tag;
+        if (lvl === 1) {
+            if (tag === "NAME") cur.name = val.replace(/\/(.*?)\//g, "$1").trim();
+            else if (tag === "SEX") cur.sex = val.toUpperCase().startsWith("F") ? "F" : "M";
+            else if (tag === "BIRT") cur.birt = cur.birt || {};
+            else if (tag === "DEAT") cur.deat = cur.deat || {};
+            else if (tag === "MARR") cur.marr = cur.marr || {};
+            else if (tag === "DIV") cur.div = cur.div || {};
+            else if (tag === "HUSB" || tag === "WIFE" || tag === "CHIL") {
+                const r = val.match(/@([^@]+)@/);
+                if (r) {
+                    if (tag === "CHIL") { cur.chil.push(r[1]); cur.lastChil = r[1]; }
+                    else cur[tag.toLowerCase()] = r[1];
+                }
+            } else if (tag === "ADOP") cur.adop = true;
+        } else if (lvl === 2 && tag === "PEDI" && /adopt/i.test(val)) {
+            if (curTag === "CHIL" && cur.lastChil && !cur.adopted.includes(cur.lastChil)) cur.adopted.push(cur.lastChil);
+        } else if (lvl === 2 && tag === "FAMC" && curTag === "ADOP") {
+            const r = val.match(/@([^@]+)@/);
+            if (r && cur.adopFams && !cur.adopFams.includes(r[1])) cur.adopFams.push(r[1]);
+        } else if (lvl === 2 && tag === "DATE") {
+            const iso = gdateToISO(val);
+            if (!iso) continue;
+            if (curTag === "BIRT" && cur.birt) cur.birt.date = iso;
+            else if (curTag === "DEAT" && cur.deat) cur.deat.date = iso;
+            else if (curTag === "MARR" && cur.marr) cur.marr.date = iso;
+            else if (curTag === "DIV" && cur.div) cur.div.date = iso;
+        } else if (lvl === 2 && tag === "TIME" && /^\d{1,2}:\d{2}/.test(val)) {
+            if (curTag === "BIRT" && cur.birt) cur.birt.time = val.slice(0, 5);
+            else if (curTag === "DEAT" && cur.deat) cur.deat.time = val.slice(0, 5);
+        } else if (lvl === 2 && tag === "PLAC") {
+            if (curTag === "MARR" && cur.marr) cur.marr.plac = val;
+            else if (curTag === "DIV" && cur.div) cur.div.plac = val;
+        }
+    }
+    if (!indis.size && !fams.size) return null;
+    return { indis: [...indis.values()], fams: [...fams.values()] };
 }
 
 // ============================== ВЫВОД ==============================
@@ -580,6 +682,304 @@ function upsertRecord(rec, peerId) {
     saveDb();
 }
 
+// ---- гедком-база: персоны/связи/семьи, дерево в рамках чата (peerId) ----
+// персона = «Имя ГГГГ-ММ-ДД» (ключ), связь = родитель→ребёнок из ответа
+// триггером на триггер, семья = подтверждённая пара родителей
+
+const pkey = r => r.n + " " + r.d;
+const keyN = k => k.slice(0, -11); // имя из ключа
+const keyY = k => Number(k.slice(-10, -6)); // год рождения из ключа
+
+function recordOf(peerId, key) {
+    return db.records.find(r => r.peerId === peerId && pkey(r) === key) || null;
+}
+
+// добавить связь родитель→ребёнок; who — кто из двоих пришёл новым триггером
+function addLink(peerId, parentKey, childKey, who) {
+    if (!db.links) db.links = [];
+    const same = db.links.find(l => l.peerId === peerId && l.p === parentKey && l.c === childKey);
+    if (same) return { link: same, dup: true };
+    if (!db.nextLinkId) db.nextLinkId = 1;
+    const link = { id: db.nextLinkId++, peerId, p: parentKey, c: childKey, who, cmid: 0 };
+    db.links.push(link);
+    saveDb();
+    return { link, dup: false };
+}
+
+// все родители ребёнка в чате
+function parentKeys(peerId, childKey) {
+    return [...new Set((db.links || [])
+        .filter(l => l.peerId === peerId && l.c === childKey)
+        .map(l => l.p))];
+}
+
+// двое родителей — уже семья: собрать всех родителей ребёнка в один FAM
+function ensureFam(peerId, childKey) {
+    const ps = parentKeys(peerId, childKey);
+    if (ps.length < 2) return null;
+    if (!db.fams) db.fams = [];
+    if (!db.nextFamId) db.nextFamId = 1;
+    let f = db.fams.find(f => f.peerId === peerId && f.children.includes(childKey));
+    if (!f) { f = { id: db.nextFamId++, peerId, parents: [], children: [] }; db.fams.push(f); }
+    for (const p of ps) if (!f.parents.includes(p)) f.parents.push(p);
+    if (!f.children.includes(childKey)) f.children.push(childKey);
+    for (const l of db.links || [])
+        if (l.peerId === peerId && l.c === childKey) l.fam = f.id;
+    return f;
+}
+
+// кандидаты-свадьбы: триггеры «Иван+Мария ГГГГММДД» в базе, где одна половина —
+// текущий родитель, другая — другой родитель ребёнка; свадьба позже рождения
+// обоих; свадьба может быть и позже рождения ребёнка — это жизнь; релевантные —
+// по близости года свадьбы к году рождения ребёнка
+function pairRecords(peerId, link) {
+    const cy = keyY(link.c), out = [], seen = new Set();
+    for (const o of parentKeys(peerId, link.c)) {
+        if (o === link.p) continue;
+        for (const name of [keyN(link.p) + "+" + keyN(o), keyN(o) + "+" + keyN(link.p)]) {
+            for (const r of db.records.filter(r => r.peerId === peerId && r.n === name)) {
+                const wy = keyY(pkey(r));
+                if (wy <= keyY(link.p) || wy <= keyY(o)) continue;
+                if (seen.has(pkey(r))) continue;
+                seen.add(pkey(r));
+                out.push({ pair: pkey(r), other: o, wy });
+            }
+        }
+    }
+    return out.sort((a, b) => Math.abs(a.wy - cy) - Math.abs(b.wy - cy)).slice(0, 5);
+}
+
+// подтвердить свадьбу: связывает Ивана и Марию с «Иван+Мария ГГГГММДД»,
+// первый в имени — М, второй — Ж; в гедком пишется MARR DATE/PLAC
+function confirmPair(peerId, link, cand) {
+    const f = ensureFam(peerId, link.c);
+    if (!f) return null;
+    const pairRec = recordOf(peerId, cand.pair);
+    if (!pairRec) return null;
+    f.marr = { d: pairRec.d };
+    if (pairRec.plac) f.marr.plac = pairRec.plac;
+    // хвост «Иван+Мария ГГГГММДД ГГГГММДД» — развод (DIV)
+    if (pairRec.dd) {
+        f.div = { d: pairRec.dd };
+        if (pairRec.plac2) f.div.plac = pairRec.plac2;
+    }
+    const [n1, n2] = pairRec.n.split("+");
+    for (const pk of f.parents) {
+        const rec = recordOf(peerId, pk);
+        if (!rec) continue;
+        if (keyN(pk) === n1) rec.sex = "M";
+        else if (keyN(pk) === n2) rec.sex = "F";
+    }
+    link.pairCand = null;
+    saveDb();
+    return f;
+}
+
+// почистить семьи после удаления связей: ребёнок остаётся в семье, пока
+// есть связь с флагом fam; пустые семьи и висячие флаги снимаются
+function refreshFams() {
+    for (const f of db.fams || [])
+        f.children = f.children.filter(c => (db.links || []).some(l => l.fam === f.id && l.c === c));
+    db.fams = (db.fams || []).filter(f => f.children.length);
+    for (const l of db.links || [])
+        if (l.fam !== undefined && !(db.fams || []).some(f => f.id === l.fam)) l.fam = undefined;
+    saveDb();
+}
+
+// текст сообщения-связи: строки связи (+ семья/вопрос), без юбилеев события —
+// гедком-фрагмент добавляется отдельно (gedcomText с ключами)
+function linkText(peerId, link) {
+    let t = "🔗 Родитель: " + link.p + " → ребёнок: " + link.c + (link.adopted ? " 🤱 (усыновление)" : "");
+    if (link.fam) {
+        const f = (db.fams || []).find(f => f.id === link.fam);
+        if (f) t += "\n🧬 " + f.parents.map(keyN).join("+") + " — родители: " + keyN(link.c)
+            + (f.marr ? " (свадьба " + f.marr.d + (f.marr.plac ? ", " + f.marr.plac : "") + ")" : "")
+            + (f.div ? " (развод " + f.div.d + ")" : "");
+    }
+    if (link.pairCand && link.pairCand.length) {
+        if (link.pairCand.length === 1)
+            t += "\n🧬 Свадьба его родителей: " + link.pairCand[0].pair + "?";
+        else
+            t += "\n🧬 Свадьба его родителей?\n"
+                + link.pairCand.map((k, i) => (i + 1) + ") " + k.pair).join("\n");
+    }
+    return t;
+}
+
+// клавиатура сообщения-связи: ♂/♀ для нового лица, Да/Нет или 1 2… Нет для пары
+function linkKeyboard(peerId, link) {
+    const mk = (label, payload) => ({
+        action: { type: "callback", label, payload: JSON.stringify(payload) },
+        color: "secondary"
+    });
+    const rows = [];
+    rows.push([mk("👎", { c: "dell", l: link.id }, "secondary")]);
+    rows.push([mk("🤱", { c: "adop", l: link.id }, "secondary")]);
+    const rec = recordOf(peerId, link[link.who]);
+    if (rec && !rec.sex)
+        rows.push([mk("♂", { c: "sex", l: link.id, s: "M" }), mk("♀", { c: "sex", l: link.id, s: "F" })]);
+    if (link.pairCand && link.pairCand.length) {
+        const btns = link.pairCand.length === 1
+            ? [mk("Да", { c: "pair", l: link.id, i: 0 })]
+            : link.pairCand.map((k, i) => mk(String(i + 1), { c: "pair", l: link.id, i }));
+        btns.push(mk("Нет", { c: "pair", l: link.id, i: -1 }));
+        rows.push(btns);
+    }
+    // пустая клавиатура обязана проходить в edit — иначе останется прежняя
+    return JSON.stringify({ inline: true, buttons: rows });
+}
+
+// импорт разобранного гедкома: персоны (кроме свадеб «Имя+Имя»), связи
+// родитель→ребёнок, семьи (2 родителя) и свадьбы «Имя+Имя ДАТА» с разводом;
+// возвращает краткий отчёт
+function importGedcom(peerId, g) {
+    const byId = new Map(); // xref → ключ «Имя ГГГГ-ММ-ДД»
+    let persons = 0;
+    for (const ind of g.indis) {
+        if (!ind.name || !ind.birt || !ind.birt.date) continue;
+        const rec = { n: ind.name, d: ind.birt.date };
+        if (ind.sex) rec.sex = ind.sex;
+        if (ind.birt.time) {
+            const [h, m] = ind.birt.time.split(":").map(Number);
+            rec.srcH = h; rec.srcM = m;
+        }
+        if (ind.deat && ind.deat.date) {
+            rec.dd = ind.deat.date;
+            if (ind.deat.time) {
+                const [h, m] = ind.deat.time.split(":").map(Number);
+                rec.dsrcH = h; rec.dsrcM = m;
+            }
+        }
+        upsertRecord(rec, peerId);
+        byId.set(ind.__xref, pkey(rec));
+        persons++;
+    }
+    let linkCount = 0, weddings = 0;
+    const children = new Set();
+    for (const f of g.fams) {
+        const parents = [f.husb, f.wife].filter(Boolean).map(x => byId.get(x)).filter(Boolean);
+        const kids = f.chil.map(x => byId.get(x)).filter(Boolean);
+        for (const p of parents) for (const cx of f.chil) {
+            const c = byId.get(cx);
+            if (!c || p === c) continue;
+            const { link } = addLink(peerId, p, c, "c");
+            if (f.adopted.includes(cx)) link.adopted = true;
+            children.add(c);
+            linkCount++;
+        }
+        for (const c of kids) ensureFam(peerId, c);
+        // свадьба → запись «Имя+Имя ДАТА», развод — хвостом; MARR/DIV в семью
+        if (parents.length === 2 && f.marr && f.marr.date) {
+            const rec = { n: keyN(parents[0]) + "+" + keyN(parents[1]), d: f.marr.date };
+            if (f.marr.plac) rec.plac = f.marr.plac;
+            if (f.div && f.div.date) {
+                rec.dd = f.div.date;
+                if (f.div.plac) rec.plac2 = f.div.plac;
+            }
+            upsertRecord(rec, peerId);
+            const fam = (db.fams || []).find(f2 => f2.peerId === peerId
+                && parents.every(p => f2.parents.includes(p))
+                && kids.some(c => f2.children.includes(c)));
+            if (fam) {
+                fam.marr = { d: f.marr.date };
+                if (f.marr.plac) fam.marr.plac = f.marr.plac;
+                if (f.div && f.div.date) {
+                    fam.div = { d: f.div.date };
+                    if (f.div.plac) fam.div.plac = f.div.plac;
+                }
+            }
+            weddings++;
+        }
+    }
+    // ADOP + FAMC у персоны: связь с этой семьёй — усыновление
+    for (const ind of g.indis) {
+        if (!ind.adopFams || !ind.adopFams.length) continue;
+        const c = byId.get(ind.__xref);
+        if (!c) continue;
+        for (const fx of ind.adopFams) {
+            const f = g.fams.find(x => x.__xref === fx);
+            if (!f) continue;
+            const ps = [f.husb, f.wife].map(x => byId.get(x));
+            for (const l of db.links || [])
+                if (l.peerId === peerId && l.c === c && ps.includes(l.p)) l.adopted = true;
+        }
+    }
+    saveDb();
+    return { persons, links: linkCount, weddings };
+}
+
+// GEDCOM 5.5.1 по чату: INDI из записей, FAM из подтверждённых семей,
+// неподтверждённые связи — по семье на каждого родителя.
+// keys — необязательный набор персон: фрагмент только по ним (для
+// сообщений-связей), семьи усекаются до выбранных персон
+function gedcomText(peerId, keys) {
+    const MON = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+    const gdate = d => { const [y, mo, dd] = d.split("-").map(Number); return dd + " " + MON[mo - 1] + " " + y; };
+    const hasKeys = Array.isArray(keys) && keys.length > 0;
+    // «Иван+Мария» — событие-свадьба, не персона: в INDI не попадает
+    const recs = db.records.filter(r => r.peerId === peerId && !r.n.includes("+")
+        && (!hasKeys || keys.includes(pkey(r))));
+    const idOf = new Map(recs.map((r, i) => [pkey(r), "I" + (i + 1)]));
+    const links = (db.links || []).filter(l => l.peerId === peerId && idOf.has(l.p) && idOf.has(l.c));
+    const fams = [];
+    for (const f of (db.fams || []).filter(f => f.peerId === peerId && f.children.every(c => idOf.has(c)) && f.parents.every(p2 => idOf.has(p2)))) {
+        const ps = hasKeys ? f.parents.filter(p => keys.includes(p)) : f.parents;
+        const cs = hasKeys ? f.children.filter(c => keys.includes(c)) : f.children;
+        if (!hasKeys || (ps.length && cs.length))
+            fams.push({ parents: ps, children: cs, marr: f.marr, div: f.div });
+    }
+    for (const l of links) {
+        if (fams.some(f => f.parents.includes(l.p) && f.children.includes(l.c))) continue;
+        let f = fams.find(f => f.parents.length === 1 && f.parents[0] === l.p);
+        if (!f) { f = { parents: [l.p], children: [] }; fams.push(f); }
+        if (!f.children.includes(l.c)) f.children.push(l.c);
+    }
+    const fidOf = new Map(fams.map((f, i) => [f, "F" + (i + 1)]));
+    const adopted = new Map((db.links || []).filter(l => l.peerId === peerId && l.adopted).map(l => [l.c, true]));
+    const out = ["0 HEAD", "1 SOUR LunarReturns", "1 GEDC", "2 VERS 5.5.1", "2 FORM LINEAGE-LINKED", "1 CHAR UTF-8"];
+    for (const r of recs) {
+        out.push("0 @" + idOf.get(pkey(r)) + "@ INDI");
+        out.push("1 NAME " + r.n);
+        if (r.sex) out.push("1 SEX " + r.sex);
+        out.push("1 BIRT", "2 DATE " + gdate(r.d));
+        if (r.srcH !== undefined) out.push("2 TIME " + String(r.srcH).padStart(2, "0") + ":" + String(r.srcM).padStart(2, "0"));
+        if (r.dd) {
+            out.push("1 DEAT", "2 DATE " + gdate(r.dd));
+            if (r.dsrcH !== undefined) out.push("2 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
+        }
+        for (const f of fams) {
+            if (f.children.includes(pkey(r))) {
+                out.push("1 FAMC @" + fidOf.get(f) + "@");
+                if (adopted.get(pkey(r))) out.push("1 ADOP", "2 FAMC @" + fidOf.get(f) + "@");
+            }
+            if (f.parents.includes(pkey(r))) out.push("1 FAMS @" + fidOf.get(f) + "@");
+        }
+    }
+    for (const f of fams) {
+        out.push("0 @" + fidOf.get(f) + "@ FAM");
+        // по практике 5.5.1: сначала HUSB, затем WIFE
+        const ps = f.parents.map(p => ({ p, r: recs.find(x => pkey(x) === p) }));
+        for (const x of ps.filter(x => !(x.r && x.r.sex === "F")))
+            out.push("1 HUSB @" + idOf.get(x.p) + "@");
+        for (const x of ps.filter(x => x.r && x.r.sex === "F"))
+            out.push("1 WIFE @" + idOf.get(x.p) + "@");
+        for (const c of f.children) {
+            out.push("1 CHIL @" + idOf.get(c) + "@");
+            if (adopted.get(c)) out.push("2 PEDI adopted");
+        }
+        if (f.marr) {
+            out.push("1 MARR", "2 DATE " + gdate(f.marr.d));
+            if (f.marr.plac) out.push("2 PLAC " + f.marr.plac);
+        }
+        if (f.div) {
+            out.push("1 DIV", "2 DATE " + gdate(f.div.d));
+            if (f.div.plac) out.push("2 PLAC " + f.div.plac);
+        }
+    }
+    out.push("0 TRLR");
+    return out.join("\n");
+}
+
 // ============================== НАСТРОЙКИ ==============================
 // Оповещения о религиозных днях per peer: { orth, islam, bud, cath, jud }.
 
@@ -609,7 +1009,8 @@ function relKeyboard(peerId) {
         inline: true,
         buttons: [
             [mk("🗑", { c: "del" }, "secondary"), mk("🔔", { c: "bell" }, "secondary"), btn("orth"), btn("islam")],
-            [btn("bud"), btn("cath"), btn("jud"), mk("❌", { c: "close" }, "secondary")]
+            [btn("bud"), btn("cath"), btn("jud"), mk("🧬", { c: "tree" }, "secondary")],
+            [mk("❌", { c: "close" }, "secondary")]
         ]
     });
 }
@@ -620,7 +1021,7 @@ function ownerKeyboard() {
         action: { type: "callback", label, payload: JSON.stringify(payload) },
         color: "secondary"
     });
-    return JSON.stringify({ inline: true, buttons: [[mk("🗑", { c: "del" }), mk("🔔", { c: "bell" }), mk("❌", { c: "close" })]] });
+    return JSON.stringify({ inline: true, buttons: [[mk("🗑", { c: "del" }), mk("🔔", { c: "bell" }), mk("🧬", { c: "tree" }), mk("❌", { c: "close" })]] });
 }
 
 // клавиатура обычного участника группового чата
@@ -629,7 +1030,7 @@ function bellKeyboard() {
         action: { type: "callback", label, payload: JSON.stringify(payload) },
         color: "secondary"
     });
-    return JSON.stringify({ inline: true, buttons: [[mk("🔔", { c: "bell" }), mk("❌", { c: "close" })]] });
+    return JSON.stringify({ inline: true, buttons: [[mk("🔔", { c: "bell" }), mk("🧬", { c: "tree" }), mk("❌", { c: "close" })]] });
 }
 
 const snackbar = text => JSON.stringify({ type: "show_snackbar", text });
@@ -932,7 +1333,7 @@ async function longPollStep() {
                     continue;
                 }
                 if (!msg.text && !msg.payload) continue;
-                await handleMessage(msg.peer_id, String(msg.text || ""), msg.date, msg.id, msg.conversation_message_id, msg.from_id, unpay(msg.payload || ""));
+                await handleMessage(msg.peer_id, String(msg.text || ""), msg.date, msg.id, msg.conversation_message_id, msg.from_id, unpay(msg.payload || ""), msg.reply_message || null);
             } else if (upd.type === "message_event" && upd.object) {
                 await handleEvent(upd.object);
             } else if (upd.type && upd.type.includes("reaction") && upd.object) {
@@ -945,7 +1346,7 @@ async function longPollStep() {
     }
 }
 
-const HELP = "Реакция 👎 — удалить событие. Реакция 👀 — детально.";
+const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Ответ триггером на триггер — связь родитель→ребёнок. Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата.";
 
 // «Начать» (payload {"command":"start"}) работает как «/»
 const isStart = (text, payload) => {
@@ -954,8 +1355,9 @@ const isStart = (text, payload) => {
     return payload === "start";
 };
 
-// ответ на «/» или «Начать»: справка + клавиатура по чату/роли
-async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, payload = "") {
+// ответ на «/» или «Начать»: справка + клавиатура по чату/роли;
+// replyMsg — msg.reply_message (ответ триггером на триггер = связь)
+async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, payload = "", replyMsg = null) {
     if (process.env.LOG_UPDATES) console.log("msg from", peerId, ":", text);
     if (date) markSeen(date);
     if (isStart(text, payload)) {
@@ -964,6 +1366,29 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         else kb = (await isChatAdmin(peerId, fromId)) ? ownerKeyboard() : bellKeyboard();
         await messagesSend(peerId, HELP, msgId, convMsgId, kb);
         return;
+    }
+    const t = text.trim().toLowerCase();
+    if (t === "/gedcom" || t === "гедком") {
+        const g = gedcomText(peerId);
+        if (!db.links || !db.links.length) { await messagesSend(peerId, "связей пока нет — ответьте триггером на триггер", msgId, convMsgId); return; }
+        const parts = splitText(g);
+        for (let i = 0; i < parts.length; i++)
+            await messagesSend(peerId, parts[i], i === 0 ? msgId : 0, i === 0 ? convMsgId : 0);
+        return;
+    }
+    // заголовок события в ответе бота: «Имя ГГГГ-ММ-ДД…»
+    const replyHead = replyMsg && replyMsg.from_id < 0
+        ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+    // сообщение-гедком → импорт древа (до разбора триггеров)
+    const g = parseGedcom(text);
+    if (g) {
+        const r = importGedcom(peerId, g);
+        if (r.persons || r.links) {
+            await messagesSend(peerId, "📦 Гедком импортирован: персон " + r.persons
+                + ", связей " + r.links + (r.weddings ? ", свадеб " + r.weddings : ""), msgId, convMsgId);
+            return;
+        }
+        // гедком без персон с датами — молчим, дальше как триггеры
     }
     // триггеров может быть несколько — по одному на строку
     const lines = String(text).split(/\s*\n+\s*/).filter(Boolean);
@@ -975,6 +1400,39 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             continue;
         }
         upsertRecord(parsed.rec, peerId);
+        // ответ триггером на триггер — связь родитель→ребёнок
+        if (replyHead) {
+            const otherKey = replyHead[1].trim() + " " + replyHead[2];
+            const newKey = pkey(parsed.rec);
+            if (parsed.rec.d === replyHead[2]) {
+                // близнецы: даты рождения совпали — связь не добавляем
+                await messagesSend(peerId, jubileeText(parsed.rec, parsed.note)
+                    + "\n🔗 связь не добавлена: даты рождения совпадают (близнецы?)", msgId, convMsgId);
+                continue;
+            }
+            const parentFirst = parsed.rec.d < replyHead[2]; // старшая дата — родитель
+            const { link, dup } = addLink(peerId,
+                parentFirst ? newKey : otherKey,
+                parentFirst ? otherKey : newKey,
+                parentFirst ? "p" : "c");
+            if (!dup) {
+                ensureFam(peerId, link.c); // двое родителей — уже семья
+                link.pairCand = pairRecords(peerId, link); // свадьбы «Иван+Мария»
+            }
+            saveDb();
+            const txt = (dup ? linkText(peerId, link) + "\n🔗 связь уже записана" : linkText(peerId, link))
+                + "\n" + gedcomText(peerId, [link.p, link.c]);
+            const res = await messagesSend(peerId, txt,
+                msgId, convMsgId, dup ? undefined : linkKeyboard(peerId, link));
+            if (!dup) {
+                // cmid ответа — чтобы 👎 удалил именно связь
+                const sent = res && typeof res === "object" ? res : {};
+                link.cmid = sent.conversation_message_id || sent.message_id || 0;
+                saveDb();
+            }
+            console.log("link:", link.p, "→", link.c, "peer", peerId, dup ? "(повтор)" : "");
+            continue;
+        }
         await messagesSend(peerId, jubileeText(parsed.rec, parsed.note), msgId, convMsgId);
         console.log("record:", parsed.rec.n, parsed.rec.d, "peer", peerId);
     }
@@ -1049,11 +1507,54 @@ async function editOrigin(o, text, kb) {
 
 async function handleEvent(o) {
     const p = unpay(o.payload);
+    const peerId = o.peer_id;
+    // кнопки сообщения-связи: пол нового лица, свадьба, усыновление, удаление
+    if (p && typeof p === "object" && (p.c === "sex" || p.c === "pair" || p.c === "adop" || p.c === "dell")) {
+        const link = (db.links || []).find(l => l.id === p.l && l.peerId === peerId);
+        if (!link) { await answerEvent(o.event_id || o.id, o.user_id, peerId, "связь не найдена"); return; }
+        let snack = "";
+        if (p.c === "sex") {
+            const rec = recordOf(peerId, link[link.who]);
+            if (rec) { rec.sex = p.s === "F" ? "F" : "M"; saveDb(); }
+            snack = "пол: " + (rec && rec.sex === "F" ? "♀" : "♂");
+        } else if (p.c === "adop") {
+            link.adopted = !link.adopted;
+            saveDb();
+            snack = link.adopted ? "🤱 усыновление" : "усыновление снято";
+        } else if (p.c === "dell") {
+            const head = "🔗 Связь удалена: " + link.p + " → " + link.c;
+            db.links = db.links.filter(l => l !== link);
+            refreshFams();
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "связь удалена");
+            const rec = await findRecordByCmid(peerId, o.conversation_message_id);
+            await editOrigin(o, (rec ? jubileeText(rec, "") + "\n" : "") + head, linkKeyboard(peerId, link));
+            return;
+        } else {
+            const i = Number(p.i);
+            let fragKeys = [link.p, link.c];
+            if (i >= 0 && link.pairCand && link.pairCand[i]) {
+                const f = confirmPair(peerId, link, link.pairCand[i]);
+                snack = f && f.marr ? "💍 " + f.marr.d + (f.marr.plac ? ", " + f.marr.plac : "") : "не найдено";
+                if (f) fragKeys = [...f.parents, ...f.children]; // все трое
+            } else {
+                link.pairCand = null;
+                saveDb();
+                snack = "без свадьбы";
+            }
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, snack);
+            await editOrigin(o, linkText(peerId, link) + "\n" + gedcomText(peerId, fragKeys), linkKeyboard(peerId, link));
+            return;
+        }
+        await answerEvent(o.event_id || o.id, o.user_id, peerId, snack);
+        // sex/adop: фрагмент — новое лицо (с полом) либо родитель+ребёнок
+        const fragKeys = p.c === "sex" ? [link[link.who]] : [link.p, link.c];
+        await editOrigin(o, linkText(peerId, link) + "\n" + gedcomText(peerId, fragKeys), linkKeyboard(peerId, link));
+        return;
+    }
     // нормализуем: {c} / {rel} либо строка "del" / "del:yes" / "rel:orth"
     const payload = typeof p === "object" ? (p.rel ? "rel:" + p.rel : String(p.c ?? "")) : p;
-    const peerId = o.peer_id;
     console.log("event:", payload, "peer", peerId);
-    if (!["del", "del:yes", "del:no", "bell", "close"].includes(payload) && !payload.startsWith("rel:")) {
+    if (!["del", "del:yes", "del:no", "bell", "tree", "close"].includes(payload) && !payload.startsWith("rel:")) {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "неизвестная кнопка");
         return;
     }
@@ -1064,7 +1565,7 @@ async function handleEvent(o) {
     }
     if (payload === "del") {
         // подтверждение: список событий чата + 🗑/❌
-        const recs = db.records.filter(r => r.peerId === peerId);
+    const recs = db.records.filter(r => r.peerId === peerId);
         if (!recs.length) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "событий нет");
             return;
@@ -1101,6 +1602,16 @@ async function handleEvent(o) {
         // снекбар останавливает «вращение» на кнопке
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "список событий");
         const parts = splitText(list);
+        await editOrigin(o, parts[0], await peerKeyboard(peerId, o.user_id));
+        for (let i = 1; i < parts.length; i++) await messagesSend(peerId, parts[i]);
+    } else if (payload === "tree") { // 🧬 — гедком-древо чата (как /gedcom)
+        const links = (db.links || []).filter(l => l.peerId === peerId);
+        if (!links.length) {
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "связей пока нет");
+            return;
+        }
+        await answerEvent(o.event_id || o.id, o.user_id, peerId, "гедком-древо чата");
+        const parts = splitText(gedcomText(peerId));
         await editOrigin(o, parts[0], await peerKeyboard(peerId, o.user_id));
         for (let i = 1; i < parts.length; i++) await messagesSend(peerId, parts[i]);
     } else if (payload.startsWith("rel:")) {
@@ -1149,10 +1660,37 @@ async function handleReaction(o) {
         }
         return;
     }
-    if (o.reaction_id === 9) { // 👎 — удалить событие
+    if (o.reaction_id === 9) { // 👎 — удалить связь (сообщение-связь) либо событие
+        const link = (db.links || []).find(l => l.peerId === peerId && l.cmid === cmid);
+        if (link) {
+            const head = "🔗 Связь удалена: " + link.p + " → " + link.c;
+            db.links = db.links.filter(l => l !== link);
+            refreshFams();
+            console.log("reaction 👎: удалена связь", link.p, "→", link.c, "peer", peerId);
+            // остаётся текст события без строки связи
+            const rec = await findRecordByCmid(peerId, cmid);
+            try {
+                await vkApi("messages.edit", {
+                    peer_id: peerId, conversation_message_id: cmid,
+                    message: rec ? jubileeText(rec, "") + "\n" + head : head,
+                    keyboard: JSON.stringify({ inline: true, buttons: [] })
+                });
+            } catch (e) {
+                console.error("reaction edit:", e.message, "— reply");
+                try {
+                    await messagesSend(peerId, head, 0, cmid);
+                } catch (e2) {
+                    console.error("reaction reply:", e2.message);
+                }
+            }
+            return;
+        }
         const rec = await findRecordByCmid(peerId, cmid);
         if (!rec) return;
         db.records = db.records.filter(r => r !== rec);
+        // заодно падают связи с удалённой персоной
+        db.links = (db.links || []).filter(l => !(l.peerId === peerId && (l.p === pkey(rec) || l.c === pkey(rec))));
+        refreshFams();
         saveDb();
         console.log("reaction 👎: удалено событие", rec.n, rec.d, "peer", peerId);
         // правим сообщение события в пометку об удалении (реакции сохраняются),
