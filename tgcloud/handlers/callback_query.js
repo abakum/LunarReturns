@@ -1,13 +1,13 @@
 import { api, db } from 'sdk';
 import { eq } from 'sdk/db';
-import { events, settings, links, fams, gedDrops } from '../schema.js';
+import { events, settings, links, fams, gedDrops, focusView } from '../schema.js';
 import { jubileeText } from '../lib/text.js';
 import { parseGedcom } from '../lib/parse.js';
 import { REL_DEFS, religiousYear } from '../lib/religion.js';
 import {
         HELP, GED_TTL, relMarkup, upcomingText, getSettings, startMarkup, chatAdmin, eventMarkup,
         recordOf, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong, refreshFams, deleteEventCascade,
-        importGedcom,
+        importGedcom, chatLinks, focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText, focusWithSpouses, focusSpousePairs,
 } from '../lib/bot.js';
 
 export default async function (cq, ctx) {
@@ -224,6 +224,42 @@ export default async function (cq, ctx) {
             const fragKeys = act === "sex" ? [fresh[fresh.who === 'p' ? 'parent' : 'child']] : [fresh.parent, fresh.child];
             await editText(await linkText(chatId, fresh) + "\n" + await gedcomText(chatId, fragKeys), await linkMarkup(chatId, fresh), 'HTML');
         }
+        return;
+    }
+
+    // фокус-сообщение: радиус родни 1–5, 🔔/🧬 в радиусе
+    if (/^foc[1-5]$/.test(data) || data === "focbell" || data === "foctree") {
+        const row = (await db.select().from(focusView).where(eq(focusView.chatId, chatId)).all())
+            .find(r => r.messageId === cq.message?.message_id);
+        if (!row) { await answer("сообщение устарело — ответьте «/» на триггер заново"); return; }
+        if (!(await recordOf(chatId, row.pkey))) { await answer("персона не найдена"); return; }
+        const bell = data === "focbell";
+        const radius = bell || data === "foctree" ? row.radius : Number(data.slice(3));
+        if (data !== "focbell" && data !== "foctree")
+            await db.update(focusView).set({ radius }).where(eq(focusView.id, row.id)).run();
+        await answer(data === "focbell" ? "список в радиусе" : (data === "foctree" ? "древо в радиусе" : "от " + focusLabel(radius)));
+        // цифра — только заголовок; тело (список/гедком) — по 🔔/🧬
+        let body = null;
+        if (data === "focbell" || data === "foctree") {
+            const keys = focusWithSpouses(
+                focusKeys((await chatLinks(chatId)).map(l => [l.parent, l.child]), row.pkey, radius),
+                await focusSpousePairs(chatId));
+            const set = new Set(keys);
+            if (bell) {
+                const rows = await db.select().from(events).where(eq(events.chatId, chatId)).all();
+                const sortKey = r => r.date.slice(5) + " " + (r.hour !== null && r.hour !== undefined ? String(r.hour).padStart(2, "0") + String(r.minute ?? 0).padStart(2, "0") : "");
+                body = rows
+                    .filter(r => set.has(r.name + " " + r.date) || (r.name.includes("+") && focusHasPair(r.name, keys)))
+                    .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0))
+                    .map(r => r.name + " " + r.date + (r.hour !== null && r.hour !== undefined ? " " + String(r.hour).padStart(2, "0") + ":" + String(r.minute).padStart(2, "0") : ""))
+                    .join("\n") || "(в радиусе нет событий)";
+            } else {
+                body = await gedcomText(chatId, keys);
+            }
+        }
+        const parts = splitText(focusHead(row.pkey, radius) + (body ? "\n" + body : ""));
+        await editText(parts[0], focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius));
+        for (let i = 1; i < parts.length; i++) await api.sendMessage({ chat_id: chatId, text: parts[i] });
         return;
     }
 

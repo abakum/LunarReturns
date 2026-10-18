@@ -29,8 +29,8 @@ export function relMarkup(chatId, s) {
     const rel = key => btn(REL_DEFS[key].icon + (s[key] ? "🔔" : "🔕"), "rel:" + key);
     return {
         inline_keyboard: [
-            [btn("🗑", "del"), btn("🔔", "bell"), rel("orth"), rel("islam")],
-            [rel("bud"), rel("cath"), rel("jud"), btn("🧬", "tree")],
+            [btn("🗑", "del"), btn("🔔", "bell"), btn("🧬", "tree"), rel("orth")],
+            [rel("islam"), rel("bud"), rel("cath"), rel("jud")],
             [btn("❌", "close")]
         ]
     };
@@ -147,6 +147,7 @@ const keyN = k => k.slice(0, -11);               // имя из ключа
 const keyY = k => Number(k.slice(-10, -6));      // год рождения из ключа
 
 const chatLinks = async chatId => db.select().from(links).where(eq(links.chatId, chatId)).all();
+export { chatLinks };
 const chatFams = async chatId => db.select().from(fams).where(eq(fams.chatId, chatId)).all();
 
 export async function recordOf(chatId, key) {
@@ -383,6 +384,105 @@ export async function linkMarkup(chatId, link) {
     return { inline_keyboard: rows };
 }
 
+// множество родни персоны key в радиусе radius: предки до radius поколений
+// (1=родители, 2=деды…) ∪ все их транзитивные потомки (сам key, сиблинги,
+// двоюродные и потомки всех); pairs — массивы [parent, child]
+function focusKeys(pairs, key, radius) {
+    const kidsOf = new Map(), parentsOf = new Map();
+    for (const [p, c] of pairs) {
+        if (!kidsOf.has(p)) kidsOf.set(p, []);
+        kidsOf.get(p).push(c);
+        if (!parentsOf.has(c)) parentsOf.set(c, []);
+        parentsOf.get(c).push(p);
+    }
+    let frontier = [key];
+    const seen = new Set([key]);
+    for (let gen = 0; gen < radius; gen++) {
+        const next = [];
+        for (const k of frontier) for (const p of parentsOf.get(k) || []) {
+            if (!seen.has(p)) { seen.add(p); next.push(p); }
+        }
+        frontier = next;
+    }
+    const out = new Set(seen);
+    const stack = [...seen];
+    while (stack.length) {
+        const k = stack.pop();
+        for (const c of kidsOf.get(k) || []) if (!out.has(c)) { out.add(c); stack.push(c); }
+    }
+    return [...out];
+}
+
+// входит ли событие-пара «Имя1+Имя2 ДАТА» в фокус: оба имени среди персон множества
+function focusHasPair(name, keys) {
+    if (!name.includes("+")) return false;
+    const names = new Set(keys.map(k => k.slice(0, -11)));
+    return name.split("+").every(n => names.has(n));
+}
+
+// дополнить множество супругами (для связности фрагмента): spousePairs —
+// [[ключ, ключ], …] — пары семей с 2 родителями и свадеб «Имя+Имя»;
+// супруг добавляется, только если его половина уже в множестве
+function focusWithSpouses(keys, spousePairs) {
+    const set = new Set(keys);
+    for (const [a, b] of spousePairs) {
+        if (set.has(a) && !set.has(b)) set.add(b);
+        else if (set.has(b) && !set.has(a)) set.add(a);
+    }
+    return [...set];
+}
+
+// супруги персон чата: пары семей с 2 родителями + свадьбы «Имя+Имя»,
+// разрешённые по записям чата (первая персона с таким именем)
+export async function focusSpousePairs(chatId) {
+    const pairs = (await chatFams(chatId)).filter(f => JSON.parse(f.parents).length === 2)
+        .map(f => JSON.parse(f.parents));
+    const rows = await db.select().from(events).where(eq(events.chatId, chatId)).all();
+    const persons = rows.filter(r => !r.name.includes("+"));
+    for (const r of rows) {
+        if (!r.name.includes("+")) continue;
+        const [a, b] = r.name.split("+");
+        const pa = persons.find(x => x.name === a);
+        const pb = persons.find(x => x.name === b);
+        if (pa && pb) pairs.push([pa.name + " " + pa.date, pb.name + " " + pb.date]);
+    }
+    return pairs;
+}
+
+// подпись радиуса: 1 родителей, 2 дедов, 3 прадедов, 4 прапрадедов…
+export const focusLabel = radius =>
+    radius === 1 ? "родителей" : radius === 2 ? "дедов" : "пра".repeat(radius - 3) + "прадедов";
+
+// заголовок фокус-сообщения
+export const focusHead = (key, radius) => key + " · от " + focusLabel(radius);
+
+// клавиатура фокус-сообщения: как /start по роли, но без кнопок религий,
+// 🔔/🧬 действуют в радиусе, а в ряд с ❌ добавлены неактивные цифры радиуса
+// (активная скрыта)
+export function focusMarkup(chat, chatId, s, radius) {
+    const btn = (text, data) => ({ text, callback_data: data });
+    const bell = btn("🔔", "focbell");
+    const tree = btn("🧬", "foctree");
+    const digits = [1, 2, 3, 4, 5].filter(n => n !== radius).map(n => btn(String(n) + "\u20E3", "foc" + n));
+    const tail = [...digits, btn("❌", "close")];
+    return { inline_keyboard: [[btn("🗑", "del"), bell, tree], tail] };
+}
+
+// разбить длинный текст на куски < 4000 по границам строк (как splitText VK)
+export function splitText(text, MAX = 4000) {
+    if (text.length <= MAX) return [text];
+    const parts = [];
+    let rest = text;
+    while (rest.length > MAX) {
+        let cut = rest.lastIndexOf("\n", MAX);
+        if (cut < MAX / 2) cut = MAX;
+        parts.push(rest.slice(0, cut));
+        rest = rest.slice(cut).replace(/^\n/, "");
+    }
+    if (rest) parts.push(rest);
+    return parts;
+}
+
 // GEDCOM 5.5.1 по чату: INDI из записей (кроме свадеб «Иван+Мария»), FAM из
 // семей (MARR/DIV), неподтверждённые связи — по семье на каждого родителя.
 // keys — необязательный набор персон: фрагмент только по ним (для
@@ -474,6 +574,8 @@ export async function gedcomText(chatId, keys) {
     out.push("0 TRLR");
     return out.join("\n");
 }
+
+export { focusKeys, focusHasPair, focusWithSpouses };
 
 // импорт разобранного гедкома: персоны (кроме свадеб «Имя+Имя»), связи
 // родитель→ребёнок, семьи (2 родителя) и свадьбы «Имя+Имя ДАТА» с разводом;

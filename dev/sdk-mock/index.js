@@ -45,7 +45,10 @@ async function realCall(method, params) {
 
 const hook = (method, params) => {
     const h = globalThis.__tgdev && globalThis.__tgdev.onApi;
-    if (h) h(method, params || {});
+    if (h) {
+        const r = h(method, params || {});
+        return r === undefined ? Promise.resolve({}) : Promise.resolve(r);
+    }
     return Promise.resolve({});
 };
 

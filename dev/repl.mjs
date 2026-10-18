@@ -80,13 +80,15 @@ globalThis.__tgdev = {
     onApi(method, params) {
         if (method === 'sendMessage') {
             const { text, entities } = tgRender(params.text);
-            const m = { n: ++counter, text, entities, markup: params.reply_markup,
+            const n = ++counter;
+            const m = { n, text, entities, markup: params.reply_markup,
                 updateMsg: { chat: { id: CHAT, type: CHAT_TYPE }, from: { id: 999, is_bot: true } } };
             m.flat = flatButtons(m.markup);
             messages.push(m);
             console.log(`[${m.n}] sendMessage:`);
             String(m.text).split('\n').forEach(l => console.log('    ' + l));
             showButtons(m);
+            return { message_id: n, chat: { id: CHAT, type: CHAT_TYPE } }; // как Bot API
         } else if (method === 'editMessageReplyMarkup') {
             const m = messages.find(x => x.n === params.message_id);
             if (!m) { console.log(`    editMessageReplyMarkup: нет сообщения ${params.message_id}`); return; }

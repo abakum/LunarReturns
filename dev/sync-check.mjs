@@ -28,7 +28,7 @@ function cmp(what, vk, tg) {
 // ---- ВК: копия lunarreturns.js с дописанными тестовыми экспортами ----
 // argv "test" уводит main() в тихий путь (печать юбилея) без токена и poll.
 process.env.LR_DB = path.join(TMP, 'vk-db.json');
-const vkHook = '\nmodule.exports.__test = { parseTrigger, parseGedcom, gedStats, addLink, ensureFam, ensureFamSingle, '
+const vkHook = '\nmodule.exports.__test = { parseTrigger, parseGedcom, gedStats, focusKeys, focusHasPair, focusWithSpouses, focusLabel, focusHead, addLink, ensureFam, ensureFamSingle, '
     + 'pairRecords, confirmPair, linkText, gedcomText, importGedcom, upsertRecord, refreshFams, deleteEventCascade, '
     + 'getDb: () => db, setDb: d => { db = d; } };\n';
 const vkFile = path.join(TMP, 'vk.cjs');
@@ -76,6 +76,59 @@ const GEDCOM = [
 ].join('\n');
 cmp('parseGedcom', VK.parseGedcom(GEDCOM), TGP.parseGedcom(GEDCOM));
 cmp('gedStats', VK.gedStats(VK.parseGedcom(GEDCOM)), TGP.gedStats(TGP.parseGedcom(GEDCOM)));
+
+// ==================== 5. фокус-радиус родни ====================
+// дерево: дед+бабка → (отец, тётя), отец+мать → (сын, дочь), тётя → двоюродный
+const FOCUS_CH = 3;
+const focusPersons = [
+    { n: 'Дед', d: '1930-01-01' }, { n: 'Бабка', d: '1932-02-02' },
+    { n: 'Отец', d: '1955-03-03' }, { n: 'Тётя', d: '1957-04-04' }, { n: 'Мать', d: '1956-05-05' },
+    { n: 'Сын', d: '1980-06-06' }, { n: 'Дочь', d: '1982-07-07' }, { n: 'Двоюродный', d: '1984-08-08' },
+    { n: 'Чужой', d: '1990-09-09' },
+];
+const fkeys = p => p.n + ' ' + p.d;
+VK.setDb({ records: [] });
+for (const p of focusPersons) { VK.upsertRecord(p, FOCUS_CH); await TG.upsertEvent(FOCUS_CH, p); }
+const focusPairs = [
+    ['Дед 1930-01-01', 'Отец 1955-03-03'], ['Бабка 1932-02-02', 'Отец 1955-03-03'],
+    ['Дед 1930-01-01', 'Тётя 1957-04-04'], ['Бабка 1932-02-02', 'Тётя 1957-04-04'],
+    ['Отец 1955-03-03', 'Сын 1980-06-06'], ['Мать 1956-05-05', 'Сын 1980-06-06'],
+    ['Отец 1955-03-03', 'Дочь 1982-07-07'], ['Мать 1956-05-05', 'Дочь 1982-07-07'],
+    ['Тётя 1957-04-04', 'Двоюродный 1984-08-08'],
+    ['Чужой 1990-09-09', 'Сын 1980-06-06'], // чужой родитель — тоже предки
+];
+for (const [p, c] of focusPairs) { VK.addLink(FOCUS_CH, p, c, 'c'); await TG.addLink(FOCUS_CH, p, c, 'c'); }
+VK.upsertRecord({ n: 'Отец+Мать', d: '1979-01-01' }, FOCUS_CH);
+await TG.upsertEvent(FOCUS_CH, { n: 'Отец+Мать', d: '1979-01-01' });
+VK.upsertRecord({ n: 'Дед+Чужая', d: '1954-01-01' }, FOCUS_CH);
+await TG.upsertEvent(FOCUS_CH, { n: 'Дед+Чужая', d: '1954-01-01' });
+const son = 'Сын 1980-06-06';
+for (const r of [1, 2, 3, 5]) {
+    const vkK = VK.focusKeys(focusPairs, son, r);
+    const tgK = TG.focusKeys(focusPairs, son, r);
+    cmp('focusKeys радиус ' + r, vkK, tgK);
+    cmp('gedcomText фокус радиус ' + r, VK.gedcomText(FOCUS_CH, vkK), await TG.gedcomText(FOCUS_CH, tgK));
+}
+// радиус 1 у Сына: предки (Отец, Мать, Чужой) + их потомки (Сын, Дочь)
+cmp('focusKeys r1 состав', [...VK.focusKeys(focusPairs, son, 1)].sort(),
+    ['Сын 1980-06-06', 'Дочь 1982-07-07', 'Отец 1955-03-03', 'Мать 1956-05-05', 'Чужой 1990-09-09'].sort());
+// радиус 2: + деды и все их потомки (Тётя, Двоюродный) — всё дерево 9 персон
+cmp('focusKeys r2 состав', [...VK.focusKeys(focusPairs, son, 2)].sort(),
+    [...new Set(focusPairs.flat())].sort());
+cmp('focusHasPair оба в множестве', VK.focusHasPair('Отец+Мать', VK.focusKeys(focusPairs, son, 1)),
+    TG.focusHasPair('Отец+Мать', TG.focusKeys(focusPairs, son, 1)));
+cmp('focusHasPair один вне', VK.focusHasPair('Дед+Чужая', VK.focusKeys(focusPairs, son, 2)),
+    TG.focusHasPair('Дед+Чужая', TG.focusKeys(focusPairs, son, 2)));
+// супруги: у Тёти появляется муж из семьи, половина которой в множестве
+const r1tet = VK.focusKeys(focusPairs, 'Тётя 1957-04-04', 1); // {Тётя, Дед, Бабка, Двоюродный}
+const spPairs = [['Дед 1930-01-01', 'Бабка 1932-02-02'], ['Тётя 1957-04-04', 'Тесть 1931-12-12']];
+cmp('focusWithSpouses', VK.focusWithSpouses(r1tet, spPairs), TG.focusWithSpouses(r1tet, spPairs));
+cmp('gedcomText фокус+супруги',
+    VK.gedcomText(FOCUS_CH, VK.focusWithSpouses(r1tet, spPairs)),
+    await TG.gedcomText(FOCUS_CH, TG.focusWithSpouses(r1tet, spPairs)));
+cmp('focusHead подписи радиусов',
+    [1, 2, 3, 4, 5].map(r => VK.focusHead('Имя 2000-01-01', r)),
+    [1, 2, 3, 4, 5].map(r => TG.focusHead('Имя 2000-01-01', r)));
 
 // ==================== 3. импорт → полный экспорт гедкома ====================
 const g = VK.parseGedcom(GEDCOM);

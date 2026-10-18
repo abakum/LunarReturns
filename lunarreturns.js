@@ -656,6 +656,54 @@ function gedStats(g) {
     return { persons, links, weddings };
 }
 
+// множество родни персоны key в радиусе radius: предки до radius поколений
+// (1=родители, 2=деды…) ∪ все их транзитивные потомки (сам key, сиблинги,
+// двоюродные и потомки всех); pairs — массивы [parent, child]
+function focusKeys(pairs, key, radius) {
+    const kidsOf = new Map(), parentsOf = new Map();
+    for (const [p, c] of pairs) {
+        if (!kidsOf.has(p)) kidsOf.set(p, []);
+        kidsOf.get(p).push(c);
+        if (!parentsOf.has(c)) parentsOf.set(c, []);
+        parentsOf.get(c).push(p);
+    }
+    let frontier = [key];
+    const seen = new Set([key]);
+    for (let gen = 0; gen < radius; gen++) {
+        const next = [];
+        for (const k of frontier) for (const p of parentsOf.get(k) || []) {
+            if (!seen.has(p)) { seen.add(p); next.push(p); }
+        }
+        frontier = next;
+    }
+    const out = new Set(seen);
+    const stack = [...seen];
+    while (stack.length) {
+        const k = stack.pop();
+        for (const c of kidsOf.get(k) || []) if (!out.has(c)) { out.add(c); stack.push(c); }
+    }
+    return [...out];
+}
+
+// входит ли событие-пара «Имя1+Имя2 ДАТА» в фокус: оба имени среди персон множества
+function focusHasPair(name, keys) {
+    if (!name.includes("+")) return false;
+    const names = new Set(keys.map(k => k.slice(0, -11)));
+    return name.split("+").every(n => names.has(n));
+}
+
+// дополнить множество супругами (для связности фрагмента): spousePairs —
+// [[ключ, ключ], …] — пары семей с 2 родителями и свадеб «Имя+Имя»;
+// супруг добавляется, только если его половина уже в множестве
+function focusWithSpouses(keys, spousePairs) {
+    const set = new Set(keys);
+    for (const [a, b] of spousePairs) {
+        if (set.has(a) && !set.has(b)) set.add(b);
+        else if (set.has(b) && !set.has(a)) set.add(a);
+    }
+    return [...set];
+}
+
 // ============================== ВЫВОД ==============================
 
 function jubileeText(rec, note, detail = false) {
@@ -1114,8 +1162,8 @@ function relKeyboard(peerId) {
     return JSON.stringify({
         inline: true,
         buttons: [
-            [mk("🗑", { c: "del" }, "secondary"), mk("🔔", { c: "bell" }, "secondary"), btn("orth"), btn("islam")],
-            [btn("bud"), btn("cath"), btn("jud"), mk("🧬", { c: "tree" }, "secondary")],
+            [mk("🗑", { c: "del" }, "secondary"), mk("🔔", { c: "bell" }, "secondary"), mk("🧬", { c: "tree" }, "secondary"), btn("orth")],
+            [btn("islam"), btn("bud"), btn("cath"), btn("jud")],
             [mk("❌", { c: "close" }, "secondary")]
         ]
     });
@@ -1504,12 +1552,92 @@ async function handleGedDrop(peerId, doc, msgId, convMsgId, fromId) {
         + ", свадеб " + s.weddings + ". Добавить в список событий?", msgId, convMsgId, kb);
 }
 
+// ---- фокус-сообщение: «/» ответом на триггер, радиус родни 1–5 ----
+
+// подпись радиуса: 1 родителей, 2 дедов, 3 прадедов, 4 прапрадедов…
+const focusLabel = radius =>
+    radius === 1 ? "родителей" : radius === 2 ? "дедов" : "пра".repeat(radius - 3) + "прадедов";
+const focusHead = (key, radius) => key + " · от " + focusLabel(radius);
+
+// клавиатура фокуса: как «/»-ответ по роли, но 🔔/🧬 действуют в радиусе,
+// а в ряд с ❌ добавлены неактивные цифры радиуса (активная скрыта)
+async function focusKeyboard(peerId, userId, key, radius) {
+    const mk = (label, payload) => ({
+        action: { type: "callback", label, payload: JSON.stringify(payload) },
+        color: "secondary"
+    });
+    const bell = mk("🔔", { c: "foc:bell", k: key, r: radius });
+    const tree = mk("🧬", { c: "foc:tree", k: key, r: radius });
+    const digits = [1, 2, 3, 4, 5].filter(n => n !== radius)
+        .map(n => mk(String(n) + "\u20E3", { c: "foc", k: key, r: n }));
+    const tail = [...digits, mk("❌", { c: "close" })];
+    const base = (peerId < 2000000000 || await isChatAdmin(peerId, userId))
+        ? [mk("🗑", { c: "del" }), bell, tree]
+        : [bell, tree];
+    // VK: максимум 5 кнопок в ряду — цифры отдельным рядом
+    return JSON.stringify({ inline: true, buttons: [base, tail] });
+}
+
+// список событий чата только по множеству фокуса (пары — если оба супруга в нём)
+function focusListText(peerId, keys) {
+    const set = new Set(keys);
+    const sortKey = r => r.d.slice(5) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
+    return db.records
+        .filter(r => r.peerId === peerId && (set.has(pkey(r)) || (r.n.includes("+") && focusHasPair(r.n, keys))))
+        .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0))
+        .map(r => r.n + " " + r.d + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : ""))
+        .join("\n");
+}
+
+// супруги персон чата: пары семей с 2 родителями + свадьбы «Имя+Имя»,
+// разрешённые по записям чата (первая персона с таким именем)
+function focusSpousePairs(peerId) {
+    const pairs = (db.fams || []).filter(f => f.peerId === peerId && f.parents.length === 2)
+        .map(f => f.parents);
+    for (const r of db.records) {
+        if (r.peerId !== peerId || !r.n.includes("+")) continue;
+        const [a, b] = r.n.split("+");
+        const pa = db.records.find(x => x.peerId === peerId && !x.n.includes("+") && x.n === a);
+        const pb = db.records.find(x => x.peerId === peerId && !x.n.includes("+") && x.n === b);
+        if (pa && pb) pairs.push([pkey(pa), pkey(pb)]);
+    }
+    return pairs;
+}
+
+// текст фокуса: заголовок + (bell ? список : гедком-фрагмент) множества радиуса
+function focusText(peerId, key, radius, bell) {
+    const keys = focusWithSpouses(
+        focusKeys((db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]), key, radius),
+        focusSpousePairs(peerId));
+    const body = bell
+        ? (focusListText(peerId, keys) || "(в радиусе нет событий)")
+        : gedcomText(peerId, keys);
+    return focusHead(key, radius) + "\n" + body;
+}
+
+async function sendFocus(peerId, key, msgId, convMsgId, fromId) {
+    const txt = focusHead(key, 1); // тело (список/гедком) — после тапа по кнопке
+    const kb = await focusKeyboard(peerId, fromId, key, 1);
+    await messagesSend(peerId, txt, msgId, convMsgId, kb);
+    console.log("focus:", key, "peer", peerId);
+}
+
 // ответ на «/» или «Начать»: справка + клавиатура по чату/роли;
 // replyMsg — msg.reply_message (ответ триггером на триггер = связь)
 async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, payload = "", replyMsg = null) {
     if (process.env.LOG_UPDATES) console.log("msg from", peerId, ":", text);
     if (date) markSeen(date);
     if (isStart(text, payload)) {
+        // «/» ответом на триггер — фокус-сообщение с радиусом родни
+        const rh = replyMsg && replyMsg.from_id > 0
+            ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+        if (rh) {
+            const key = rh[1].trim() + " " + rh[2];
+            if (recordOf(peerId, key)) {
+                await sendFocus(peerId, key, msgId, convMsgId, fromId);
+                return;
+            }
+        }
         let kb;
         if (peerId < 2000000000) kb = relKeyboard(peerId);
         else kb = (await isChatAdmin(peerId, fromId)) ? ownerKeyboard() : bellKeyboard();
@@ -1517,7 +1645,22 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         return;
     }
     const t = text.trim().toLowerCase();
-    if (t === "/gedcom" || t === "гедком") {
+    if (t === "/gedcom" || t === "гедком" || /^\/gedcom[1-5]/.test(t) || /^гедком[1-5]$/.test(t)) {
+        const gm = t.match(/^(?:\/gedcom|гедком)([1-5])?(?:@\S+)?$/);
+        const radius = Number(gm && gm[1]) || 1;
+        // ответом на триггер — только текст родни выбранного радиуса, без кнопок
+        const grh = replyMsg && replyMsg.from_id > 0
+            ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+        if (grh) {
+            const key = grh[1].trim() + " " + grh[2];
+            if (recordOf(peerId, key)) {
+                const parts = splitText(focusText(peerId, key, radius, false));
+                for (let i = 0; i < parts.length; i++)
+                    await messagesSend(peerId, parts[i], i === 0 ? msgId : 0, i === 0 ? convMsgId : 0);
+                console.log("focus text:", key, "радиус", radius, "peer", peerId);
+                return;
+            }
+        }
         const g = gedcomText(peerId);
         if (!db.links || !db.links.length) { await messagesSend(peerId, "связей пока нет — ответьте триггером на триггер", msgId, convMsgId); return; }
         const parts = splitText(g);
@@ -1662,6 +1805,26 @@ async function editOrigin(o, text, kb) {
 async function handleEvent(o) {
     const p = unpay(o.payload);
     const peerId = o.peer_id;
+    // кнопки фокус-сообщения: радиус родни 1–5, 🔔/🧬 в радиусе
+    if (p && typeof p === "object" && (p.c === "foc" || p.c === "foc:bell" || p.c === "foc:tree")) {
+        const key = String(p.k || "");
+        const radius = Math.min(5, Math.max(1, Number(p.r) || 1));
+        if (!recordOf(peerId, key)) {
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "персона не найдена");
+            return;
+        }
+        const bell = p.c === "foc:bell";
+        await answerEvent(o.event_id || o.id, o.user_id, peerId,
+            p.c === "foc" ? "от " + focusLabel(radius)
+                : (bell ? "список в радиусе" : "древо в радиусе"));
+        // цифра — только заголовок; тело (список/гедком) — по 🔔/🧬
+        const txt = p.c === "foc" ? focusHead(key, radius) : focusText(peerId, key, radius, bell);
+        const kb = await focusKeyboard(peerId, o.user_id, key, radius);
+        const parts = splitText(txt);
+        await editOrigin(o, parts[0], kb);
+        for (let i = 1; i < parts.length; i++) await messagesSend(peerId, parts[i]);
+        return;
+    }
     // кнопки сообщения-связи: пол нового лица, свадьба, усыновление, удаление
     if (p && typeof p === "object" && (p.c === "sex" || p.c === "pair" || p.c === "adop" || p.c === "dell")) {
         const link = (db.links || []).find(l => l.id === p.l && l.peerId === peerId);

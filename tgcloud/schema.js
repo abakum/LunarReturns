@@ -62,3 +62,16 @@ export const gedDrops = table('ged_drops', {
   content: text('content').notNull(),    // сырой текст .ged (UTF-8)
   ts: integer('ts').notNull(),           // epoch ms; старше часа — «файл не найден»
 });
+
+// фокус-сообщение («/» ответом на триггер): персона и текущий радиус родни;
+// callback_data короткий, ключ персоны живёт здесь (по сообщению с кнопками)
+export const focusView = table('focus_view', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  chatId: integer('chat_id').notNull(),
+  messageId: integer('message_id').notNull(), // сообщение-фокус (бота)
+  pkey: text('pkey').notNull(),               // «Имя ГГГГ-ММ-ДД»
+  radius: integer('radius').notNull(),        // 1..5
+  ts: integer('ts').notNull(),                // epoch ms; чистка старше 7 суток
+}, (t) => ({
+  uq: uniqueIndex('uq_focus_msg').on(t.chatId, t.messageId),
+}));

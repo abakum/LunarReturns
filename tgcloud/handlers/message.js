@@ -1,11 +1,12 @@
 import { api, db } from 'sdk';
 import { eq } from 'sdk/db';
-import { gedDrops } from '../schema.js';
+import { gedDrops, focusView } from '../schema.js';
 import { parseTrigger, parseGedcom, gedStats } from '../lib/parse.js';
 import { jubileeText } from '../lib/text.js';
 import {
     HELP, startMarkup, chatAdmin, getSettings, todayText, upsertEvent, eventMarkup, sendLong,
     addLink, setLinkCand, ensureFam, pairRecords, linkText, linkMarkup, gedcomText, importGedcom,
+    recordOf, chatLinks, focusKeys, focusHead, focusMarkup, splitText, focusWithSpouses, focusSpousePairs,
 } from '../lib/bot.js';
 
 const recOfRow = row => ({ n: row.name, d: row.date, h: row.hour ?? undefined, m: row.minute ?? undefined });
@@ -47,6 +48,25 @@ async function gedDrop(chatId, doc, fromId) {
     console.log("ged drop:", name, "chat", chatId);
 }
 
+// фокус-сообщение: «/» ответом на триггер, радиус 1 сразу; ключ персоны —
+// в focus_view по id сообщения с кнопками (callback_data короткий)
+async function sendFocus(chat, chatId, key, radius) {
+    // тело (список/гедком) — после тапа по кнопке
+    const markup = focusMarkup(chat, chatId, await getSettings(chatId), radius);
+    const first = await api.sendMessage({ chat_id: chatId, text: focusHead(key, radius), reply_markup: markup });
+    if (first && first.message_id) {
+        // чистка устаревших строк чата (старше 7 суток) + запись текущей
+        const weekAgo = Date.now() - 7 * 24 * 3600000;
+        const stale = (await db.select().from(focusView).where(eq(focusView.chatId, chatId)).all())
+            .filter(r => r.ts < weekAgo);
+        for (const r of stale) await db.delete(focusView).where(eq(focusView.id, r.id)).run();
+        await db.insert(focusView).values({
+            chatId, messageId: first.message_id, pkey: key, radius, ts: Date.now(),
+        }).run();
+    }
+    console.log("focus:", key, "chat", chatId);
+}
+
 export default async function (message, ctx) {
     const chatId = message.chat.id;
     const text = (message.text || "").trim();
@@ -64,6 +84,17 @@ export default async function (message, ctx) {
     const cmd = (text.match(/^\/[a-z_]+/i) || [""])[0].toLowerCase();
 
     if (cmd === "/start" || text === "/") {
+        // «/» ответом на триггер — фокус-сообщение с радиусом родни
+        const reply = message.reply_to_message;
+        const rh = reply && reply.from && !reply.from.is_bot
+            ? String(reply.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+        if (rh) {
+            const key = rh[1].trim() + " " + rh[2];
+            if (await recordOf(chatId, key)) {
+                await sendFocus(message.chat, chatId, key, 1);
+                return;
+            }
+        }
         const admin = await chatAdmin(message.chat, message.from?.id);
         await api.sendMessage({
             chat_id: chatId, text: HELP,
@@ -81,8 +112,26 @@ export default async function (message, ctx) {
         return;
     }
 
-    // гедком-древо чата (то же выводит кнопка 🧬)
-    if (text === "/gedcom" || text.startsWith("/gedcom@")) {
+    // гедком-древо чата (то же выводит кнопка 🧬); ответом на триггер — только
+    // текст родни выбранного радиуса (/gedcom2 = 2), без кнопок
+    const gm = text.match(/^\/gedcom([1-5])?(?:@\S+)?$/);
+    if (gm) {
+        const radius = Number(gm[1]) || 1;
+        const reply = message.reply_to_message;
+        const rh = reply && reply.from && !reply.from.is_bot
+            ? String(reply.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+        if (rh) {
+            const key = rh[1].trim() + " " + rh[2];
+            if (await recordOf(chatId, key)) {
+                const keys = focusWithSpouses(
+                    focusKeys((await chatLinks(chatId)).map(l => [l.parent, l.child]), key, radius),
+                    await focusSpousePairs(chatId));
+                const parts = splitText(focusHead(key, radius) + "\n" + await gedcomText(chatId, keys));
+                for (const part of parts) await api.sendMessage({ chat_id: chatId, text: part });
+                console.log("focus text:", key, "радиус", radius, "chat", chatId);
+                return;
+            }
+        }
         const g = await gedcomText(chatId);
         if (!g.includes("FAM")) {
             await api.sendMessage({ chat_id: chatId, text: "связей пока нет — ответьте триггером на триггер" });
