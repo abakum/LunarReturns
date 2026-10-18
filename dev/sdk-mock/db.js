@@ -8,14 +8,35 @@ import path from 'node:path';
 const DB_FILE = process.env.LR_DEV_DB || 'dev/db.json';
 const state = { tables: {} };
 
-// events → records (peerId/n/d[, h, m]/id), settings → объект по peerId
+// events → records (peerId/n/d[, h, m]/id), settings → объект по peerId;
+// links/fams — в формате VK-бота (p/c/who/fam, parents/children без JSON)
 function save() {
-    const out = { records: [], settings: {} };
+    const out = { records: [], links: [], fams: [], settings: {} };
     for (const r of tables().events || []) {
         const rec = { peerId: r.chatId, n: r.name, d: r.date };
         if (r.hour !== null && r.hour !== undefined) { rec.h = r.hour; rec.m = r.minute; }
+        if (r.sex) rec.sex = r.sex;
+        if (r.deathDate) rec.dd = r.deathDate;
+        if (r.plac) rec.plac = r.plac;
+        if (r.plac2) rec.plac2 = r.plac2;
         rec.id = r.id;
         out.records.push(rec);
+    }
+    for (const l of tables().links || []) {
+        out.links.push({
+            id: l.id, peerId: l.chatId, p: l.parent, c: l.child, who: l.who,
+            cmid: 0, fam: l.famId ?? undefined,
+            adopted: l.adopted || undefined,
+            pairCand: l.pairCand ? JSON.parse(l.pairCand) : undefined,
+        });
+    }
+    for (const f of tables().fams || []) {
+        out.fams.push({
+            id: f.id, peerId: f.chatId,
+            parents: JSON.parse(f.parents), children: JSON.parse(f.children),
+            marr: f.marrD ? { d: f.marrD, plac: f.marrPlac || undefined } : undefined,
+            div: f.divD ? { d: f.divD, plac: f.divPlac || undefined } : undefined,
+        });
     }
     for (const s of tables().settings || []) {
         const v = {};
@@ -33,6 +54,10 @@ function load() {
         const events = [];
         for (const rec of parsed.records || []) {
             const row = { chatId: rec.peerId, name: rec.n, date: rec.d, hour: rec.h ?? null, minute: rec.m ?? null };
+            row.sex = rec.sex ?? null;
+            row.deathDate = rec.dd ?? null;
+            row.plac = rec.plac ?? null;
+            row.plac2 = rec.plac2 ?? null;
             row.id = rec.id ?? 0;
             events.push(row);
         }
@@ -40,6 +65,28 @@ function load() {
         let maxId = events.reduce((m, r) => Math.max(m, r.id || 0), 0);
         for (const r of events) if (!r.id) r.id = ++maxId;
         state.tables.events = events;
+        const links = (parsed.links || []).map(l => ({
+            chatId: l.peerId, parent: l.p, child: l.c, who: l.who,
+            famId: l.fam ?? null,
+            pairCand: l.pairCand ? JSON.stringify(l.pairCand) : null,
+            adopted: !!l.adopted, id: l.id ?? 0,
+        }));
+        let maxL = links.reduce((m, r) => Math.max(m, r.id || 0), 0);
+        for (const r of links) if (!r.id) r.id = ++maxL;
+        state.tables.links = links;
+        const fams = (parsed.fams || []).map(f => ({
+            chatId: f.peerId,
+            parents: JSON.stringify(f.parents || []),
+            children: JSON.stringify(f.children || []),
+            marrD: f.marr && f.marr.d ? f.marr.d : null,
+            marrPlac: f.marr && f.marr.plac ? f.marr.plac : null,
+            divD: f.div && f.div.d ? f.div.d : null,
+            divPlac: f.div && f.div.plac ? f.div.plac : null,
+            id: f.id ?? 0,
+        }));
+        let maxF = fams.reduce((m, r) => Math.max(m, r.id || 0), 0);
+        for (const r of fams) if (!r.id) r.id = ++maxF;
+        state.tables.fams = fams;
         const settings = [];
         for (const [peer, v] of Object.entries(parsed.settings || {})) {
             const row = { chatId: Number(peer) };

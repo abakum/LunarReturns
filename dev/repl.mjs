@@ -2,7 +2,8 @@
 // dev/repl.mjs — консольная отладка tgcloud/handlers/* без облака:
 //   node dev/repl.mjs [--chat 1] [--fresh] [--private] [--admin]
 // Ввод: текст сообщения (в т.ч. /start, /today), `/N M` — нажать
-// кнопку M ответа N, `!dump` — показать таблицы БД, `\n` — перевод строки.
+// кнопку M ответа N, `>N текст` — ответ (reply) на сообщение N (бота или
+// своё), `!dump` — показать таблицы БД, `\n` — перевод строки.
 // --private — личный чат (полная клавиатура), --admin — админ группы
 // (ownerMarkup); по умолчанию — участник группы (bellMarkup).
 // Выход — Ctrl-C. Мок sdk: dev/sdk-mock → node_modules/sdk (см. план
@@ -78,7 +79,8 @@ globalThis.__tgdev = {
     onApi(method, params) {
         if (method === 'sendMessage') {
             const { text, entities } = tgRender(params.text);
-            const m = { n: ++counter, text, entities, markup: params.reply_markup };
+            const m = { n: ++counter, text, entities, markup: params.reply_markup,
+                updateMsg: { chat: { id: CHAT, type: CHAT_TYPE }, from: { id: 999, is_bot: true } } };
             m.flat = flatButtons(m.markup);
             messages.push(m);
             console.log(`[${m.n}] sendMessage:`);
@@ -155,7 +157,7 @@ rl.on('SIGINT', () => { console.log(); rl.close(); });
 
 const role = PRIVATE ? 'личка' : (ADMIN ? 'админ группы' : 'участник группы');
 console.log(`tgdev: chat=${CHAT} (${role}), db=${path.relative(ROOT, dbAbs)}${fresh ? ' (fresh)' : ''}`);
-console.log('Ввод: текст | /N M — кнопка | >N текст — ответ на N | !dump — база | Ctrl-C — выход\n');
+console.log('Ввод: текст | /N M — кнопка | >N текст — ответ на сообщение N (бота или твой) | !dump — база | Ctrl-C — выход\n');
 
 const handle = async raw => {
     const input = String(raw || '').replace(/\\n/g, '\n').trim();
@@ -166,20 +168,40 @@ const handle = async raw => {
         await press(Number(bm[1]), Number(bm[2]));
         return;
     }
-    // >N текст — ответ на сообщение N (как reply; N — бот)
     const rm = input.match(/^>(\d+)\s+([\s\S]+)$/);
     const reply = rm ? (() => {
         const m = messages.find(x => x.n === Number(rm[1]));
         if (!m) { console.log(`ERROR: нет сообщения ${rm[1]}`); return null; }
-        return { chat: { id: CHAT, type: CHAT_TYPE }, message_id: m.n, text: m.text, from: { id: 999, is_bot: true } };
+        return {
+            ...m.updateMsg,        // chat + автор (бот или пользователь)
+            message_id: m.n,
+            text: m.text,
+            entities: m.entities || [],
+            reply_markup: m.markup,
+        };
     })() : undefined;
     if (rm && !reply) return;
     try {
-        await messageHandler({
-            chat: { id: CHAT, type: CHAT_TYPE }, from: { id: 1 },
+        const msg = {
+            chat: { id: CHAT, type: CHAT_TYPE },
+            from: { id: 1, first_name: 'dev' },
             text: rm ? rm[2] : input,
             ...(reply ? { reply_to_message: reply } : {}),
-        }, { update: { update_id: ++updSeq } });
+        };
+        // сообщение пользователя тоже получает номер [N] (общий счётчик)
+        const m = {
+            n: ++counter,
+            text: msg.text,
+            entities: [],
+            markup: undefined,
+            flat: [],
+            user: true,
+            updateMsg: { chat: { id: CHAT, type: CHAT_TYPE }, from: { id: 1 } },
+        };
+        messages.push(m);
+        console.log(`[${m.n}] ты:`);
+        String(m.text).split('\n').forEach(l => console.log('    ' + l));
+        await messageHandler(msg, { update: { update_id: ++updSeq } });
     } catch (e) {
         console.log('ERROR:', e.message);
     }

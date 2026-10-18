@@ -1,5 +1,5 @@
 import { api, db } from 'sdk';
-import { eq } from 'sdk/db';
+import { and, eq, or } from 'sdk/db';
 import { events, settings, links, fams } from '../schema.js';
 import { jubileeText } from '../lib/text.js';
 import { REL_DEFS, religiousYear } from '../lib/religion.js';
@@ -82,7 +82,7 @@ export default async function (cq, ctx) {
     }
 
     if (data === "del") {
-        // сортировка по полной дате ГГГГ-ММ-ДД (в отличие от списка 🔔 — по ММ-ДД)
+        // список подтверждения — по полной дате ГГГГ-ММ-ДД (🔔 — по ММ-ДД без года)
         const list = await upcomingText(chatId, true);
         if (!list) {
             if (!isHelp) await editText("Событий нет", cq.message.reply_markup);
@@ -103,6 +103,9 @@ export default async function (cq, ctx) {
     if (data === "del:yes") {
         const n = await db.$count(events, eq(events.chatId, chatId));
         await db.delete(events).where(eq(events.chatId, chatId)).run();
+        // связи и семьи чата ссылаются на записи — уходят вместе с ними
+        await db.delete(links).where(eq(links.chatId, chatId)).run();
+        await db.delete(fams).where(eq(fams.chatId, chatId)).run();
         await editText("🗑 Удалено событий: " + n, undefined);
         await answer("🗑 События чата удалены");
         return;
@@ -129,6 +132,18 @@ export default async function (cq, ctx) {
         if (!row || row.chatId !== chatId) { await answer("Событие не найдено"); return; }
         await db.delete(events).where(eq(events.id, id)).run();
         await editText("🗑 Событие удалено: " + row.name + " " + row.date, undefined);
+        // заодно падают связи с удалённой персоной и чистятся семьи
+        const pk = row.name + " " + row.date;
+        await db.delete(links).where(and(eq(links.chatId, chatId),
+            or(eq(links.parent, pk), eq(links.child, pk)))).run();
+        const famRows = await db.select().from(fams).where(eq(fams.chatId, chatId)).all();
+        const linksLeft = await db.select().from(links).where(eq(links.chatId, chatId)).all();
+        for (const f of famRows) {
+            const children = JSON.parse(f.children).filter(c =>
+                linksLeft.some(l => l.famId === f.id && l.child === c));
+            await db.update(fams).set({ children: JSON.stringify(children) }).where(eq(fams.id, f.id)).run();
+            if (!children.length) await db.delete(fams).where(eq(fams.id, f.id)).run();
+        }
         await answer();
         console.log("deleted:", row.name, row.date, "chat", chatId);
         return;

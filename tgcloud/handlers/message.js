@@ -59,10 +59,10 @@ export default async function (message, ctx) {
 
     if (text.startsWith("/")) return;
 
-    // ответ триггером на триггер = связь родитель→ребёнок: заголовок события
-    // в ответе бота «Имя ГГГГ-ММ-ДД…»
+    // ответ триггером на триггер пользователя = связь родитель→ребёнок:
+    // заголовок «Имя ГГГГ-ММ-ДД» в цитируемом сообщении (у ответа бота связей нет)
     const reply = message.reply_to_message;
-    const replyHead = reply && reply.from?.is_bot
+    const replyHead = reply && reply.from && !reply.from.is_bot
         ? String(reply.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
 
     const lines = text.split(/\s*\n+\s*/).filter(Boolean);
@@ -77,17 +77,21 @@ export default async function (message, ctx) {
         if (replyHead) {
             const otherKey = replyHead[1].trim() + " " + replyHead[2];
             const newKey = row.name + " " + row.date;
+            if (row.name.includes("+")) {
+                // пара «Имя+Имя» — свадьба, ребёнком быть не может
+                await sendLong(chatId, jubileeText(recOfRow(row), parsed.note)
+                    + "\n🔗 связь не добавлена: пара «" + row.name + "» не может быть ребёнком");
+                continue;
+            }
             if (row.date === replyHead[2]) {
                 // близнецы: даты рождения совпали — связь не добавляем
                 await sendLong(chatId, jubileeText(recOfRow(row), parsed.note)
                     + "\n🔗 связь не добавлена: даты рождения совпадают (близнецы?)");
                 continue;
             }
-            const parentFirst = row.date < replyHead[2]; // старшая дата — родитель
-            const { link, dup } = await addLink(chatId,
-                parentFirst ? newKey : otherKey,
-                parentFirst ? otherKey : newKey,
-                parentFirst ? 'p' : 'c');
+            // по-простому: ответ на триггер — связь «цитируемый = родитель,
+            // отвечающий = ребёнок» (без свопов по датам)
+            const { link, dup } = await addLink(chatId, otherKey, newKey, 'c');
             if (!dup) {
                 const f = await ensureFam(chatId, link.child); // 2 родителя — семья
                 if (f) link.famId = f.id;

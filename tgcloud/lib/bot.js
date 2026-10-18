@@ -171,6 +171,29 @@ export async function parentKeys(chatId, childKey) {
     return [...new Set((await chatLinks(chatId)).filter(l => l.child === childKey).map(l => l.parent))];
 }
 
+// семья для свадьбы одного родителя: fam с этим родителем и ребёнком
+// (ensureFam добьёт второго родителя, когда появится вторая связь)
+async function ensureFamSingle(chatId, childKey) {
+    const ps = await parentKeys(chatId, childKey);
+    if (ps.length !== 1) return null;
+    const existing = await chatFams(chatId);
+    let f = existing.find(x => JSON.parse(x.children).includes(childKey));
+    if (!f) {
+        const [row] = await db.insert(fams)
+            .values({ chatId, parents: JSON.stringify(ps), children: JSON.stringify([childKey]) })
+            .returning().run();
+        f = row;
+    }
+    const parents = JSON.parse(f.parents), children = JSON.parse(f.children);
+    for (const p of ps) if (!parents.includes(p)) parents.push(p);
+    if (!children.includes(childKey)) children.push(childKey);
+    await db.update(fams).set({ parents: JSON.stringify(parents), children: JSON.stringify(children) })
+        .where(eq(fams.id, f.id)).run();
+    for (const l of (await chatLinks(chatId)).filter(l => l.child === childKey))
+        await db.update(links).set({ famId: f.id }).where(eq(links.id, l.id)).run();
+    return { ...f, parents, children };
+}
+
 // двое родителей — уже семья: собрать всех родителей ребёнка в один FAM
 export async function ensureFam(chatId, childKey) {
     const ps = await parentKeys(chatId, childKey);
@@ -193,17 +216,29 @@ export async function ensureFam(chatId, childKey) {
     return { ...f, parents, children };
 }
 
-// кандидаты-свадьбы: триггеры «Иван+Мария ГГГГММДД» в базе, где одна половина —
-// текущий родитель, другая — другой родитель ребёнка; свадьба позже рождения
-// обоих (но может быть позже рождения ребёнка — это жизнь); релевантные — по
-// близости года свадьбы к году рождения ребёнка
+// кандидаты-свадьбы: триггеры «Иван+Мария ГГГГММДД» в базе; когда у ребёнка уже
+// два родителя — где одна половина текущий родитель, другая — другой родитель;
+// пока родитель один — все свадьбы с его участием (второй без даты рождения);
+// свадьба позже рождения обоих (второго не проверяем — даты нет); может быть
+// позже рождения ребёнка — это жизнь; релевантные — по близости года свадьбы
+// к году рождения ребёнка; при известном поле учитывается порядок в имени
+// («первый — М, второй — Ж», как расставляет пол confirmPair)
 export async function pairRecords(chatId, link) {
-    const cy = keyY(link.child), out = [], seen = new Set();
+    const cy = keyY(link.child), pn = keyN(link.parent), out = [], seen = new Set();
     const rows = await db.select().from(events).where(eq(events.chatId, chatId)).all();
-    for (const o of await parentKeys(chatId, link.child)) {
-        if (o === link.parent) continue;
-        for (const name of [keyN(link.parent) + "+" + keyN(o), keyN(o) + "+" + keyN(link.parent)]) {
+    const byKey = pk => rows.find(x => x.name + " " + x.date === pk);
+    // половина пары согласуется с известным полом? (первая половина — М)
+    const posMatch = (pk, isFirst) => {
+        const r = byKey(pk);
+        if (!r || !r.sex) return true;
+        return r.sex === 'M' ? isFirst : !isFirst;
+    };
+    const others = (await parentKeys(chatId, link.child)).filter(x => x !== link.parent);
+    for (const o of others) {
+        for (const name of [pn + "+" + keyN(o), keyN(o) + "+" + pn]) {
             for (const r of rows.filter(r => r.name === name)) {
+                const halves = r.name.split("+");
+                if (!posMatch(link.parent, halves[0] === pn) || !posMatch(o, halves[0] === keyN(o))) continue;
                 const pk = r.name + " " + r.date, wy = keyY(pk);
                 if (wy <= keyY(link.parent) || wy <= keyY(o)) continue;
                 if (seen.has(pk)) continue;
@@ -212,13 +247,30 @@ export async function pairRecords(chatId, link) {
             }
         }
     }
+    // родитель пока один: кандидат — вторая половина «Имя+Имя», ключа у неё нет
+    if (!others.length) {
+        for (const r of rows.filter(r => r.name.includes("+"))) {
+            const halves = r.name.split("+");
+            const i = halves.indexOf(pn);
+            if (i !== 0 && i !== 1) continue;
+            if (!posMatch(link.parent, i === 0)) continue;
+            const other = i === 0 ? halves[1] : halves[0];
+            const pk = r.name + " " + r.date, wy = keyY(pk);
+            if (wy <= keyY(link.parent)) continue;
+            if (seen.has(pk)) continue;
+            seen.add(pk);
+            out.push({ pair: pk, other, wy });
+        }
+    }
     return out.sort((a, b) => Math.abs(a.wy - cy) - Math.abs(b.wy - cy)).slice(0, 5);
 }
 
 // подтвердить свадьбу: связывает Ивана и Марию с «Иван+Мария ГГГГММДД»,
-// первый в имени — М, второй — Ж; в гедком пишется MARR/DIV DATE/PLAC
+// первый в имени — М, второй — Ж; в гедком пишется MARR/DIV DATE/PLAC;
+// если у ребёнка пока один родитель — семья создаётся с ним (второй доберётся
+// через ensureFam, когда появится вторая связь)
 export async function confirmPair(chatId, link, cand) {
-    const f = await ensureFam(chatId, link.child);
+    const f = await ensureFam(chatId, link.child) || await ensureFamSingle(chatId, link.child);
     if (!f) return null;
     const [pairName, pairDate] = [cand.pair.slice(0, -11), cand.pair.slice(-10)];
     const rows = await db.select().from(events).where(eq(events.chatId, chatId)).all();
@@ -309,7 +361,20 @@ export async function gedcomText(chatId, keys) {
         if (!f) { f = { parents: [l.parent], children: [], marr: null, div: null }; famsOut.push(f); }
         if (!f.children.includes(l.child)) f.children.push(l.child);
     }
-    const fidOf = new Map(famsOut.map((f, i) => [f, "F" + (i + 1)]));
+    // связь хранится по-ребёнку (свой fam у каждого), но в гедкоме FAM одна
+    // на набор родителей: группы с одинаковым набором схлопываем
+    const merged = [];
+    for (const f of famsOut) {
+        const ps = [...f.parents].sort();
+        const g = merged.find(x => x.ps.length === ps.length && x.ps.every((p, i) => p === ps[i]));
+        if (g) {
+            for (const c of f.children) if (!g.children.includes(c)) g.children.push(c);
+            if (!g.marr) g.marr = f.marr;
+            if (!g.div) g.div = f.div;
+        } else merged.push({ ps, parents: f.parents, children: [...f.children], marr: f.marr, div: f.div });
+    }
+    const famOut = merged.map(x => ({ parents: x.parents, children: x.children, marr: x.marr, div: x.div }));
+    const fidOf = new Map(famOut.map((f, i) => [f, "F" + (i + 1)]));
     const adopted = new Map(lk.filter(l => l.adopted).map(l => [l.child, true]));
     const out = ["0 HEAD", "1 SOUR LunarReturns", "1 GEDC", "2 VERS 5.5.1", "2 FORM LINEAGE-LINKED", "1 CHAR UTF-8"];
     for (const r of recs) {
@@ -319,7 +384,7 @@ export async function gedcomText(chatId, keys) {
         if (r.sex) out.push("1 SEX " + r.sex);
         out.push("1 BIRT", "2 DATE " + gdate(r.date));
         if (r.deathDate && !r.name.includes("+")) out.push("1 DEAT", "2 DATE " + gdate(r.deathDate));
-        for (const f of famsOut) {
+        for (const f of famOut) {
             if (f.children.includes(pk)) {
                 out.push("1 FAMC @" + fidOf.get(f) + "@");
                 if (adopted.get(pk)) out.push("1 ADOP", "2 FAMC @" + fidOf.get(f) + "@");
@@ -327,7 +392,7 @@ export async function gedcomText(chatId, keys) {
             if (f.parents.includes(pk)) out.push("1 FAMS @" + fidOf.get(f) + "@");
         }
     }
-    for (const f of famsOut) {
+    for (const f of famOut) {
         out.push("0 @" + fidOf.get(f) + "@ FAM");
         // по практике 5.5.1: сначала HUSB, затем WIFE
         const ps = f.parents.map(p => ({ p, r: recs.find(x => x.name + " " + x.date === p) }));
@@ -408,7 +473,7 @@ export async function importGedcom(chatId, g) {
             if (!f) continue;
             const ps = [f.husb, f.wife].map(x => byId.get(x));
             for (const l of await chatLinks(chatId))
-                if (l.c === c && ps.includes(l.p))
+                if (l.child === c && ps.includes(l.parent))
                     await db.update(links).set({ adopted: true }).where(eq(links.id, l.id)).run();
         }
     }

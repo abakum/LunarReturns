@@ -713,6 +713,22 @@ function parentKeys(peerId, childKey) {
         .map(l => l.p))];
 }
 
+// семья для свадьбы одного родителя: fam с этим родителем и ребёнком
+// (ensureFam добьёт второго родителя, когда появится вторая связь)
+function ensureFamSingle(peerId, childKey) {
+    const ps = parentKeys(peerId, childKey);
+    if (ps.length !== 1) return null;
+    if (!db.fams) db.fams = [];
+    if (!db.nextFamId) db.nextFamId = 1;
+    let f = db.fams.find(f => f.peerId === peerId && f.children.includes(childKey));
+    if (!f) { f = { id: db.nextFamId++, peerId, parents: [], children: [] }; db.fams.push(f); }
+    for (const p of ps) if (!f.parents.includes(p)) f.parents.push(p);
+    if (!f.children.includes(childKey)) f.children.push(childKey);
+    for (const l of db.links || [])
+        if (l.peerId === peerId && l.c === childKey) l.fam = f.id;
+    return f;
+}
+
 // двое родителей — уже семья: собрать всех родителей ребёнка в один FAM
 function ensureFam(peerId, childKey) {
     const ps = parentKeys(peerId, childKey);
@@ -728,16 +744,29 @@ function ensureFam(peerId, childKey) {
     return f;
 }
 
-// кандидаты-свадьбы: триггеры «Иван+Мария ГГГГММДД» в базе, где одна половина —
-// текущий родитель, другая — другой родитель ребёнка; свадьба позже рождения
-// обоих; свадьба может быть и позже рождения ребёнка — это жизнь; релевантные —
-// по близости года свадьбы к году рождения ребёнка
+// кандидаты-свадьбы: триггеры «Иван+Мария ГГГГММДД» в базе; когда у ребёнка уже
+// два родителя — где одна половина текущий родитель, другая — другой родитель;
+// пока родитель один — все свадьбы с его участием (второй без даты рождения);
+// свадьба позже рождения обоих (второго не проверяем — даты нет); может быть
+// позже рождения ребёнка — это жизнь; релевантные — по близости года свадьбы
+// к году рождения ребёнка; при известном поле учитывается порядок в имени
+// («первый — М, второй — Ж», как расставляет пол confirmPair)
 function pairRecords(peerId, link) {
-    const cy = keyY(link.c), out = [], seen = new Set();
-    for (const o of parentKeys(peerId, link.c)) {
-        if (o === link.p) continue;
-        for (const name of [keyN(link.p) + "+" + keyN(o), keyN(o) + "+" + keyN(link.p)]) {
-            for (const r of db.records.filter(r => r.peerId === peerId && r.n === name)) {
+    const cy = keyY(link.c), pn = keyN(link.p), out = [], seen = new Set();
+    const recs = db.records.filter(r => r.peerId === peerId);
+    const byKey = pk => recs.find(x => pkey(x) === pk);
+    // половина пары согласуется с известным полом? (первая половина — М)
+    const posMatch = (pk, isFirst) => {
+        const r = byKey(pk);
+        if (!r || !r.sex) return true;
+        return r.sex === "M" ? isFirst : !isFirst;
+    };
+    const others = parentKeys(peerId, link.c).filter(o => o !== link.p);
+    for (const o of others) {
+        for (const name of [pn + "+" + keyN(o), keyN(o) + "+" + pn]) {
+            for (const r of recs.filter(r => r.n === name)) {
+                const halves = r.n.split("+");
+                if (!posMatch(link.p, halves[0] === pn) || !posMatch(o, halves[0] === keyN(o))) continue;
                 const wy = keyY(pkey(r));
                 if (wy <= keyY(link.p) || wy <= keyY(o)) continue;
                 if (seen.has(pkey(r))) continue;
@@ -746,13 +775,30 @@ function pairRecords(peerId, link) {
             }
         }
     }
+    // родитель пока один: кандидат — вторая половина «Имя+Имя», ключа у неё нет
+    if (!others.length) {
+        for (const r of recs.filter(r => r.n.includes("+"))) {
+            const halves = r.n.split("+");
+            const i = halves.indexOf(pn);
+            if (i !== 0 && i !== 1) continue;
+            if (!posMatch(link.p, i === 0)) continue;
+            const other = i === 0 ? halves[1] : halves[0];
+            const wy = keyY(pkey(r));
+            if (wy <= keyY(link.p)) continue;
+            if (seen.has(pkey(r))) continue;
+            seen.add(pkey(r));
+            out.push({ pair: pkey(r), other, wy });
+        }
+    }
     return out.sort((a, b) => Math.abs(a.wy - cy) - Math.abs(b.wy - cy)).slice(0, 5);
 }
 
 // подтвердить свадьбу: связывает Ивана и Марию с «Иван+Мария ГГГГММДД»,
-// первый в имени — М, второй — Ж; в гедком пишется MARR DATE/PLAC
+// первый в имени — М, второй — Ж; в гедком пишется MARR DATE/PLAC; если у
+// ребёнка пока один родитель — семья создаётся с ним (второй доберётся через
+// ensureFam, когда появится вторая связь)
 function confirmPair(peerId, link, cand) {
-    const f = ensureFam(peerId, link.c);
+    const f = ensureFam(peerId, link.c) || ensureFamSingle(peerId, link.c);
     if (!f) return null;
     const pairRec = recordOf(peerId, cand.pair);
     if (!pairRec) return null;
@@ -806,14 +852,14 @@ function linkText(peerId, link) {
     return t;
 }
 
-// клавиатура сообщения-связи: ♂/♀ для нового лица, Да/Нет или 1 2… Нет для пары
+// клавиатура сообщения-связи: ♂/♀ для нового лица, Да/Нет или 1 2… Нет для пары;
+// 👎 в ВК не даём — реакция 👎 удаляет связь (в ТГ это кнопка)
 function linkKeyboard(peerId, link) {
     const mk = (label, payload) => ({
         action: { type: "callback", label, payload: JSON.stringify(payload) },
         color: "secondary"
     });
     const rows = [];
-    rows.push([mk("👎", { c: "dell", l: link.id }, "secondary")]);
     rows.push([mk("🤱", { c: "adop", l: link.id }, "secondary")]);
     const rec = recordOf(peerId, link[link.who]);
     if (rec && !rec.sex)
@@ -934,7 +980,20 @@ function gedcomText(peerId, keys) {
         if (!f) { f = { parents: [l.p], children: [] }; fams.push(f); }
         if (!f.children.includes(l.c)) f.children.push(l.c);
     }
-    const fidOf = new Map(fams.map((f, i) => [f, "F" + (i + 1)]));
+    // связь хранится по-ребёнку (свой fam у каждого), но в гедкоме FAM одна
+    // на набор родителей: группы с одинаковым набором схлопываем
+    const merged = [];
+    for (const f of fams) {
+        const ps = [...f.parents].sort();
+        const g = merged.find(x => x.ps.length === ps.length && x.ps.every((p, i) => p === ps[i]));
+        if (g) {
+            for (const c of f.children) if (!g.children.includes(c)) g.children.push(c);
+            if (!g.marr) g.marr = f.marr;
+            if (!g.div) g.div = f.div;
+        } else merged.push({ ps, parents: f.parents, children: [...f.children], marr: f.marr, div: f.div });
+    }
+    const famC = merged.map(x => ({ parents: x.parents, children: x.children, marr: x.marr, div: x.div }));
+    const fidOf = new Map(famC.map((f, i) => [f, "F" + (i + 1)]));
     const adopted = new Map((db.links || []).filter(l => l.peerId === peerId && l.adopted).map(l => [l.c, true]));
     const out = ["0 HEAD", "1 SOUR LunarReturns", "1 GEDC", "2 VERS 5.5.1", "2 FORM LINEAGE-LINKED", "1 CHAR UTF-8"];
     for (const r of recs) {
@@ -947,7 +1006,7 @@ function gedcomText(peerId, keys) {
             out.push("1 DEAT", "2 DATE " + gdate(r.dd));
             if (r.dsrcH !== undefined) out.push("2 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
         }
-        for (const f of fams) {
+        for (const f of famC) {
             if (f.children.includes(pkey(r))) {
                 out.push("1 FAMC @" + fidOf.get(f) + "@");
                 if (adopted.get(pkey(r))) out.push("1 ADOP", "2 FAMC @" + fidOf.get(f) + "@");
@@ -955,7 +1014,7 @@ function gedcomText(peerId, keys) {
             if (f.parents.includes(pkey(r))) out.push("1 FAMS @" + fidOf.get(f) + "@");
         }
     }
-    for (const f of fams) {
+    for (const f of famC) {
         out.push("0 @" + fidOf.get(f) + "@ FAM");
         // по практике 5.5.1: сначала HUSB, затем WIFE
         const ps = f.parents.map(p => ({ p, r: recs.find(x => pkey(x) === p) }));
@@ -1376,8 +1435,9 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             await messagesSend(peerId, parts[i], i === 0 ? msgId : 0, i === 0 ? convMsgId : 0);
         return;
     }
-    // заголовок события в ответе бота: «Имя ГГГГ-ММ-ДД…»
-    const replyHead = replyMsg && replyMsg.from_id < 0
+    // ответ триггером на триггер пользователя = связь: заголовок «Имя ГГГГ-ММ-ДД»
+    // в цитируемом сообщении (у ответа бота связей нет)
+    const replyHead = replyMsg && replyMsg.from_id > 0
         ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
     // сообщение-гедком → импорт древа (до разбора триггеров)
     const g = parseGedcom(text);
@@ -1404,17 +1464,21 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         if (replyHead) {
             const otherKey = replyHead[1].trim() + " " + replyHead[2];
             const newKey = pkey(parsed.rec);
+            if (parsed.rec.n.includes("+")) {
+                // пара «Имя+Имя» — свадьба, ребёнком быть не может
+                await messagesSend(peerId, jubileeText(parsed.rec, parsed.note)
+                    + "\n🔗 связь не добавлена: пара «" + parsed.rec.n + "» не может быть ребёнком", msgId, convMsgId);
+                continue;
+            }
             if (parsed.rec.d === replyHead[2]) {
                 // близнецы: даты рождения совпали — связь не добавляем
                 await messagesSend(peerId, jubileeText(parsed.rec, parsed.note)
                     + "\n🔗 связь не добавлена: даты рождения совпадают (близнецы?)", msgId, convMsgId);
                 continue;
             }
-            const parentFirst = parsed.rec.d < replyHead[2]; // старшая дата — родитель
-            const { link, dup } = addLink(peerId,
-                parentFirst ? newKey : otherKey,
-                parentFirst ? otherKey : newKey,
-                parentFirst ? "p" : "c");
+            // по-простому: ответ на триггер — связь «цитируемый = родитель,
+            // отвечающий = ребёнок» (без свопов по датам)
+            const { link, dup } = addLink(peerId, otherKey, newKey, "c");
             if (!dup) {
                 ensureFam(peerId, link.c); // двое родителей — уже семья
                 link.pairCand = pairRecords(peerId, link); // свадьбы «Иван+Мария»
@@ -1564,8 +1628,9 @@ async function handleEvent(o) {
         return;
     }
     if (payload === "del") {
-        // подтверждение: список событий чата + 🗑/❌
-    const recs = db.records.filter(r => r.peerId === peerId);
+        // подтверждение: список событий чата по полной дате ГГГГ-ММ-ДД (🔔 — по ММ-ДД) + 🗑/❌
+    const recs = db.records.filter(r => r.peerId === peerId)
+            .sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : 0));
         if (!recs.length) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "событий нет");
             return;
@@ -1583,6 +1648,9 @@ async function handleEvent(o) {
     } else if (payload === "del:yes") {
         const n = db.records.filter(r => r.peerId === peerId).length;
         db.records = db.records.filter(r => r.peerId !== peerId);
+        // связи и семьи чата ссылаются на записи — уходят вместе с ними
+        db.links = (db.links || []).filter(l => l.peerId !== peerId);
+        db.fams = (db.fams || []).filter(f => f.peerId !== peerId);
         saveDb();
         console.log("deleted", n, "records peer", peerId);
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "удалено событий: " + n);
