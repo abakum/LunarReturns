@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // dev/repl.mjs — консольная отладка tgcloud/handlers/* без облака:
 //   node dev/repl.mjs [--chat 1] [--fresh] [--private] [--admin]
-// Ввод: текст сообщения (в т.ч. /start, /today), `/N M` — нажать
-// кнопку M ответа N, `>N текст` — ответ (reply) на сообщение N (бота или
-// своё), `!dump` — показать таблицы БД, `\n` — перевод строки.
+// Ввод: текст сообщения (в т.ч. /start, /today), `/N M [uID]` — нажать
+// кнопку M ответа N (можно от участника uID), `>N текст` — ответ (reply)
+// на сообщение N (бота или своё), `!ged путь` — дроп .ged-файла,
+// `!dump` — показать таблицы БД, `\n` — перевод строки.
 // --private — личный чат (полная клавиатура), --admin — админ группы
 // (ownerMarkup); по умолчанию — участник группы (bellMarkup).
 // Выход — Ctrl-C. Мок sdk: dev/sdk-mock → node_modules/sdk (см. план
@@ -135,13 +136,13 @@ const dump = () => {
     }
 };
 
-const press = async (n, m) => {
+const press = async (n, m, uid) => {
     const msg = messages.find(x => x.n === n);
     const btn = msg && msg.flat[m - 1];
     if (!btn) { console.log(`ERROR: нет кнопки [${n}.${m}]`); return; }
     const cq = {
         id: String(++updSeq),
-        from: { id: 1, first_name: 'dev' },
+        from: { id: uid || 1, first_name: 'dev' },
         data: btn.data,
         message: { chat: { id: CHAT, type: CHAT_TYPE }, message_id: n, text: msg.text, entities: msg.entities || [], reply_markup: msg.markup },
     };
@@ -157,15 +158,39 @@ rl.on('SIGINT', () => { console.log(); rl.close(); });
 
 const role = PRIVATE ? 'личка' : (ADMIN ? 'админ группы' : 'участник группы');
 console.log(`tgdev: chat=${CHAT} (${role}), db=${path.relative(ROOT, dbAbs)}${fresh ? ' (fresh)' : ''}`);
-console.log('Ввод: текст | /N M — кнопка | >N текст — ответ на сообщение N (бота или твой) | !dump — база | Ctrl-C — выход\n');
+console.log('Ввод: текст | /N M [uID] — кнопка (можно от другого участника) | >N текст — ответ на сообщение N (бота или твой) | !ged путь — дроп .ged-файла | !dump — база | Ctrl-C — выход\n');
 
 const handle = async raw => {
     const input = String(raw || '').replace(/\\n/g, '\n').trim();
     if (!input) return;
     if (input === '!dump') { dump(); return; }
-    const bm = input.match(/^\/(\d+)\s+(\d+)$/);
+    const gm = input.match(/^!ged\s+(\S+)$/);
+    if (gm) {
+        // дроп .ged-файла: контент регистрируется в моке как file_id
+        let content;
+        try { content = fs.readFileSync(path.resolve(gm[1]), 'utf8'); }
+        catch (e) { console.log('ERROR: ' + e.message); return; }
+        const fileName = path.basename(gm[1]);
+        const fid = 'dev-' + fileName;
+        globalThis.__tgdev.files = globalThis.__tgdev.files || {};
+        globalThis.__tgdev.files[fid] = new TextEncoder().encode(content);
+        const msg = {
+            chat: { id: CHAT, type: CHAT_TYPE },
+            from: { id: 1, first_name: 'dev' },
+            document: { file_id: fid, file_name: fileName },
+        };
+        const m = { n: ++counter, text: '📎 ' + fileName, entities: [], markup: undefined, flat: [], user: true,
+            updateMsg: { chat: { id: CHAT, type: CHAT_TYPE }, from: { id: 1 } } };
+        messages.push(m);
+        console.log(`[${m.n}] ты:`);
+        console.log('    📎 ' + fileName);
+        try { await messageHandler(msg, { update: { update_id: ++updSeq } }); }
+        catch (e) { console.log('ERROR:', e.message); }
+        return;
+    }
+    const bm = input.match(/^\/(\d+)\s+(\d+)(?:\s+u(\d+))?$/);
     if (bm) {
-        await press(Number(bm[1]), Number(bm[2]));
+        await press(Number(bm[1]), Number(bm[2]), bm[3] ? Number(bm[3]) : 0);
         return;
     }
     const rm = input.match(/^>(\d+)\s+([\s\S]+)$/);

@@ -28,7 +28,7 @@ function cmp(what, vk, tg) {
 // ---- ВК: копия lunarreturns.js с дописанными тестовыми экспортами ----
 // argv "test" уводит main() в тихий путь (печать юбилея) без токена и poll.
 process.env.LR_DB = path.join(TMP, 'vk-db.json');
-const vkHook = '\nmodule.exports.__test = { parseTrigger, parseGedcom, addLink, ensureFam, ensureFamSingle, '
+const vkHook = '\nmodule.exports.__test = { parseTrigger, parseGedcom, gedStats, addLink, ensureFam, ensureFamSingle, '
     + 'pairRecords, confirmPair, linkText, gedcomText, importGedcom, upsertRecord, refreshFams, deleteEventCascade, '
     + 'getDb: () => db, setDb: d => { db = d; } };\n';
 const vkFile = path.join(TMP, 'vk.cjs');
@@ -75,6 +75,7 @@ const GEDCOM = [
     '0 TRLR',
 ].join('\n');
 cmp('parseGedcom', VK.parseGedcom(GEDCOM), TGP.parseGedcom(GEDCOM));
+cmp('gedStats', VK.gedStats(VK.parseGedcom(GEDCOM)), TGP.gedStats(TGP.parseGedcom(GEDCOM)));
 
 // ==================== 3. импорт → полный экспорт гедкома ====================
 const g = VK.parseGedcom(GEDCOM);

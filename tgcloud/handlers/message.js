@@ -1,5 +1,7 @@
-import { api } from 'sdk';
-import { parseTrigger, parseGedcom } from '../lib/parse.js';
+import { api, db } from 'sdk';
+import { eq } from 'sdk/db';
+import { gedDrops } from '../schema.js';
+import { parseTrigger, parseGedcom, gedStats } from '../lib/parse.js';
 import { jubileeText } from '../lib/text.js';
 import {
     HELP, startMarkup, chatAdmin, getSettings, todayText, upsertEvent, eventMarkup, sendLong,
@@ -8,9 +10,54 @@ import {
 
 const recOfRow = row => ({ n: row.name, d: row.date, h: row.hour ?? undefined, m: row.minute ?? undefined });
 
+// дроп .ged-документа: скачать, разобрать, запомнить в ged_drops (последний
+// дроп выигрывает) и спросить кнопками «Да/Нет»
+async function gedDrop(chatId, doc, fromId) {
+    const name = doc.file_name || "gedcom.ged";
+    let content;
+    try {
+        const bytes = await api.getFileContent(doc.file_id);
+        content = new TextDecoder().decode(bytes);
+    } catch (e) {
+        console.error("ged download:", e.message);
+        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось скачать файл " + name });
+        return;
+    }
+    const g = parseGedcom(content);
+    if (!g) {
+        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось разобрать файл " + name + " (ждём GEDCOM в UTF-8)" });
+        return;
+    }
+    const s = gedStats(g);
+    const vals = { fromId: fromId || 0, fileName: name, content, ts: Date.now() };
+    const old = await db.select().from(gedDrops).where(eq(gedDrops.chatId, chatId)).get();
+    if (old) await db.update(gedDrops).set(vals).where(eq(gedDrops.chatId, chatId)).run();
+    else await db.insert(gedDrops).values({ chatId, ...vals }).run();
+    await api.sendMessage({
+        chat_id: chatId,
+        text: "🧬 Файл " + name + ": персон " + s.persons + ", связей " + s.links
+            + ", свадеб " + s.weddings + ". Добавить в список событий?",
+        reply_markup: {
+            inline_keyboard: [[
+                { text: "✅ Да", callback_data: "gedadd" },
+                { text: "❌ Нет", callback_data: "gedign" },
+            ]],
+        },
+    });
+    console.log("ged drop:", name, "chat", chatId);
+}
+
 export default async function (message, ctx) {
     const chatId = message.chat.id;
     const text = (message.text || "").trim();
+
+    // дроп .ged-документа → вопрос «Да/Нет» (до разбора команд/триггеров;
+    // сообщение может быть без текста, caption не разбираем)
+    if (message.document && /\.ged$/i.test(message.document.file_name || "")) {
+        await gedDrop(chatId, message.document, message.from?.id);
+        return;
+    }
+
     if (!text) return;
 
     // в группах команда приходит с упоминанием бота: /start@botname
@@ -50,7 +97,7 @@ export default async function (message, ctx) {
     if (g) {
         const r = await importGedcom(chatId, g);
         if (r.persons || r.links) {
-            await api.sendMessage({ chat_id: chatId, text: "📦 Гедком импортирован: персон " + r.persons
+            await api.sendMessage({ chat_id: chatId, text: "🧬 Гедком импортирован: персон " + r.persons
                 + ", связей " + r.links + (r.weddings ? ", свадеб " + r.weddings : "") });
             return;
         }

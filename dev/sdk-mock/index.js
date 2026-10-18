@@ -21,6 +21,16 @@ export const fetch = async () => ({ ok: true, status: 200, statusText: 'mock', u
 
 async function realCall(method, params) {
     const token = process.env.TG_TOKEN;
+    if (method === 'getFileContent') {
+        // реальное облако резолвит file_id само; здесь — getFile + download
+        const fid = typeof params === 'string' ? params : params && params.file_id;
+        const f = await realCall('getFile', { file_id: fid });
+        const res = await globalThis.fetch('https://api.telegram.org/file/bot' + token + '/' + f.file_path, {
+            signal: AbortSignal.timeout(30000),
+        });
+        if (!res.ok) throw new BotApiError('HTTP ' + res.status, res.status);
+        return new Uint8Array(await res.arrayBuffer());
+    }
     const res = await globalThis.fetch('https://api.telegram.org/bot' + token + '/' + method, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -45,6 +55,12 @@ export const api = new Proxy({}, {
         if (method === 'getChatMember') {
             const role = globalThis.__tgdev && globalThis.__tgdev.role;
             return Promise.resolve({ status: role === 'administrator' ? 'administrator' : 'member', user: { id: params && params.user_id } });
+        }
+        if (method === 'getFileContent') {
+            // файлы, зарегистрированные repl-командой !ged
+            const fid = typeof params === 'string' ? params : params && params.file_id;
+            const bytes = globalThis.__tgdev && globalThis.__tgdev.files && globalThis.__tgdev.files[fid];
+            return bytes ? Promise.resolve(bytes) : Promise.reject(new BotApiError('file not found', 400));
         }
         return hook(method, params);
     },

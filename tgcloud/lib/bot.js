@@ -12,6 +12,9 @@ export const HELP = "Отправьте «Имя ГГГГ-ММ-ДД [ЧЧ:ММ] 
     + "/today — события и религиозные праздники сегодня (МСК), /gedcom — древо чата\n"
     + "Кнопки под ответом: 👎 удалить, 👀 подробно.";
 
+// сколько живёт «Да/Нет»-вопрос на дроп .ged-файла (час)
+export const GED_TTL = 3600000;
+
 const DEFAULT_SETTINGS = { orth: false, islam: false, bud: false, cath: false, jud: false };
 
 export async function getSettings(chatId) {

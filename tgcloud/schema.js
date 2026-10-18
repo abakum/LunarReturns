@@ -52,3 +52,13 @@ export const fams = table('fams', {
   marrD: text('marr_d'), marrPlac: text('marr_plac'),
   divD: text('div_d'), divPlac: text('div_plac'),
 });
+
+// дропнутый в чат .ged-файл: ждёт «Да/Нет» на вопрос об импорте
+// (stateless-окружение — текст файла живёт в БД; последний дроп выигрывает)
+export const gedDrops = table('ged_drops', {
+  chatId: integer('chat_id').primaryKey(),
+  fromId: integer('from_id').notNull(),  // кто дропнул (кнопки — только ему)
+  fileName: text('file_name').notNull(),
+  content: text('content').notNull(),    // сырой текст .ged (UTF-8)
+  ts: integer('ts').notNull(),           // epoch ms; старше часа — «файл не найден»
+});

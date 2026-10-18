@@ -637,6 +637,25 @@ function parseGedcom(text) {
     return { indis: [...indis.values()], fams: [...fams.values()] };
 }
 
+// статистика гедкома для вопроса при дропе файла: сколько импортировалось бы
+// (условия подсчёта — как в importGedcom)
+function gedStats(g) {
+    const have = new Set();
+    let persons = 0;
+    for (const ind of g.indis) {
+        if (!ind.name || !ind.birt || !ind.birt.date) continue;
+        persons++;
+        have.add(ind.__xref);
+    }
+    let links = 0, weddings = 0;
+    for (const f of g.fams) {
+        const ps = [f.husb, f.wife].filter(x => have.has(x));
+        for (const p of ps) for (const cx of f.chil) if (have.has(cx) && cx !== p) links++;
+        if (ps.length === 2 && f.marr && f.marr.date) weddings++;
+    }
+    return { persons, links, weddings };
+}
+
 // ============================== ВЫВОД ==============================
 
 function jubileeText(rec, note, detail = false) {
@@ -1419,6 +1438,14 @@ async function longPollStep() {
                     }
                     continue;
                 }
+                // дроп .ged-документа → вопрос «Да/Нет» (до разбора текста:
+                // сообщение может быть без текста, caption не разбираем)
+                const gedDoc = (msg.attachments || []).filter(a => a && a.type === "doc" && a.doc)
+                    .map(a => a.doc).find(d => String(d.ext || "").toLowerCase() === "ged" || /\.ged$/i.test(String(d.title || "")));
+                if (gedDoc) {
+                    await handleGedDrop(msg.peer_id, gedDoc, msg.id, msg.conversation_message_id, msg.from_id);
+                    continue;
+                }
                 if (!msg.text && !msg.payload) continue;
                 await handleMessage(msg.peer_id, String(msg.text || ""), msg.date, msg.id, msg.conversation_message_id, msg.from_id, unpay(msg.payload || ""), msg.reply_message || null);
             } else if (upd.type === "message_event" && upd.object) {
@@ -1441,6 +1468,41 @@ const isStart = (text, payload) => {
     if (payload && typeof payload === "object") return payload.command === "start";
     return payload === "start";
 };
+
+// дроп .ged-документа: скачать, разобрать и спросить кнопками «Да/Нет»;
+// текст файла до ответа держим в памяти (последний дроп выигрывает, живёт час)
+const GED_TTL = 3600000;
+const gedPending = new Map(); // peerId → {name, text, fromId, ts}
+
+async function handleGedDrop(peerId, doc, msgId, convMsgId, fromId) {
+    const name = doc.title || "gedcom.ged";
+    let text;
+    try {
+        const res = await fetch(doc.url, { signal: AbortSignal.timeout(30000) });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        text = await res.text();
+    } catch (e) {
+        console.error("ged download:", e.message);
+        await messagesSend(peerId, "💥 Не удалось скачать файл " + name, msgId, convMsgId);
+        return;
+    }
+    const g = parseGedcom(text);
+    if (!g) {
+        await messagesSend(peerId, "💥 Не удалось разобрать файл " + name + " (ждём GEDCOM в UTF-8)", msgId, convMsgId);
+        return;
+    }
+    const s = gedStats(g);
+    gedPending.set(peerId, { name, text, fromId, ts: Date.now() });
+    const kb = JSON.stringify({
+        inline: true,
+        buttons: [[
+            { action: { type: "callback", label: "✅ Да", payload: JSON.stringify({ c: "ged:add" }) }, color: "secondary" },
+            { action: { type: "callback", label: "❌ Нет", payload: JSON.stringify({ c: "ged:ign" }) }, color: "secondary" }
+        ]]
+    });
+    await messagesSend(peerId, "🧬 Файл " + name + ": персон " + s.persons + ", связей " + s.links
+        + ", свадеб " + s.weddings + ". Добавить в список событий?", msgId, convMsgId, kb);
+}
 
 // ответ на «/» или «Начать»: справка + клавиатура по чату/роли;
 // replyMsg — msg.reply_message (ответ триггером на триггер = связь)
@@ -1472,7 +1534,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     if (g) {
         const r = importGedcom(peerId, g);
         if (r.persons || r.links) {
-            await messagesSend(peerId, "📦 Гедком импортирован: персон " + r.persons
+            await messagesSend(peerId, "🧬 Гедком импортирован: персон " + r.persons
                 + ", связей " + r.links + (r.weddings ? ", свадеб " + r.weddings : ""), msgId, convMsgId);
             return;
         }
@@ -1646,13 +1708,38 @@ async function handleEvent(o) {
     // нормализуем: {c} / {rel} либо строка "del" / "del:yes" / "rel:orth"
     const payload = typeof p === "object" ? (p.rel ? "rel:" + p.rel : String(p.c ?? "")) : p;
     console.log("event:", payload, "peer", peerId);
-    if (!["del", "del:yes", "del:no", "bell", "tree", "close"].includes(payload) && !payload.startsWith("rel:")) {
+    if (!["del", "del:yes", "del:no", "bell", "tree", "close", "ged:add", "ged:ign"].includes(payload) && !payload.startsWith("rel:")) {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "неизвестная кнопка");
         return;
     }
     // 🗑/❌ в групповом чате — только админ беседы или создатель сообщества
     if (peerId >= 2000000000 && ["del", "del:yes", "del:no"].includes(payload) && !(await isChatAdmin(peerId, o.user_id))) {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "только владелец");
+        return;
+    }
+    // «Да/Нет» на дроп .ged: импорт или отказ (в группе — только отправивший файл)
+    if (payload === "ged:add" || payload === "ged:ign") {
+        const pend = gedPending.get(peerId);
+        if (!pend || Date.now() - pend.ts > GED_TTL) {
+            gedPending.delete(peerId);
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "файл не найден — перешлите .ged заново");
+            return;
+        }
+        if (peerId >= 2000000000 && o.user_id !== pend.fromId) {
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "только отправивший файл");
+            return;
+        }
+        gedPending.delete(peerId);
+        if (payload === "ged:ign") {
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "не добавлено");
+            await editOrigin(o, "Файл не добавлен: " + pend.name, JSON.stringify({ inline: true, buttons: [] }));
+            return;
+        }
+        const r = importGedcom(peerId, parseGedcom(pend.text));
+        await answerEvent(o.event_id || o.id, o.user_id, peerId, "гедком импортирован");
+        await editOrigin(o, "🧬 Гедком импортирован: персон " + r.persons + ", связей " + r.links
+            + (r.weddings ? ", свадеб " + r.weddings : ""), JSON.stringify({ inline: true, buttons: [] }));
+        console.log("ged import:", r.persons, "persons peer", peerId);
         return;
     }
     if (payload === "del") {

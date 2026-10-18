@@ -182,4 +182,23 @@ function parseGedcom(text) {
     return { indis: [...indis.values()], fams: [...fams.values()] };
 }
 
-export { parseTrigger, parseGedcom };
+// статистика гедкома для вопроса при дропе файла: сколько импортировалось бы
+// (условия подсчёта — как в importGedcom)
+function gedStats(g) {
+    const have = new Set();
+    let persons = 0;
+    for (const ind of g.indis) {
+        if (!ind.name || !ind.birt || !ind.birt.date) continue;
+        persons++;
+        have.add(ind.__xref);
+    }
+    let links = 0, weddings = 0;
+    for (const f of g.fams) {
+        const ps = [f.husb, f.wife].filter(x => have.has(x));
+        for (const p of ps) for (const cx of f.chil) if (have.has(cx) && cx !== p) links++;
+        if (ps.length === 2 && f.marr && f.marr.date) weddings++;
+    }
+    return { persons, links, weddings };
+}
+
+export { parseTrigger, parseGedcom, gedStats };

@@ -1,11 +1,13 @@
 import { api, db } from 'sdk';
 import { eq } from 'sdk/db';
-import { events, settings, links, fams } from '../schema.js';
+import { events, settings, links, fams, gedDrops } from '../schema.js';
 import { jubileeText } from '../lib/text.js';
+import { parseGedcom } from '../lib/parse.js';
 import { REL_DEFS, religiousYear } from '../lib/religion.js';
 import {
-        HELP, relMarkup, upcomingText, getSettings, startMarkup, chatAdmin, eventMarkup,
+        HELP, GED_TTL, relMarkup, upcomingText, getSettings, startMarkup, chatAdmin, eventMarkup,
         recordOf, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong, refreshFams, deleteEventCascade,
+        importGedcom,
 } from '../lib/bot.js';
 
 export default async function (cq, ctx) {
@@ -222,6 +224,32 @@ export default async function (cq, ctx) {
             const fragKeys = act === "sex" ? [fresh[fresh.who === 'p' ? 'parent' : 'child']] : [fresh.parent, fresh.child];
             await editText(await linkText(chatId, fresh) + "\n" + await gedcomText(chatId, fragKeys), await linkMarkup(chatId, fresh), 'HTML');
         }
+        return;
+    }
+
+    // «Да/Нет» на дроп .ged: импорт или отказ (в группе — только отправивший)
+    if (data === "gedadd" || data === "gedign") {
+        const row = await db.select().from(gedDrops).where(eq(gedDrops.chatId, chatId)).get();
+        if (!row || Date.now() - row.ts > GED_TTL) {
+            if (row) await db.delete(gedDrops).where(eq(gedDrops.chatId, chatId)).run();
+            await answer("файл не найден — перешлите .ged заново");
+            return;
+        }
+        if (cq.message.chat.type !== "private" && row.fromId !== cq.from?.id) {
+            await answer("только отправивший файл");
+            return;
+        }
+        await db.delete(gedDrops).where(eq(gedDrops.chatId, chatId)).run();
+        if (data === "gedign") {
+            await editText("Файл не добавлен: " + row.fileName, undefined);
+            await answer("не добавлено");
+            return;
+        }
+        const r = await importGedcom(chatId, parseGedcom(row.content));
+        await editText("🧬 Гедком импортирован: персон " + r.persons + ", связей " + r.links
+            + (r.weddings ? ", свадеб " + r.weddings : ""), undefined);
+        await answer("🧬 Гедком импортирован");
+        console.log("ged import:", r.persons, "persons chat", chatId);
         return;
     }
 
