@@ -1,6 +1,6 @@
 // Общий код TG-бота: настройки, клавиатуры, тексты «сегодня»/«список».
 import { db, api } from 'sdk';
-import { eq } from 'sdk/db';
+import { and, eq, or } from 'sdk/db';
 import { events, settings, links, fams } from '../schema.js';
 import { mskToday } from './astro.js';
 import { REL_DEFS, REL_ORDER, religiousDigest } from './religion.js';
@@ -94,11 +94,13 @@ export async function upsertEvent(chatId, rec) {
         deathDate: rec.dd ?? null,
         plac: rec.plac ?? null,
         plac2: rec.plac2 ?? null,
+        srcH: rec.srcH ?? null, srcM: rec.srcM ?? null,
+        dsrcH: rec.dsrcH ?? null, dsrcM: rec.dsrcM ?? null,
     };
     const [row] = await db.insert(events).values(vals)
         .onConflictDoUpdate({
             target: [events.chatId, events.name, events.date],
-            set: { hour: vals.hour, minute: vals.minute, deathDate: vals.deathDate, plac: vals.plac, plac2: vals.plac2 },
+            set: { hour: vals.hour, minute: vals.minute, deathDate: vals.deathDate, plac: vals.plac, plac2: vals.plac2, srcH: vals.srcH, srcM: vals.srcM, dsrcH: vals.dsrcH, dsrcM: vals.dsrcM },
         })
         .returning().run();
     return row;
@@ -214,6 +216,55 @@ export async function ensureFam(chatId, childKey) {
     for (const l of (await chatLinks(chatId)).filter(l => l.child === childKey))
         await db.update(links).set({ famId: f.id }).where(eq(links.id, l.id)).run();
     return { ...f, parents, children };
+}
+
+// почистить семьи после удаления связей: ребёнок остаётся в семье, пока
+// есть связь с флагом fam; пустые семьи и висячие флаги снимаются; родители
+// без действующей связи тоже убираются
+export async function refreshFams(chatId) {
+    const famRows = await chatFams(chatId);
+    const linksLeft = await chatLinks(chatId);
+    for (const f of famRows) {
+        const children = JSON.parse(f.children)
+            .filter(c => linksLeft.some(l => l.famId === f.id && l.child === c));
+        const parents = JSON.parse(f.parents)
+            .filter(p => linksLeft.some(l => l.famId === f.id && l.parent === p));
+        if (!children.length) await db.delete(fams).where(eq(fams.id, f.id)).run();
+        else if (children.length !== JSON.parse(f.children).length
+            || parents.length !== JSON.parse(f.parents).length)
+            await db.update(fams).set({ children: JSON.stringify(children), parents: JSON.stringify(parents) }).where(eq(fams.id, f.id)).run();
+    }
+    const famIds = new Set((await chatFams(chatId)).map(f => f.id));
+    for (const l of linksLeft)
+        if (l.famId !== null && l.famId !== undefined && !famIds.has(l.famId))
+            await db.update(links).set({ famId: null }).where(eq(links.id, l.id)).run();
+}
+
+// удалить событие с каскадом: связи персоны; у пары «Имя+Имя» — свадьба/развод
+// из семьи; висячие кандидаты-свадьбы у оставшихся связей; семьи чистятся
+export async function deleteEventCascade(chatId, pk) {
+    const name = pk.slice(0, -11), date = pk.slice(-10);
+    await db.delete(events).where(and(eq(events.chatId, chatId), eq(events.name, name), eq(events.date, date))).run();
+    await db.delete(links).where(and(eq(links.chatId, chatId),
+        or(eq(links.parent, pk), eq(links.child, pk)))).run();
+    if (name.includes("+")) {
+        const [n1, n2] = name.split("+");
+        for (const f of await chatFams(chatId)) {
+            if (f.marrD !== date) continue;
+            const ps = JSON.parse(f.parents);
+            // второй родитель может быть ещё не в семье (ensureFamSingle)
+            if (ps.some(p => keyN(p) === n1 || keyN(p) === n2))
+                await db.update(fams).set({ marrD: null, marrPlac: null, divD: null, divPlac: null }).where(eq(fams.id, f.id)).run();
+        }
+    }
+    for (const l of await chatLinks(chatId)) {
+        if (!l.pairCand) continue;
+        const cand = JSON.parse(l.pairCand).filter(c =>
+            c.pair !== pk && !keyN(c.pair).split("+").includes(name));
+        if (cand.length !== JSON.parse(l.pairCand).length)
+            await setLinkCand(l, cand.length ? cand : null);
+    }
+    await refreshFams(chatId);
 }
 
 // кандидаты-свадьбы: триггеры «Иван+Мария ГГГГММДД» в базе; когда у ребёнка уже
@@ -375,7 +426,7 @@ export async function gedcomText(chatId, keys) {
     }
     const famOut = merged.map(x => ({ parents: x.parents, children: x.children, marr: x.marr, div: x.div }));
     const fidOf = new Map(famOut.map((f, i) => [f, "F" + (i + 1)]));
-    const adopted = new Map(lk.filter(l => l.adopted).map(l => [l.child, true]));
+    const adopted = new Map((await chatLinks(chatId)).filter(l => l.adopted).map(l => [l.child, true]));
     const out = ["0 HEAD", "1 SOUR LunarReturns", "1 GEDC", "2 VERS 5.5.1", "2 FORM LINEAGE-LINKED", "1 CHAR UTF-8"];
     for (const r of recs) {
         const pk = r.name + " " + r.date;
@@ -383,7 +434,11 @@ export async function gedcomText(chatId, keys) {
         out.push("1 NAME " + r.name);
         if (r.sex) out.push("1 SEX " + r.sex);
         out.push("1 BIRT", "2 DATE " + gdate(r.date));
-        if (r.deathDate && !r.name.includes("+")) out.push("1 DEAT", "2 DATE " + gdate(r.deathDate));
+        if (r.srcH !== null && r.srcH !== undefined) out.push("2 TIME " + String(r.srcH).padStart(2, "0") + ":" + String(r.srcM).padStart(2, "0"));
+        if (r.deathDate) {
+            out.push("1 DEAT", "2 DATE " + gdate(r.deathDate));
+            if (r.dsrcH !== null && r.dsrcH !== undefined) out.push("2 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
+        }
         for (const f of famOut) {
             if (f.children.includes(pk)) {
                 out.push("1 FAMC @" + fidOf.get(f) + "@");
@@ -425,10 +480,20 @@ export async function importGedcom(chatId, g) {
     let persons = 0;
     for (const ind of g.indis) {
         if (!ind.name || !ind.birt || !ind.birt.date) continue;
-        await upsertEvent(chatId, {
-            n: ind.name, d: ind.birt.date,
-            sex: ind.sex, dd: ind.deat && ind.deat.date ? ind.deat.date : undefined,
-        });
+        const rec = { n: ind.name, d: ind.birt.date };
+        if (ind.sex) rec.sex = ind.sex;
+        if (ind.birt.time) {
+            const [h, m] = ind.birt.time.split(":").map(Number);
+            rec.srcH = h; rec.srcM = m;
+        }
+        if (ind.deat && ind.deat.date) {
+            rec.dd = ind.deat.date;
+            if (ind.deat.time) {
+                const [h, m] = ind.deat.time.split(":").map(Number);
+                rec.dsrcH = h; rec.dsrcM = m;
+            }
+        }
+        await upsertEvent(chatId, rec);
         byId.set(ind.__xref, ind.name + " " + ind.birt.date);
         persons++;
     }

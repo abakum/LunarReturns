@@ -86,7 +86,9 @@ function parseDateGroups(m, gi, what) {
         ? zoneLabel + " " + pad(hh, 2) + ":" + pad(mm, 2) + " → МСК " + pad(rec.h, 2) + ":" + pad(rec.m, 2)
             + (rec.d !== srcD ? " " + rec.d : "")
         : "";
-    return { rec, note, city };
+    // исходное местное время — для гедкома (2 TIME); без введённого времени — нет
+    const src = givenTime ? { srcH: hh, srcM: mm } : {};
+    return { rec: Object.assign(rec, src), note, city };
 }
 
 function parseTrigger(text) {
@@ -104,7 +106,8 @@ function parseTrigger(text) {
         if (s.error) return { n, error: s.error };
         rec.dd = s.rec.d;
         if (s.rec.h !== undefined) { rec.dh = s.rec.h; rec.dm = s.rec.m; }
-        if (s.city && !rec.plac) rec.plac = s.city;
+        if (s.rec.srcH !== undefined) { rec.dsrcH = s.rec.srcH; rec.dsrcM = s.rec.srcM; }
+        if (s.city) rec.plac2 = s.city; // место хвоста: развод для «Иван+Мария»
     }
     return { rec, note };
 }
@@ -167,6 +170,9 @@ function parseGedcom(text) {
             else if (curTag === "DEAT" && cur.deat) cur.deat.date = iso;
             else if (curTag === "MARR" && cur.marr) cur.marr.date = iso;
             else if (curTag === "DIV" && cur.div) cur.div.date = iso;
+        } else if (lvl === 2 && tag === "TIME" && /^\d{1,2}:\d{2}/.test(val)) {
+            if (curTag === "BIRT" && cur.birt) cur.birt.time = val.slice(0, 5);
+            else if (curTag === "DEAT" && cur.deat) cur.deat.time = val.slice(0, 5);
         } else if (lvl === 2 && tag === "PLAC") {
             if (curTag === "MARR" && cur.marr) cur.marr.plac = val;
             else if (curTag === "DIV" && cur.div) cur.div.plac = val;

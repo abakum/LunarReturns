@@ -19,6 +19,8 @@ function save() {
         if (r.deathDate) rec.dd = r.deathDate;
         if (r.plac) rec.plac = r.plac;
         if (r.plac2) rec.plac2 = r.plac2;
+        if (r.srcH !== null && r.srcH !== undefined) { rec.srcH = r.srcH; rec.srcM = r.srcM; }
+        if (r.dsrcH !== null && r.dsrcH !== undefined) { rec.dsrcH = r.dsrcH; rec.dsrcM = r.dsrcM; }
         rec.id = r.id;
         out.records.push(rec);
     }
@@ -58,6 +60,10 @@ function load() {
             row.deathDate = rec.dd ?? null;
             row.plac = rec.plac ?? null;
             row.plac2 = rec.plac2 ?? null;
+            row.srcH = rec.srcH ?? null;
+            row.srcM = rec.srcM ?? null;
+            row.dsrcH = rec.dsrcH ?? null;
+            row.dsrcM = rec.dsrcM ?? null;
             row.id = rec.id ?? 0;
             events.push(row);
         }
@@ -100,7 +106,14 @@ load();
 
 const tables = () => state.tables;
 const rows = t => (tables()[t.__name] = tables()[t.__name] || []);
-const match = cs => r => cs.every(c => c && c.__cond ? r[c.prop] === c.val : true);
+const cond = c => {
+    if (!c) return () => true;
+    if (c.__and) return r => c.__and.every(x => cond(x)(r));
+    if (c.__or) return r => c.__or.some(x => cond(x)(r));
+    if (c.__cond) return r => r[c.prop] === c.val;
+    return () => true;
+};
+const match = cs => r => cs.every(c => cond(c)(r));
 
 // ---- schema DSL ----
 class Col {

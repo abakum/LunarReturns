@@ -822,14 +822,42 @@ function confirmPair(peerId, link, cand) {
 }
 
 // почистить семьи после удаления связей: ребёнок остаётся в семье, пока
-// есть связь с флагом fam; пустые семьи и висячие флаги снимаются
+// есть связь с флагом fam; пустые семьи и висячие флаги снимаются; родители
+// без действующей связи тоже убираются
 function refreshFams() {
-    for (const f of db.fams || [])
+    for (const f of db.fams || []) {
         f.children = f.children.filter(c => (db.links || []).some(l => l.fam === f.id && l.c === c));
+        f.parents = f.parents.filter(p => (db.links || []).some(l => l.fam === f.id && l.p === p));
+    }
     db.fams = (db.fams || []).filter(f => f.children.length);
     for (const l of db.links || [])
         if (l.fam !== undefined && !(db.fams || []).some(f => f.id === l.fam)) l.fam = undefined;
     saveDb();
+}
+
+// удалить событие с каскадом: связи персоны; у пары «Имя+Имя» — свадьба/развод
+// из семьи; висячие кандидаты-свадьбы у оставшихся связей; семьи чистятся
+function deleteEventCascade(peerId, rec) {
+    const pk = pkey(rec);
+    db.records = db.records.filter(r => r !== rec);
+    db.links = (db.links || []).filter(l => !(l.peerId === peerId && (l.p === pk || l.c === pk)));
+    if (rec.n.includes("+")) {
+        const [n1, n2] = rec.n.split("+");
+        for (const f of db.fams || [])
+            // второй родитель может быть ещё не в семье (ensureFamSingle)
+            if (f.marr && f.marr.d === rec.d
+                && f.parents.some(p => keyN(p) === n1 || keyN(p) === n2)) {
+                delete f.marr;
+                delete f.div;
+            }
+    }
+    for (const l of db.links || []) {
+        if (!l.pairCand) continue;
+        const cand = l.pairCand.filter(c =>
+            c.pair !== pk && !keyN(c.pair).split("+").includes(rec.n));
+        if (cand.length !== l.pairCand.length) l.pairCand = cand.length ? cand : null;
+    }
+    refreshFams();
 }
 
 // текст сообщения-связи: строки связи (+ семья/вопрос), без юбилеев события —
@@ -1755,11 +1783,8 @@ async function handleReaction(o) {
         }
         const rec = await findRecordByCmid(peerId, cmid);
         if (!rec) return;
-        db.records = db.records.filter(r => r !== rec);
-        // заодно падают связи с удалённой персоной
-        db.links = (db.links || []).filter(l => !(l.peerId === peerId && (l.p === pkey(rec) || l.c === pkey(rec))));
-        refreshFams();
-        saveDb();
+        // связи персоны, свадьба пары «Имя+Имя», висячие кандидаты, семьи
+        deleteEventCascade(peerId, rec);
         console.log("reaction 👎: удалено событие", rec.n, rec.d, "peer", peerId);
         // правим сообщение события в пометку об удалении (реакции сохраняются),
         // при неудаче — reply

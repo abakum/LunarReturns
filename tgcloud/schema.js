@@ -11,6 +11,10 @@ export const events = table('events', {
   deathDate: text('death_date'),// хвост смерти/развода (для гедком)
   plac: text('plac'),           // город из скобок (PLAC)
   plac2: text('plac2'),         // город хвоста (место развода)
+  srcH: integer('src_h'),       // исходное местное время рождения (2 TIME)
+  srcM: integer('src_m'),
+  dsrcH: integer('dsrc_h'),     // исходное время смерти/развода (2 TIME)
+  dsrcM: integer('dsrc_m'),
 }, (t) => ({
   uq: uniqueIndex('uq_event').on(t.chatId, t.name, t.date),
 }));

@@ -1,11 +1,11 @@
 import { api, db } from 'sdk';
-import { and, eq, or } from 'sdk/db';
+import { eq } from 'sdk/db';
 import { events, settings, links, fams } from '../schema.js';
 import { jubileeText } from '../lib/text.js';
 import { REL_DEFS, religiousYear } from '../lib/religion.js';
 import {
         HELP, relMarkup, upcomingText, getSettings, startMarkup, chatAdmin, eventMarkup,
-        recordOf, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong,
+        recordOf, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong, refreshFams, deleteEventCascade,
 } from '../lib/bot.js';
 
 export default async function (cq, ctx) {
@@ -130,20 +130,9 @@ export default async function (cq, ctx) {
         const id = Number(data.slice(5));
         const row = await db.select().from(events).where(eq(events.id, id)).get();
         if (!row || row.chatId !== chatId) { await answer("Событие не найдено"); return; }
-        await db.delete(events).where(eq(events.id, id)).run();
+        // связи персоны, свадьба пары «Имя+Имя», висячие кандидаты, семьи
+        await deleteEventCascade(chatId, row.name + " " + row.date);
         await editText("🗑 Событие удалено: " + row.name + " " + row.date, undefined);
-        // заодно падают связи с удалённой персоной и чистятся семьи
-        const pk = row.name + " " + row.date;
-        await db.delete(links).where(and(eq(links.chatId, chatId),
-            or(eq(links.parent, pk), eq(links.child, pk)))).run();
-        const famRows = await db.select().from(fams).where(eq(fams.chatId, chatId)).all();
-        const linksLeft = await db.select().from(links).where(eq(links.chatId, chatId)).all();
-        for (const f of famRows) {
-            const children = JSON.parse(f.children).filter(c =>
-                linksLeft.some(l => l.famId === f.id && l.child === c));
-            await db.update(fams).set({ children: JSON.stringify(children) }).where(eq(fams.id, f.id)).run();
-            if (!children.length) await db.delete(fams).where(eq(fams.id, f.id)).run();
-        }
         await answer();
         console.log("deleted:", row.name, row.date, "chat", chatId);
         return;
@@ -218,14 +207,7 @@ export default async function (cq, ctx) {
         } else { // dell — удалить связь, событие остаётся
             await db.delete(links).where(eq(links.id, link.id)).run();
             // почистить семьи: ребёнок в семье, пока есть связь с famId
-            const famRows = await db.select().from(fams).where(eq(fams.chatId, chatId)).all();
-            const linksLeft = await db.select().from(links).where(eq(links.chatId, chatId)).all();
-            for (const f of famRows) {
-                const children = JSON.parse(f.children).filter(c =>
-                    linksLeft.some(l => l.famId === f.id && l.child === c));
-                await db.update(fams).set({ children: JSON.stringify(children) }).where(eq(fams.id, f.id)).run();
-                if (!children.length) await db.delete(fams).where(eq(fams.id, f.id)).run();
-            }
+            await refreshFams(chatId);
             const rec = await recordOf(chatId, link[link.who === 'p' ? 'parent' : 'child']);
             await editText("🔗 Связь удалена: " + link.parent + " → " + link.child
                 + (rec ? "\n" + jubileeText({ n: rec.name, d: rec.date, h: rec.hour ?? undefined, m: rec.minute ?? undefined }, "") : ""),
