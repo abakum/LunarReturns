@@ -9,7 +9,7 @@ import {
     recordOf, chatLinks, focusKeys, focusHead, focusMarkup, splitText, focusWithSpouses, focusSpousePairs,
 } from '../lib/bot.js';
 
-const recOfRow = row => ({ n: row.name, d: row.date, h: row.hour ?? undefined, m: row.minute ?? undefined });
+const recOfRow = row => ({ n: row.name, d: row.date, h: row.hour ?? undefined, m: row.minute ?? undefined, dd: row.deathDate ?? undefined });
 
 // дроп .ged-документа: скачать, разобрать, запомнить в ged_drops (последний
 // дроп выигрывает) и спросить кнопками «Да/Нет»

@@ -179,9 +179,19 @@ const WED = {
     80: "дубовая"
 };
 
-function ageSuffix(n, d) {
+// полных лет между датами ISO (ГГГГ-ММ-ДД); для «на сегодня» см. ageSuffix
+function fullYears(d1, d2) {
+    const [y1, m1, dd1] = d1.split("-").map(Number);
+    const [y2, m2, dd2] = d2.split("-").map(Number);
+    let a = y2 - y1;
+    if (m2 < m1 || (m2 === m1 && dd2 < dd1)) a--;
+    return a;
+}
+
+function ageSuffix(n, d, dd) {
     const age = mskToday()[0] - Number(d.slice(0, 4));
     if (age < 1) return "";
+    if (dd) return " " + age + " " + fullYears(d, dd); // умер/развод — тип годовщины не пишем
     return " " + age + (n.includes("+") && WED[age] ? " " + WED[age] : "");
 }
 
@@ -711,7 +721,8 @@ function jubileeText(rec, note, detail = false) {
     const [y, mo, d] = rec.d.split("-").map(Number);
     const t = new Date(Date.UTC(y, mo - 1, d, rec.h !== undefined ? rec.h : 12, rec.m !== undefined ? rec.m : 0, 0));
     const head = rec.n + " " + rec.d + (hasTime ? " " + String(rec.h).padStart(2, "0") + ":" + String(rec.m).padStart(2, "0") : "")
-        + ageSuffix(rec.n, rec.d)
+        + (rec.dd ? " " + rec.dd : "")
+        + ageSuffix(rec.n, rec.d, rec.dd)
         + (note ? "\n" + note : "");
     return head + "\n" + la(t, detail).join("\n");
 }

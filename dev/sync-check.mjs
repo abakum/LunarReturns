@@ -29,7 +29,7 @@ function cmp(what, vk, tg) {
 // argv "test" уводит main() в тихий путь (печать юбилея) без токена и poll.
 process.env.LR_DB = path.join(TMP, 'vk-db.json');
 const vkHook = '\nmodule.exports.__test = { parseTrigger, parseGedcom, gedStats, focusKeys, focusHasPair, focusWithSpouses, focusLabel, focusHead, addLink, ensureFam, ensureFamSingle, '
-    + 'pairRecords, confirmPair, linkText, gedcomText, importGedcom, upsertRecord, refreshFams, deleteEventCascade, '
+    + 'pairRecords, confirmPair, linkText, gedcomText, importGedcom, upsertRecord, refreshFams, deleteEventCascade, jubileeText, '
     + 'getDb: () => db, setDb: d => { db = d; } };\n';
 const vkFile = path.join(TMP, 'vk.cjs');
 fs.writeFileSync(vkFile, fs.readFileSync(path.join(ROOT, 'lunarreturns.js'), 'utf8') + vkHook);
@@ -60,6 +60,9 @@ const TRIGGERS = [
     'Иван 1960-05-10 06:30 2020-02-03 04:00',
     'Иван 1960-13-10',
     'Иван 1960-05-10 (Тьмутаракань)',
+    'Иван 1960-05-10 2020-02-03',
+    'Пётр 1985-07-07 23:45 (Пермь) 2020-02-03 04:00',
+    'Иван+Мария 1983-06-04 1990-01-01',
 ];
 for (const t of TRIGGERS) cmp('parseTrigger ' + JSON.stringify(t), VK.parseTrigger(t), TGP.parseTrigger(t));
 
@@ -76,6 +79,28 @@ const GEDCOM = [
 ].join('\n');
 cmp('parseGedcom', VK.parseGedcom(GEDCOM), TGP.parseGedcom(GEDCOM));
 cmp('gedStats', VK.gedStats(VK.parseGedcom(GEDCOM)), TGP.gedStats(TGP.parseGedcom(GEDCOM)));
+
+// ==================== 6. jubileeText: шапка с датой смерти/развода ====================
+const { jubileeText: tgJubilee } = await import(path.join(ROOT, 'tgcloud', 'lib', 'text.js'));
+const JUBILEE_RECS = [
+    { n: 'Иван', d: '1963-09-27', h: 12, m: 30 },
+    { n: 'Иван', d: '1963-09-27', dd: '2001-05-01' },
+    { n: 'Пётр', d: '1985-07-07', h: 23, m: 45, dd: '2020-02-03' },
+    { n: 'Иван+Мария', d: '1983-06-04' },
+    { n: 'Иван+Мария', d: '1983-06-04', dd: '1990-01-01' },
+];
+for (const r of JUBILEE_RECS)
+    cmp('jubileeText ' + JSON.stringify(r),
+        VK.jubileeText(r, 'note'),
+        tgJubilee(r, 'note').replace(/<\/?tg-spoiler>/g, '')); // будущие года: в ТГ под спойлером
+// формат: голова пары с разводом — оба возраста и без названия годовщины;
+// голова живой персоны — прежнего вида
+const divHead = VK.jubileeText({ n: 'Иван+Мария', d: '1983-06-04', dd: '1990-01-01' }, '').split('\n')[0];
+if (!/^Иван\+Мария 1983-06-04 1990-01-01 \d+ \d+$/.test(divHead) || /ситцевая|серебряная|золотая/.test(divHead))
+    { failed++; console.log('✗ голова развод-пары без типа годовщины\n  ' + divHead); }
+const livingHead = VK.jubileeText(JUBILEE_RECS[0], '').split('\n')[0];
+if (!/^Иван 1963-09-27 12:30 \d+$/.test(livingHead))
+    { failed++; console.log('✗ голова живой персоны прежнего вида\n  ' + livingHead); }
 
 // ==================== 5. фокус-радиус родни ====================
 // дерево: дед+бабка → (отец, тётя), отец+мать → (сын, дочь), тётя → двоюродный

@@ -148,6 +148,7 @@ export default async function (cq, ctx) {
         if (!row || row.chatId !== chatId) { await answer("Событие не найдено"); return; }
         const rec = { n: row.name, d: row.date };
         if (row.hour !== null && row.hour !== undefined) { rec.h = row.hour; rec.m = row.minute; }
+        if (row.deathDate) rec.dd = row.deathDate; // † / развод — в голове результата
         // сжатый вид отличается от детального спойлером: если в сообщении нет
         // spoiler-entity — оно детальное (в моке entity эмулирует repl)
         const ent = cq.message?.entities || [];
@@ -212,7 +213,7 @@ export default async function (cq, ctx) {
             await refreshFams(chatId);
             const rec = await recordOf(chatId, link[link.who === 'p' ? 'parent' : 'child']);
             await editText("🔗 Связь удалена: " + link.parent + " → " + link.child
-                + (rec ? "\n" + jubileeText({ n: rec.name, d: rec.date, h: rec.hour ?? undefined, m: rec.minute ?? undefined }, "") : ""),
+                + (rec ? "\n" + jubileeText({ n: rec.name, d: rec.date, h: rec.hour ?? undefined, m: rec.minute ?? undefined, dd: rec.deathDate ?? undefined }, "") : ""),
                 undefined, 'HTML');
             await answer();
             console.log("link deleted:", link.parent, "→", link.child, "chat", chatId);

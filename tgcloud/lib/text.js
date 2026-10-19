@@ -7,7 +7,8 @@ function jubileeText(rec, note, detail = false) {
     const [y, mo, d] = rec.d.split("-").map(Number);
     const t = new Date(Date.UTC(y, mo - 1, d, rec.h !== undefined ? rec.h : 12, rec.m !== undefined ? rec.m : 0, 0));
     const head = rec.n + " " + rec.d + (hasTime ? " " + String(rec.h).padStart(2, "0") + ":" + String(rec.m).padStart(2, "0") : "")
-        + ageSuffix(rec.n, rec.d)
+        + (rec.dd ? " " + rec.dd : "")
+        + ageSuffix(rec.n, rec.d, rec.dd)
         + (note ? "\n" + note : "");
     // годы до текущего включительно видны; сжатый вид — будущие юбилеи под
     // спойлером, детальный — всё открыто (по наличию спойлера callback и
