@@ -5,7 +5,9 @@
 //
 // pairs — [[родитель, ребёнок], …]; spousePairs — [[ключ, ключ], …];
 // sexOf(key) → 'M' | 'F' | null. Возвращает ярлык или «» (без ярлыка —
-// родство не прослеживается по крови/браку либо вне таблицы степеней).
+// родство не прослеживается по крови/браку либо совсем вне таблицы степеней;
+// где короткого слова нет — составной ярлык: «двоюродная сестра бабушки»,
+// «троюродный брат отца», «двоюродный внучатый племянник»).
 
 export function kinLabel(pairs, spousePairs, sexOf, from, to) {
     if (from === to) return "";
@@ -73,7 +75,7 @@ function kinBlood(pairs, sexOf, from, to) {
     // словесная степень родства: 1 двоюродный, 2 троюродный, 3 четвероюродный
     const degree = w => w === 1 ? "двоюродный" : w === 2 ? "троюродный" : w === 3 ? "четвероюродный" : null;
     // боковые линии: a — вверх до общего предка, b — вниз к other
-    const side = (a, b, sex) => {
+    const side = (a, b, sex, anc) => {
         if (b === 0) return line(true, a, sex);  // other — прямой предок
         if (a === 0) return line(false, b, sex); // прямой потомок
         const f = sex === "F", u = sex !== "M" && sex !== "F";
@@ -85,17 +87,30 @@ function kinBlood(pairs, sexOf, from, to) {
         }
         if (a > b && b === 1) { // брат/сестра предка: дядя, двоюродный дед…
             if (a === 2) return u ? "дядя" : f ? "тётя" : "дядя";
-            const noun = line(true, a, sex);
-            return (fem(noun) ? "двоюродная" : "двоюродный") + " " + noun; // двоюродный прадед…
+            // сиблинг предка глубины a — сам предок глубины a-1
+            // (брат деда = двоюродный дед, брат прадеда = двоюродный прадед)
+            const base = line(true, a - 1, sex);
+            const noun = base === "дедушка" ? "дед" : base;
+            return (fem(noun) ? "двоюродная" : "двоюродный") + " " + noun; // двоюродный дед/бабушка, двоюродный прадед…
         }
-        if (b > a && a === 1) { // потомки сиблинга: племянник, внучатый…
-            if (b === 2) return niece;
-            if (b === 3) return (fem(niece) ? "внучатая" : "внучатый") + " " + niece;
-            return "";
+        if (b > a) { // потомки сиблинга/кузенов: племянник, внучатый, правнучатый…
+            if (a === 1) {
+                if (b === 2) return niece;
+                if (b === 3) return (fem(niece) ? "внучатая" : "внучатый") + " " + niece;
+                return "пра".repeat(b - 4) + (fem(niece) ? "правнучатая " : "правнучатый ") + niece;
+            }
+            const p = degree(a - 1);
+            if (!p) return "";
+            return (fem(niece) ? p.replace(/ый$/, "ая") : p) + " " + (b - a === 1 ? niece
+                : "пра".repeat(b - a - 2) + (fem(niece) ? "внучатая " : "внучатый ") + niece);
         }
+        // кузены предков: X — кузен глубины b-1 от предка from на глубине a-b
+        // («двоюродная сестра бабушки», «троюродный брат отца»); anc — родительный
+        // падеж ярлыка того предка (род известен из БД); (3,2) — короткое слово
         if (a === 3 && b === 2) return u ? "двоюродный дядя" : f ? "двоюродная тётя" : "двоюродный дядя";
-        if (a === 2 && b === 3) return (fem(niece) ? "двоюродная" : "двоюродный") + " " + niece; // сын двоюродного брата
-        return ""; // глубже таблицы — без ярлыка
+        const w = b - 1;
+        if (!degree(w) || !anc) return "";
+        return (fem(sib) ? degree(w).replace(/ый$/, "ая") : degree(w)) + " " + sib + " " + anc;
     };
     const self = up(from);               // предки цитируемого
     const other = up(to);                // предки другого (могут включать from)
@@ -105,9 +120,28 @@ function kinBlood(pairs, sexOf, from, to) {
         if (b === undefined) continue;
         const i = idx++;
         if (!best || a + b < best[0] + best[1] || (a + b === best[0] + best[1] && a < best[0]))
-            best = [a, b, i];
+            best = [a, b, i, k];
     }
-    if (best) return side(best[0], best[1], sexOf ? sexOf(to) : null);
+    if (best) {
+        const [a, b, , k] = best;
+        // для составного ярлыка кузенов предков нужен предок from на глубине
+        // a-b, лежащий на пути к общему предку k (спуск от k на b шагов вниз
+        // по крови; фильтр по self отсекает не-предков from)
+        let anc = "";
+        if (a > b && b > 1) {
+            let frontier = [k];
+            const seen = new Set([k]);
+            for (let d = 1; d <= b && !anc; d++) {
+                const next = [];
+                for (const x of frontier) for (const c of (kidsOf.get(x) || []))
+                    if (!seen.has(c)) { seen.add(c); next.push(c); }
+                frontier = next;
+                if (d === b) for (const c of next)
+                    if (self.get(c) === a - b) { anc = genLabel(line(true, a - b, sexOf ? sexOf(c) : null)); break; }
+            }
+        }
+        return side(a, b, sexOf ? sexOf(to) : null, anc);
+    }
     return "";
 }
 

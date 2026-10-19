@@ -16,44 +16,45 @@ export const HELP = "Отправьте «Имя ГГГГ-ММ-ДД [ЧЧ:ММ] 
 // сколько живёт «Да/Нет»-вопрос на дроп .ged-файла (час)
 export const GED_TTL = 3600000;
 
-const DEFAULT_SETTINGS = { orth: false, islam: false, bud: false, cath: false, jud: false };
+const DEFAULT_SETTINGS = { orth: false, islam: false, bud: false, cath: false, jud: false, bell: true };
 
 export async function getSettings(chatId) {
     const row = await db.select().from(settings).where(eq(settings.chatId, chatId)).get();
     return row || { chatId, ...DEFAULT_SETTINGS };
 }
 
-// inline-клавиатура настроек (личка): 🗑 (удалить всё) + 🔔 (список) + религии (🔔/🔕) + ❌
-// раскладка как в VK relKeyboard: [🗑, 🔔, orth, islam] / [bud, cath, jud, ❌]
+// inline-клавиатура настроек (личка): 🗑 (удалить всё) + колокольчик (список) + религии (🔔/🔕) + ❌
+// раскладка как в VK relKeyboard: [🗑, bell, orth, islam] / [bud, cath, jud, ❌];
+// подпись колокольчика — подписка: 🔔 вкл (список по ММ-ДД) / 🔕 выкл (по ГГГГММДД)
 export function relMarkup(chatId, s) {
     const btn = (text, data) => ({ text, callback_data: data });
     const rel = key => btn(REL_DEFS[key].icon + (s[key] ? "🔔" : "🔕"), "rel:" + key);
     return {
         inline_keyboard: [
-            [btn("🗑", "del"), btn("🔔", "bell"), btn("🧬", "tree"), rel("orth")],
+            [btn("🗑", "del"), btn(s.bell !== false ? "🔔" : "🔕", "bell"), btn("🧬", "tree"), rel("orth")],
             [rel("islam"), rel("bud"), rel("cath"), rel("jud")],
             [btn("❌", "close")]
         ]
     };
 }
 
-// клавиатура админа группы: 🗑 (удалить всё), 🔔 (список), 🧬 (гедком), ❌
-export function ownerMarkup() {
+// клавиатура админа группы: 🗑 (удалить всё), колокольчик (список), 🧬 (гедком), ❌
+export function ownerMarkup(bellOn = true) {
     return {
         inline_keyboard: [[
             { text: "🗑", callback_data: "del" },
-            { text: "🔔", callback_data: "bell" },
+            { text: bellOn ? "🔔" : "🔕", callback_data: "bell" },
             { text: "🧬", callback_data: "tree" },
             { text: "❌", callback_data: "close" },
         ]]
     };
 }
 
-// клавиатура участника группы: 🔔 (список), 🧬 (гедком), ❌
-export function bellMarkup() {
+// клавиатура участника группы: колокольчик (список), 🧬 (гедком), ❌
+export function bellMarkup(bellOn = true) {
     return {
         inline_keyboard: [[
-            { text: "🔔", callback_data: "bell" },
+            { text: bellOn ? "🔔" : "🔕", callback_data: "bell" },
             { text: "🧬", callback_data: "tree" },
             { text: "❌", callback_data: "close" },
         ]]
@@ -77,7 +78,7 @@ export async function todayText(chatId) {
     return parts.join("\n\n");
 }
 
-// «Имя ГГГГ-ММ-ДД[ ЧЧ:ММ]»; "" — событий нет.
+// «Имя ГГГГ-ММ-ДД[ ГГГГ-ММ-ДД смерти][ ЧЧ:ММ]»; "" — событий нет.
 // byFullDate=false — по возрастанию ММ-ДД (список 🔔), true — по полной дате
 // ГГГГ-ММ-ДД (подтверждение удаления)
 export async function upcomingText(chatId, byFullDate = false) {
@@ -85,7 +86,9 @@ export async function upcomingText(chatId, byFullDate = false) {
     const key = r => (byFullDate ? r.date : r.date.slice(5)) + " " + (r.hour !== null && r.hour !== undefined ? String(r.hour).padStart(2, "0") + String(r.minute ?? 0).padStart(2, "0") : "");
     return rows
         .sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0))
-        .map(r => r.name + " " + r.date + (r.hour !== null && r.hour !== undefined ? " " + String(r.hour).padStart(2, "0") + ":" + String(r.minute).padStart(2, "0") : ""))
+        .map(r => r.name + " " + r.date
+            + (r.deathDate !== null && r.deathDate !== undefined ? " " + r.deathDate : "")
+            + (r.hour !== null && r.hour !== undefined ? " " + String(r.hour).padStart(2, "0") + ":" + String(r.minute).padStart(2, "0") : ""))
         .join("\n");
 }
 
@@ -134,10 +137,11 @@ export async function chatAdmin(chat, userId) {
 }
 
 // клавиатура /start: личка — полная, админ группы — ownerMarkup, участник — bellMarkup
-// (паритет VK: relKeyboard/ownerKeyboard/bellKeyboard)
+// (паритет VK: relKeyboard/ownerKeyboard/bellMarkup); подпись колокольчика — подписка
 export function startMarkup(chat, isAdmin, chatId, s) {
+    const bellOn = s.bell !== false;
     if (chat.type === 'private') return relMarkup(chatId, s);
-    return isAdmin ? ownerMarkup() : bellMarkup();
+    return isAdmin ? ownerMarkup(bellOn) : bellMarkup(bellOn);
 }
 
 // ---- гедком-база: персоны/связи/семьи, дерево в рамках чата ----
@@ -482,10 +486,11 @@ export const focusHead = (key, radius, dd) =>
 
 // список событий по множеству фокуса с ярлыками родства: строки
 // «Имя Д [Д(смерти)] [ЧЧ:ММ] родство»; items — записи {n, d, h, m, dd};
-// params — (items, keys, key, pairs, spousePairs, sexOf)
-export function focusListText(items, keys, key, pairs, spousePairs, sexOf) {
+// params — (items, keys, key, pairs, spousePairs, sexOf, byFullDate);
+// сортировка по ММ-ДД или (byFullDate) по полной дате
+export function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false) {
     const set = new Set(keys);
-    const sortKey = r => r.d.slice(5) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
+    const sortKey = r => (byFullDate ? r.d : r.d.slice(5)) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
     return items
         .filter(r => set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys)))
         .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0))
@@ -499,10 +504,11 @@ export function focusListText(items, keys, key, pairs, spousePairs, sexOf) {
 // клавиатура фокус-сообщения: как /start по роли, но без кнопок религий,
 // 🔔/🧬 действуют в радиусе, а в ряд с ❌ добавлены неактивные цифры радиуса
 // (активная скрыта; цифра r выводится, если есть предки глубины r — depth
-// = focusDepth; grace при старом вызове без depth — все цифры)
+// = focusDepth; grace при старом вызове без depth — все цифры);
+// подпись колокольчика — подписка: 🔔 вкл (список по ММ-ДД) / 🔕 выкл (по ГГГГММДД)
 export function focusMarkup(chat, chatId, s, radius, depth) {
     const btn = (text, data) => ({ text, callback_data: data });
-    const bell = btn("🔔", "focbell");
+    const bell = btn(s.bell !== false ? "🔔" : "🔕", "focbell");
     const tree = btn("🧬", "foctree");
     const digits = [1, 2, 3, 4, 5]
         .filter(n => n !== radius && n <= (depth === undefined ? 5 : depth))

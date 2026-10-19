@@ -578,14 +578,21 @@ function parseTrigger(text) {
 }
 
 // ============================== ГЕДКОМ-ИМПОРТ ==============================
-// «10 MAY 1985» → «1985-05-10»; без полной даты — null
+// «10 MAY 1985» → «1985-05-10»; «MAR 1985» → «1985-03-01»; «1985» → «1985-01-01»
+// (неполная дата — первым числом известного месяца/года; квалификаторы ABT/EST/
+// CAL/BEF/AFT срезаются — иначе null)
 const GED_MONTHS = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 };
 function gdateToISO(s) {
-    const m = String(s).trim().match(/(\d{1,2})\s+([A-Za-z]{3})\.?\s+(\d{4})/);
-    if (!m) return null;
-    const mo = GED_MONTHS[m[2].toUpperCase()];
-    if (!mo) return null;
-    return m[3] + "-" + String(mo).padStart(2, "0") + "-" + String(m[1]).padStart(2, "0");
+    const t = String(s).trim().replace(/^(?:abt|est|cal|bef|aft)\s+/i, "");
+    let m = t.match(/(\d{1,2})\s+([A-Za-z]{3})\.?\s+(\d{4})/);
+    if (m) {
+        const mo = GED_MONTHS[m[2].toUpperCase()];
+        return mo ? m[3] + "-" + String(mo).padStart(2, "0") + "-" + String(m[1]).padStart(2, "0") : null;
+    }
+    m = t.match(/^([A-Za-z]{3})\.?\s+(\d{4})$/);
+    const mo = m && GED_MONTHS[m[1].toUpperCase()];
+    if (mo) return m[2] + "-" + String(mo).padStart(2, "0") + "-01";
+    return /^\d{4}$/.test(t) ? t + "-01-01" : null;
 }
 
 // валидный гедком → { indis, fams }; иначе null. Берт только BIRT/DEAT/SEX
@@ -742,7 +749,9 @@ function focusWithSpouses(keys, spousePairs) {
 //
 // pairs — [[родитель, ребёнок], …]; spousePairs — [[ключ, ключ], …];
 // sexOf(key) → 'M' | 'F' | null. Возвращает ярлык или «» (без ярлыка —
-// родство не прослеживается по крови/браку либо вне таблицы степеней).
+// родство не прослеживается по крови/браку либо совсем вне таблицы степеней;
+// где короткого слова нет — составной ярлык: «двоюродная сестра бабушки»,
+// «троюродный брат отца», «двоюродный внучатый племянник»).
 
 function kinLabel(pairs, spousePairs, sexOf, from, to) {
     if (from === to) return "";
@@ -810,7 +819,7 @@ function kinBlood(pairs, sexOf, from, to) {
     // словесная степень родства: 1 двоюродный, 2 троюродный, 3 четвероюродный
     const degree = w => w === 1 ? "двоюродный" : w === 2 ? "троюродный" : w === 3 ? "четвероюродный" : null;
     // боковые линии: a — вверх до общего предка, b — вниз к other
-    const side = (a, b, sex) => {
+    const side = (a, b, sex, anc) => {
         if (b === 0) return line(true, a, sex);  // other — прямой предок
         if (a === 0) return line(false, b, sex); // прямой потомок
         const f = sex === "F", u = sex !== "M" && sex !== "F";
@@ -822,17 +831,30 @@ function kinBlood(pairs, sexOf, from, to) {
         }
         if (a > b && b === 1) { // брат/сестра предка: дядя, двоюродный дед…
             if (a === 2) return u ? "дядя" : f ? "тётя" : "дядя";
-            const noun = line(true, a, sex);
-            return (fem(noun) ? "двоюродная" : "двоюродный") + " " + noun; // двоюродный прадед…
+            // сиблинг предка глубины a — сам предок глубины a-1
+            // (брат деда = двоюродный дед, брат прадеда = двоюродный прадед)
+            const base = line(true, a - 1, sex);
+            const noun = base === "дедушка" ? "дед" : base;
+            return (fem(noun) ? "двоюродная" : "двоюродный") + " " + noun; // двоюродный дед/бабушка, двоюродный прадед…
         }
-        if (b > a && a === 1) { // потомки сиблинга: племянник, внучатый…
-            if (b === 2) return niece;
-            if (b === 3) return (fem(niece) ? "внучатая" : "внучатый") + " " + niece;
-            return "";
+        if (b > a) { // потомки сиблинга/кузенов: племянник, внучатый, правнучатый…
+            if (a === 1) {
+                if (b === 2) return niece;
+                if (b === 3) return (fem(niece) ? "внучатая" : "внучатый") + " " + niece;
+                return "пра".repeat(b - 4) + (fem(niece) ? "правнучатая " : "правнучатый ") + niece;
+            }
+            const p = degree(a - 1);
+            if (!p) return "";
+            return (fem(niece) ? p.replace(/ый$/, "ая") : p) + " " + (b - a === 1 ? niece
+                : "пра".repeat(b - a - 2) + (fem(niece) ? "внучатая " : "внучатый ") + niece);
         }
+        // кузены предков: X — кузен глубины b-1 от предка from на глубине a-b
+        // («двоюродная сестра бабушки», «троюродный брат отца»); anc — родительный
+        // падеж ярлыка того предка (род известен из БД); (3,2) — короткое слово
         if (a === 3 && b === 2) return u ? "двоюродный дядя" : f ? "двоюродная тётя" : "двоюродный дядя";
-        if (a === 2 && b === 3) return (fem(niece) ? "двоюродная" : "двоюродный") + " " + niece; // сын двоюродного брата
-        return ""; // глубже таблицы — без ярлыка
+        const w = b - 1;
+        if (!degree(w) || !anc) return "";
+        return (fem(sib) ? degree(w).replace(/ый$/, "ая") : degree(w)) + " " + sib + " " + anc;
     };
     const self = up(from);               // предки цитируемого
     const other = up(to);                // предки другого (могут включать from)
@@ -842,9 +864,28 @@ function kinBlood(pairs, sexOf, from, to) {
         if (b === undefined) continue;
         const i = idx++;
         if (!best || a + b < best[0] + best[1] || (a + b === best[0] + best[1] && a < best[0]))
-            best = [a, b, i];
+            best = [a, b, i, k];
     }
-    if (best) return side(best[0], best[1], sexOf ? sexOf(to) : null);
+    if (best) {
+        const [a, b, , k] = best;
+        // для составного ярлыка кузенов предков нужен предок from на глубине
+        // a-b, лежащий на пути к общему предку k (спуск от k на b шагов вниз
+        // по крови; фильтр по self отсекает не-предков from)
+        let anc = "";
+        if (a > b && b > 1) {
+            let frontier = [k];
+            const seen = new Set([k]);
+            for (let d = 1; d <= b && !anc; d++) {
+                const next = [];
+                for (const x of frontier) for (const c of (kidsOf.get(x) || []))
+                    if (!seen.has(c)) { seen.add(c); next.push(c); }
+                frontier = next;
+                if (d === b) for (const c of next)
+                    if (self.get(c) === a - b) { anc = genLabel(line(true, a - b, sexOf ? sexOf(c) : null)); break; }
+            }
+        }
+        return side(a, b, sexOf ? sexOf(to) : null, anc);
+    }
     return "";
 }
 
@@ -1319,9 +1360,9 @@ function toggleRel(peerId, key) {
     saveDb();
     return s[key];
 }
-
 // клавиатура: по 4 кнопки в ряд, последняя — ❌ (закрыть, красная);
-// состояние — 🔔 (вкл) / 🔕 (выкл)
+// состояние — 🔔 (вкл) / 🔕 (выкл);
+// подпись колокольчика — подписка: 🔔 вкл (список по ММ-ДД) / 🔕 выкл (по ГГГГММДД)
 function relKeyboard(peerId) {
     const s = getSettings(peerId);
     const mk = (label, payload, color) => ({
@@ -1332,7 +1373,7 @@ function relKeyboard(peerId) {
     return JSON.stringify({
         inline: true,
         buttons: [
-            [mk("🗑", { c: "del" }, "secondary"), mk("🔔", { c: "bell" }, "secondary"), mk("🧬", { c: "tree" }, "secondary"), btn("orth")],
+            [mk("🗑", { c: "del" }, "secondary"), mk(s.bell !== false ? "🔔" : "🔕", { c: "bell" }, "secondary"), mk("🧬", { c: "tree" }, "secondary"), btn("orth")],
             [btn("islam"), btn("bud"), btn("cath"), btn("jud")],
             [mk("❌", { c: "close" }, "secondary")]
         ]
@@ -1340,21 +1381,21 @@ function relKeyboard(peerId) {
 }
 
 // клавиатура владельца в групповом чате
-function ownerKeyboard() {
+function ownerKeyboard(bellOn = true) {
     const mk = (label, payload) => ({
         action: { type: "callback", label, payload: JSON.stringify(payload) },
         color: "secondary"
     });
-    return JSON.stringify({ inline: true, buttons: [[mk("🗑", { c: "del" }), mk("🔔", { c: "bell" }), mk("🧬", { c: "tree" }), mk("❌", { c: "close" })]] });
+    return JSON.stringify({ inline: true, buttons: [[mk("🗑", { c: "del" }), mk(bellOn ? "🔔" : "🔕", { c: "bell" }), mk("🧬", { c: "tree" }), mk("❌", { c: "close" })]] });
 }
 
 // клавиатура обычного участника группового чата
-function bellKeyboard() {
+function bellKeyboard(bellOn = true) {
     const mk = (label, payload) => ({
         action: { type: "callback", label, payload: JSON.stringify(payload) },
         color: "secondary"
     });
-    return JSON.stringify({ inline: true, buttons: [[mk("🔔", { c: "bell" }), mk("🧬", { c: "tree" }), mk("❌", { c: "close" })]] });
+    return JSON.stringify({ inline: true, buttons: [[mk(bellOn ? "🔔" : "🔕", { c: "bell" }), mk("🧬", { c: "tree" }), mk("❌", { c: "close" })]] });
 }
 
 const snackbar = text => JSON.stringify({ type: "show_snackbar", text });
@@ -1738,14 +1779,14 @@ async function focusKeyboard(peerId, userId, key, radius, depth) {
         action: { type: "callback", label, payload: JSON.stringify(payload) },
         color: "secondary"
     });
-    const bell = mk("🔔", { c: "foc:bell", k: key, r: radius });
+    const bell = mk(bellOnOf(getSettings(peerId)) ? "🔔" : "🔕", { c: "foc:bell", k: key, r: radius });
     const tree = mk("🧬", { c: "foc:tree", k: key, r: radius });
     const digits = [1, 2, 3, 4, 5]
         .filter(n => n !== radius && n <= (depth === undefined ? 5 : depth))
         .map(n => mk(String(n) + "\u20E3", { c: "foc", k: key, r: n }));
     const tail = [...digits, mk("❌", { c: "close" })];
     const base = (peerId < 2000000000 || await isChatAdmin(peerId, userId))
-        ? [mk("🗑", { c: "del" }), bell, tree]
+        ? [mk("🗑", { c: "del", k: key, r: radius }), bell, tree]
         : [bell, tree];
     // VK: максимум 5 кнопок в ряду — цифры отдельным рядом
     return JSON.stringify({ inline: true, buttons: [base, tail] });
@@ -1753,10 +1794,11 @@ async function focusKeyboard(peerId, userId, key, radius, depth) {
 
 // список событий по множеству фокуса с ярлыками родства (kinLabel):
 // «Имя Д [Д(смерти)] [ЧЧ:ММ] родство»; items — записи {n, d, h, m, dd};
-// (items, keys, key, pairs, spousePairs, sexOf)
-function focusListText(items, keys, key, pairs, spousePairs, sexOf) {
+// (items, keys, key, pairs, spousePairs, sexOf, byFullDate) — сортировка
+// по ММ-ДД или (byFullDate) по полной дате
+function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false) {
     const set = new Set(keys);
-    const sortKey = r => r.d.slice(5) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
+    const sortKey = r => (byFullDate ? r.d : r.d.slice(5)) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
     return items
         .filter(r => set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys)))
         .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0))
@@ -1783,13 +1825,13 @@ function focusSpousePairs(peerId) {
 }
 
 // текст фокуса: заголовок (с датой смерти dd) + (bell ? список : гедком-фрагмент)
-function focusText(peerId, key, radius, bell, dd) {
+function focusText(peerId, key, radius, bell, dd, byFull = false) {
     const pairs = (db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]);
     const spPairs = focusSpousePairs(peerId);
     const keys = focusWithSpouses(focusKeys(pairs, key, radius), spPairs);
     const sexMap = new Map(db.records.filter(r => r.peerId === peerId).map(r => [pkey(r), r.sex ?? null]));
     const body = bell
-        ? (focusListText(db.records.filter(r => r.peerId === peerId), keys, key, pairs, spPairs, k => sexMap.get(k) ?? null)
+        ? (focusListText(db.records.filter(r => r.peerId === peerId), keys, key, pairs, spPairs, k => sexMap.get(k) ?? null, byFull)
             || "(в радиусе нет событий)")
         : gedcomText(peerId, keys);
     return focusHead(key, radius, dd) + "\n" + body;
@@ -1931,23 +1973,26 @@ function unpay(p) {
     return String(p);
 }
 
-// «Имя ГГГГ-ММ-ДД[ ЧЧ:ММ]» в исходных датах, сортировка по ММ-ДД (не ломая
-// год); "" — записей нет
-function upcomingEvents(peerId) {
-    const key = r => r.d.slice(5) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
+// «Имя ГГГГ-ММ-ДД[ ГГГГ-ММ-ДД смерти][ ЧЧ:ММ]» в исходных датах; сортировка по
+// ММ-ДД (не ломая год; список 🔔) или по полной дате (🔕/удаление); "" — записей нет
+function upcomingEvents(peerId, byFullDate = false) {
+    const key = r => (byFullDate ? r.d : r.d.slice(5)) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
     return db.records.filter(r => r.peerId === peerId)
         .sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0))
-        .map(r => {
-            const time = r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "";
-            return r.n + " " + r.d + time;
-        })
+        .map(r => r.n + " " + r.d
+            + (r.dd !== undefined ? " " + r.dd : "")
+            + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : ""))
         .join("\n");
 }
 
+// подписка списка колокольчика: false/undefined = включена (ММ-ДД), false → выключена
+const bellOnOf = s => !s || s.bell !== false;
+
 // клавиатура «/»-ответа по чату и роли пользователя
 async function peerKeyboard(peerId, userId) {
+    const bellOn = bellOnOf(getSettings(peerId));
     if (peerId < 2000000000) return relKeyboard(peerId);
-    return (await isChatAdmin(peerId, userId)) ? ownerKeyboard() : bellKeyboard();
+    return (await isChatAdmin(peerId, userId)) ? ownerKeyboard(bellOn) : bellKeyboard(bellOn);
 }
 
 // текст сообщения по cmid беседы; null если недоступен
@@ -2002,11 +2047,31 @@ async function handleEvent(o) {
             return;
         }
         const bell = p.c === "foc:bell";
+        const s = getSettings(peerId);
+        // сортировка списка — по подписке (🔔 вкл — ММ-ДД, 🔕 выкл — ГГГГММДД);
+        // клик по уже показанному списку переключает подписку
+        let on = s.bell !== false;
+        let byFull = bell && !on;
         await answerEvent(o.event_id || o.id, o.user_id, peerId,
             p.c === "foc" ? "от " + focusLabel(radius)
                 : (bell ? "список в радиусе" : "древо в радиусе"));
         // цифра — только заголовок; тело (список/гедком) — по 🔔/🧬
-        const txt = p.c === "foc" ? focusHead(key, radius, rec.dd) : focusText(peerId, key, radius, bell, rec.dd);
+        let txt;
+        if (p.c === "foc") txt = focusHead(key, radius, rec.dd);
+        else {
+            txt = focusText(peerId, key, radius, bell, rec.dd, byFull);
+            if (bell) {
+                const cur = await cmidText(peerId, o.conversation_message_id);
+                // «уже показан» — показанное длиннее заголовка (сообщение-заголовок
+                // само по себе префикс рендера списка)
+                if (cur !== null && cur !== focusHead(key, radius, rec.dd) && txt.startsWith(cur)) {
+                    s.bell = !on; saveDb();
+                    on = s.bell !== false;
+                    byFull = !on;
+                    txt = focusText(peerId, key, radius, bell, rec.dd, byFull);
+                }
+            }
+        }
         const kb = await focusKeyboard(peerId, o.user_id, key, radius, depth);
         const parts = splitText(txt);
         await editOrigin(o, parts[0], kb);
@@ -2058,6 +2123,9 @@ async function handleEvent(o) {
     }
     // нормализуем: {c} / {rel} либо строка "del" / "del:yes" / "rel:orth"
     const payload = typeof p === "object" ? (p.rel ? "rel:" + p.rel : String(p.c ?? "")) : p;
+    // фокус-контекст 🗑 (payload несёт k/r): удалять только родню в радиусе
+    const fd = p && typeof p === "object" && (p.c === "del" || p.c === "del:yes") && p.k
+        ? { k: String(p.k), r: Math.min(5, Math.max(1, Number(p.r) || 1)) } : null;
     console.log("event:", payload, "peer", peerId);
     if (!["del", "del:yes", "del:no", "bell", "tree", "close", "ged:add", "ged:ign"].includes(payload) && !payload.startsWith("rel:")) {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "неизвестная кнопка");
@@ -2094,24 +2162,67 @@ async function handleEvent(o) {
         return;
     }
     if (payload === "del") {
-        // подтверждение: список событий чата по полной дате ГГГГ-ММ-ДД (🔔 — по ММ-ДД) + 🗑/❌
-    const recs = db.records.filter(r => r.peerId === peerId)
-            .sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : 0));
-        if (!recs.length) {
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "событий нет");
-            return;
+        // подтверждение: список событий чата по полной дате ГГГГ-ММ-ДД (🔔 — по ММ-ДД) + 🗑/❌;
+        // из фокус-сообщения — только родня в радиусе (список тот же, что у 🔔)
+        let head, list;
+        if (fd) {
+            const rec = recordOf(peerId, fd.k);
+            if (!rec) {
+                await answerEvent(o.event_id || o.id, o.user_id, peerId, "персона не найдена");
+                return;
+            }
+            const pairs = (db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]);
+            fd.r = Math.min(fd.r, Math.max(1, focusDepth(pairs, fd.k)));
+            const spPairs = focusSpousePairs(peerId);
+            const keys = focusWithSpouses(focusKeys(pairs, fd.k, fd.r), spPairs);
+            const sexMap = new Map(db.records.filter(r => r.peerId === peerId).map(r => [pkey(r), r.sex ?? null]));
+            list = focusListText(db.records.filter(r => r.peerId === peerId), keys, fd.k, pairs, spPairs, k => sexMap.get(k) ?? null);
+            if (!list) {
+                await answerEvent(o.event_id || o.id, o.user_id, peerId, "в радиусе нет событий");
+                return;
+            }
+            head = focusHead(fd.k, fd.r, rec.dd) + "\nУдалить родню в радиусе?";
+        } else {
+            list = upcomingEvents(peerId, true); // по полной дате, со смертями
+            if (!list) {
+                await answerEvent(o.event_id || o.id, o.user_id, peerId, "событий нет");
+                return;
+            }
+            head = "Удалить все события чата?";
         }
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "подтвердите удаление");
-        const list = recs.map(r => r.n + " " + r.d + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "")).join("\n");
         const kb = JSON.stringify({
             inline: true,
             buttons: [[
-                { action: { type: "callback", label: "🗑", payload: JSON.stringify({ c: "del:yes" }) }, color: "secondary" },
+                { action: { type: "callback", label: "🗑", payload: JSON.stringify(fd ? { c: "del:yes", k: fd.k, r: fd.r } : { c: "del:yes" }) }, color: "secondary" },
                 { action: { type: "callback", label: "❌", payload: JSON.stringify({ c: "del:no" }) }, color: "secondary" }
             ]]
         });
-        await editOrigin(o, "Удалить все события чата?\n" + list, kb);
+        // длинный список — кусками: начало с кнопками правкой исходного, хвост досылкой (как 🔔)
+        const parts = splitText(head + "\n" + list);
+        await editOrigin(o, parts[0], kb);
+        for (let i = 1; i < parts.length; i++) await messagesSend(peerId, parts[i]);
     } else if (payload === "del:yes") {
+        if (fd) {
+            // фокус: удалить родню в радиусе; связи/свадьбы/семьи — каскадом,
+            // как при одиночном удалении (deleteEventCascade)
+            const rec = recordOf(peerId, fd.k);
+            if (!rec) {
+                await answerEvent(o.event_id || o.id, o.user_id, peerId, "персона не найдена");
+                return;
+            }
+            const pairs = (db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]);
+            const spPairs = focusSpousePairs(peerId);
+            const keys = focusWithSpouses(focusKeys(pairs, fd.k, fd.r), spPairs);
+            const set = new Set(keys);
+            const victims = db.records.filter(r => r.peerId === peerId
+                && (set.has(pkey(r)) || (r.n.includes("+") && focusHasPair(r.n, keys))));
+            for (const v of victims) deleteEventCascade(peerId, v);
+            console.log("deleted", victims.length, "records (focus", fd.k, "r" + fd.r + ") peer", peerId);
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "удалено событий: " + victims.length);
+            await editOrigin(o, "Удалено событий: " + victims.length + "\n" + HELP, await peerKeyboard(peerId, o.user_id));
+            return;
+        }
         const n = db.records.filter(r => r.peerId === peerId).length;
         db.records = db.records.filter(r => r.peerId !== peerId);
         // связи и семьи чата ссылаются на записи — уходят вместе с ними
@@ -2128,13 +2239,25 @@ async function handleEvent(o) {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "отмена удаления");
         await editOrigin(o, HELP, await peerKeyboard(peerId, o.user_id));
     } else if (payload === "bell") {
-        const list = upcomingEvents(peerId);
+        // как религиозные дни: первый клик показывает список, не меняя подписку
+        // (сортировка по подписке: 🔔 вкл — ММ-ДД, 🔕 выкл — ГГГГММДД);
+        // клик по уже показанному списку переключает подписку и пересортирует
+        const s = getSettings(peerId);
+        const on = s.bell !== false;
+        const md = upcomingEvents(peerId, false);
+        const full = upcomingEvents(peerId, true);
+        const cur = await cmidText(peerId, o.conversation_message_id);
+        const shown = cur !== null
+            && ((md && (cur === md || md.startsWith(cur))) || (full && (cur === full || full.startsWith(cur))));
+        if (shown) { s.bell = !on; saveDb(); }
+        const list = upcomingEvents(peerId, s.bell === false);
         if (!list) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "событий нет");
             return;
         }
         // снекбар останавливает «вращение» на кнопке
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, "список событий");
+        await answerEvent(o.event_id || o.id, o.user_id, peerId,
+            shown ? (s.bell !== false ? "подписка включена" : "подписка отключена") : "список событий");
         const parts = splitText(list);
         await editOrigin(o, parts[0], await peerKeyboard(peerId, o.user_id));
         for (let i = 1; i < parts.length; i++) await messagesSend(peerId, parts[i]);

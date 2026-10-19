@@ -73,12 +73,25 @@ const GEDCOM = [
     '0 @I2@ INDI', '1 NAME Мария /Иванова/', '1 SEX F', '1 BIRT', '2 DATE 1 MAR 1962',
     '0 @I3@ INDI', '1 NAME Пётр /Иванов/', '1 BIRT', '2 DATE 7 JUL 1985', '2 TIME 23:45',
     '1 DEAT', '2 DATE 3 FEB 2020', '2 TIME 05:15', '1 ADOP', '2 FAMC @F1@',
+    '0 @I4@ INDI', '1 NAME Год /Только/', '1 BIRT', '2 DATE 1624', '1 DEAT', '2 DATE 1669',
+    '0 @I5@ INDI', '1 NAME Анна /Месяц/', '1 SEX F', '1 BIRT', '2 DATE ABT MAR 1662',
     '0 @F1@ FAM', '1 HUSB @I1@', '1 WIFE @I2@', '1 CHIL @I3@', '2 PEDI adopted',
+    '1 CHIL @I4@',
     '1 MARR', '2 DATE 4 JUN 1983', '2 PLAC Пермь', '1 DIV', '2 DATE 1 JAN 1990',
     '0 TRLR',
 ].join('\n');
 cmp('parseGedcom', VK.parseGedcom(GEDCOM), TGP.parseGedcom(GEDCOM));
 cmp('gedStats', VK.gedStats(VK.parseGedcom(GEDCOM)), TGP.gedStats(TGP.parseGedcom(GEDCOM)));
+// неполные даты не ломают импорт: «1624» → 1624-01-01, «ABT MAR 1662» →
+// 1662-03-01 (первым числом известного месяца/года, квалификатор срезан)
+const gUnf = VK.parseGedcom(GEDCOM);
+const unfB = gUnf.indis.find(i => i.__xref === 'I4');
+const unfM = gUnf.indis.find(i => i.__xref === 'I5');
+if (unfB.birt.date !== '1624-01-01' || unfB.deat.date !== '1669-01-01' || unfM.birt.date !== '1662-03-01') {
+    failed++;
+    console.log('✗ неполные даты гедкома\n  I4: ' + unfB.birt.date + ' / ' + unfB.deat.date
+        + ', I5: ' + unfM.birt.date);
+}
 
 // ==================== 6. jubileeText: шапка с датой смерти/развода ====================
 const { jubileeText: tgJubilee } = await import(path.join(ROOT, 'tgcloud', 'lib', 'text.js'));
@@ -172,11 +185,30 @@ const kinPersons = [
     ['Сын', '1980-06-06', 'M'], ['Дочь', '1982-07-07', 'F'], ['Двоюродный', '1984-08-08', 'M'],
     ['Тесть', '1931-12-12', 'M'], ['Чужая', '1991-10-10', 'F'], ['Сноха', '1981-03-03', 'F'],
     ['Прадед', '1900-01-01', 'M'],
+    ['Дядька', '1928-07-07', 'M'], ['Тётка', '1929-08-08', 'F'], // сын/дочь Прадеда — брат/сестра Деда
+    ['Прапрадед', '1870-01-01', 'M'], ['Брат Прадеда', '1898-09-09', 'M'],
+    ['Жена Дядьки', '1927-05-05', 'F'],
+    ['Кузина', '1956-06-06', 'F'], ['Троюродный', '1958-09-09', 'M'], // дочь/внук Брата Прадеда
+    ['Муж Кузины', '1955-11-11', 'M'],
+    ['Племянник', '2003-03-03', 'M'], ['Внучатый', '2005-04-04', 'M'], // потомки Дочи
+    ['Правнучатый', '2007-07-07', 'M'],
+    ['ДвПлем', '2006-05-05', 'M'], ['ДвВнуч', '2007-06-06', 'M'], // потомки Двоюродного
 ];
 const kinKeys = Object.fromEntries(kinPersons.map(p => [p[0], p[0] + ' ' + p[1]]));
 const kinSex = Object.fromEntries(kinPersons.map(p => [p[0] + ' ' + p[1], p[2]]));
 const kinPairs = [
+    ['Прапрадед 1870-01-01', 'Прадед 1900-01-01'],
+    ['Прапрадед 1870-01-01', 'Брат Прадеда 1898-09-09'],
     ['Прадед 1900-01-01', 'Дед 1930-01-01'],
+    ['Прадед 1900-01-01', 'Дядька 1928-07-07'],
+    ['Прадед 1900-01-01', 'Тётка 1929-08-08'],
+    ['Брат Прадеда 1898-09-09', 'Кузина 1956-06-06'],
+    ['Кузина 1956-06-06', 'Троюродный 1958-09-09'],
+    ['Дочь 1982-07-07', 'Племянник 2003-03-03'],
+    ['Племянник 2003-03-03', 'Внучатый 2005-04-04'],
+    ['Внучатый 2005-04-04', 'Правнучатый 2007-07-07'],
+    ['Двоюродный 1984-08-08', 'ДвПлем 2006-05-05'],
+    ['ДвПлем 2006-05-05', 'ДвВнуч 2007-06-06'],
     ['Дед 1930-01-01', 'Отец 1955-03-03'], ['Бабка 1932-02-02', 'Отец 1955-03-03'],
     ['Дед 1930-01-01', 'Тётя 1957-04-04'], ['Бабка 1932-02-02', 'Тётя 1957-04-04'],
     ['Отец 1955-03-03', 'Сын 1980-06-06'], ['Мать 1956-05-05', 'Сын 1980-06-06'],
@@ -187,6 +219,8 @@ const kinPairs = [
 const kinSpouses = [
     ['Отец 1955-03-03', 'Мать 1956-05-05'], ['Дед 1930-01-01', 'Бабка 1932-02-02'],
     ['Тётя 1957-04-04', 'Тесть 1931-12-12'], ['Сын 1980-06-06', 'Сноха 1981-03-03'],
+    ['Дядька 1928-07-07', 'Жена Дядьки 1927-05-05'],
+    ['Кузина 1956-06-06', 'Муж Кузины 1955-11-11'],
 ];
 const sonKey = 'Сын 1980-06-06';
 // focusDepth: глубина предков (цифры радиуса 2–5 — по сведениям о дедах/прадедах)
@@ -195,7 +229,7 @@ cmp('focusDepth глубины',
         .map(c => VK.focusDepth(c[0], c[1])),
     [[kinPairs, sonKey], [kinPairs, kinKeys['Двоюродный']], [['Родитель 1930-01-01', 'Сын 1990-01-01'], 'Сын 1990-01-01']]
         .map(c => TG.focusDepth(c[0], c[1])));
-if (JSON.stringify([3, 3, 1]) !== JSON.stringify([
+if (JSON.stringify([4, 4, 1]) !== JSON.stringify([
     VK.focusDepth(kinPairs, sonKey), VK.focusDepth(kinPairs, kinKeys['Двоюродный']),
     VK.focusDepth([['Родитель 1930-01-01', 'Сын 1990-01-01']], 'Сын 1990-01-01')]))
     { failed++; console.log('✗ focusDepth: неверные глубины'); }
@@ -215,6 +249,16 @@ const KIN_CASES = [
     [kinKeys['Дочь'], 'сестра'],
     [kinKeys['Тесть'], 'муж тёти'],    // муж тёти — не процитируемому
     [kinKeys['Прадед'], 'прадед'],     // глубина 3 — «пра»-приставка
+    [kinKeys['Дядька'], 'двоюродный дед'],      // брат деда (a=3, b=1)
+    [kinKeys['Тётка'], 'двоюродная бабушка'],   // сестра деда (a=3, b=1)
+    [kinKeys['Брат Прадеда'], 'двоюродный прадед'], // брат прадеда (a=4, b=1)
+    [kinKeys['Кузина'], 'двоюродная сестра дедушки'],   // (a=4, b=2) — составной
+    [kinKeys['Троюродный'], 'троюродный брат отца'],    // (a=4, b=3) — составной
+    [kinKeys['Племянник'], 'племянник'],                // (a=1, b=2)
+    [kinKeys['Внучатый'], 'внучатый племянник'],        // (a=1, b=3)
+    [kinKeys['Правнучатый'], 'правнучатый племянник'],  // (a=1, b=4) — составной
+    [kinKeys['ДвПлем'], 'двоюродный племянник'],        // (a=2, b=3)
+    [kinKeys['ДвВнуч'], 'двоюродный внучатый племянник'], // (a=2, b=4) — составной
     [kinKeys['Чужая'], ''],            // родство не прослеживается
 ];
 let kinOK = true;
@@ -248,6 +292,18 @@ cmp('kinLabel жена внука',
     TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Сноха']));
 if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Сноха']) !== 'жена внука')
     { failed++; console.log('✗ kinLabel жена внука'); }
+// супруг сиблинга деда: ярлык в родительном падеже — «жена двоюродного деда»
+cmp('kinLabel жена двоюродного деда',
+    VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Жена Дядьки']),
+    TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Жена Дядьки']));
+if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Жена Дядьки']) !== 'жена двоюродного деда')
+    { failed++; console.log('✗ kinLabel жена двоюродного деда'); }
+// супруг кузены предков: составной ярлык в родительном падеже
+cmp('kinLabel муж двоюродной сестры дедушки',
+    VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Муж Кузины']),
+    TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Муж Кузины']));
+if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Муж Кузины']) !== 'муж двоюродной сестры дедушки')
+    { failed++; console.log('✗ kinLabel муж двоюродной сестры дедушки'); }
 
 // ==================== 8. focusListText: список с датой смерти и родством ====================
 const kinItems = [
@@ -264,6 +320,10 @@ for (const r of [1, 2]) {
     cmp('focusListText радиус ' + r,
         VK.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null),
         TG.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null));
+    // по полной дате (toggle 🔔): ММ-ДД и ГГГГ-ММ-ДД дают разный порядок
+    cmp('focusListText радиус ' + r + ' по датам',
+        VK.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null, true),
+        TG.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null, true));
     if (r === 2) {
         if (!/^Бабка 1932-02-02 2000-03-03 бабушка$/m.test(want))
             { failed++; console.log('✗ focusListText: Бабка без даты смерти/ярлыка'); }
@@ -272,6 +332,9 @@ for (const r of [1, 2]) {
             { failed++; console.log('✗ focusListText: пара без ярлыка\n  ' + pairLine); }
         if (!/^Тесть 1931-12-12 муж тёти$/m.test(want))
             { failed++; console.log('✗ focusListText: супруг тёти без «муж тёти»'); }
+        const full = VK.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null, true);
+        if (!full.startsWith('Дед 1930-01-01')) // старейший (1930) — первым
+            { failed++; console.log('✗ focusListText byFull: первая строка не старейший\n  ' + full.split('\n')[0]); }
     }
 }
 // состав по радиусам: r1 — родители и их потомки (дедов нет), r2 — деды

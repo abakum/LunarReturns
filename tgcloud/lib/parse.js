@@ -113,14 +113,21 @@ function parseTrigger(text) {
 }
 
 // ============================== ГЕДКОМ-ИМПОРТ ==============================
-// «10 MAY 1985» → «1985-05-10»; без полной даты — null
+// «10 MAY 1985» → «1985-05-10»; «MAR 1985» → «1985-03-01»; «1985» → «1985-01-01»
+// (неполная дата — первым числом известного месяца/года; квалификаторы ABT/EST/
+// CAL/BEF/AFT срезаются — иначе null)
 const GED_MONTHS = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 };
 function gdateToISO(s) {
-    const m = String(s).trim().match(/(\d{1,2})\s+([A-Za-z]{3})\.?\s+(\d{4})/);
-    if (!m) return null;
-    const mo = GED_MONTHS[m[2].toUpperCase()];
-    if (!mo) return null;
-    return m[3] + "-" + String(mo).padStart(2, "0") + "-" + String(m[1]).padStart(2, "0");
+    const t = String(s).trim().replace(/^(?:abt|est|cal|bef|aft)\s+/i, "");
+    let m = t.match(/(\d{1,2})\s+([A-Za-z]{3})\.?\s+(\d{4})/);
+    if (m) {
+        const mo = GED_MONTHS[m[2].toUpperCase()];
+        return mo ? m[3] + "-" + String(mo).padStart(2, "0") + "-" + String(m[1]).padStart(2, "0") : null;
+    }
+    m = t.match(/^([A-Za-z]{3})\.?\s+(\d{4})$/);
+    const mo = m && GED_MONTHS[m[1].toUpperCase()];
+    if (mo) return m[2] + "-" + String(mo).padStart(2, "0") + "-01";
+    return /^\d{4}$/.test(t) ? t + "-01-01" : null;
 }
 
 // валидный гедком → { indis, fams }; иначе null. Берт только BIRT/DEAT/SEX

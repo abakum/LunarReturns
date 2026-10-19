@@ -43,6 +43,7 @@ function save() {
     for (const s of tables().settings || []) {
         const v = {};
         for (const k of ['orth', 'islam', 'bud', 'cath', 'jud']) if (s[k]) v[k] = true;
+        v.bell = s.bell !== false; // подписка колокольчика (default true)
         out.settings[String(s.chatId)] = v;
     }
     fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
@@ -97,6 +98,7 @@ function load() {
         for (const [peer, v] of Object.entries(parsed.settings || {})) {
             const row = { chatId: Number(peer) };
             for (const k of ['orth', 'islam', 'bud', 'cath', 'jud']) row[k] = !!v[k];
+            row.bell = v.bell !== false; // подписка колокольчика (default true)
             settings.push(row);
         }
         state.tables.settings = settings;
