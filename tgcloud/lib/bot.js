@@ -3,6 +3,7 @@ import { db, api } from 'sdk';
 import { and, eq, or } from 'sdk/db';
 import { events, settings, links, fams } from '../schema.js';
 import { mskToday } from './astro.js';
+import { kinLabel } from './kinship.js';
 import { REL_DEFS, REL_ORDER, religiousDigest } from './religion.js';
 import { jubileeText } from './text.js';
 
@@ -453,17 +454,59 @@ export async function focusSpousePairs(chatId) {
 export const focusLabel = radius =>
     radius === 1 ? "родителей" : radius === 2 ? "дедов" : "пра".repeat(radius - 3) + "прадедов";
 
-// заголовок фокус-сообщения
-export const focusHead = (key, radius) => key + " · от " + focusLabel(radius);
+// глубина предков персоны key (0 = родителей нет) — для скрытия цифр радиуса
+// без сведений (кнопок 2–5 дедов/прадедов, если их нет). В ВК — focusDepth.
+export function focusDepth(pairs, key) {
+    const parentsOf = new Map();
+    for (const [p, c] of pairs) {
+        if (!parentsOf.has(c)) parentsOf.set(c, []);
+        parentsOf.get(c).push(p);
+    }
+    let frontier = [key], d = 0;
+    const seen = new Set([key]);
+    while (frontier.length) {
+        const next = [];
+        for (const k of frontier) for (const p of (parentsOf.get(k) || []))
+            if (!seen.has(p)) { seen.add(p); next.push(p); }
+        if (!next.length) break;
+        frontier = next;
+        d++;
+    }
+    return d;
+}
+
+// заголовок фокус-сообщения; dd — дата смерти/развода, если есть;
+// радиус — цифрой в квадрате (кейкап) перед ключом
+export const focusHead = (key, radius, dd) =>
+    String(radius) + "\u20E3 " + key + (dd ? " " + dd : "");
+
+// список событий по множеству фокуса с ярлыками родства: строки
+// «Имя Д [Д(смерти)] [ЧЧ:ММ] родство»; items — записи {n, d, h, m, dd};
+// params — (items, keys, key, pairs, spousePairs, sexOf)
+export function focusListText(items, keys, key, pairs, spousePairs, sexOf) {
+    const set = new Set(keys);
+    const sortKey = r => r.d.slice(5) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
+    return items
+        .filter(r => set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys)))
+        .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0))
+        .map(r => r.n + " " + r.d
+            + (r.dd ? " " + r.dd : "")
+            + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "")
+            + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d); return l ? " " + l : ""; })())
+        .join("\n");
+}
 
 // клавиатура фокус-сообщения: как /start по роли, но без кнопок религий,
 // 🔔/🧬 действуют в радиусе, а в ряд с ❌ добавлены неактивные цифры радиуса
-// (активная скрыта)
-export function focusMarkup(chat, chatId, s, radius) {
+// (активная скрыта; цифра r выводится, если есть предки глубины r — depth
+// = focusDepth; grace при старом вызове без depth — все цифры)
+export function focusMarkup(chat, chatId, s, radius, depth) {
     const btn = (text, data) => ({ text, callback_data: data });
     const bell = btn("🔔", "focbell");
     const tree = btn("🧬", "foctree");
-    const digits = [1, 2, 3, 4, 5].filter(n => n !== radius).map(n => btn(String(n) + "\u20E3", "foc" + n));
+    const digits = [1, 2, 3, 4, 5]
+        .filter(n => n !== radius && n <= (depth === undefined ? 5 : depth))
+        .map(n => btn(String(n) + "\u20E3", "foc" + n));
     const tail = [...digits, btn("❌", "close")];
     return { inline_keyboard: [[btn("🗑", "del"), bell, tree], tail] };
 }

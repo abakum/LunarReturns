@@ -666,6 +666,27 @@ function gedStats(g) {
     return { persons, links, weddings };
 }
 
+// глубина предков персоны key (0 = родителей нет) — для скрытия цифр радиуса
+// без сведений (кнопок 2–5 дедов/прадедов, если их нет). В ТГ — focusDepth в lib/bot.js.
+function focusDepth(pairs, key) {
+    const parentsOf = new Map();
+    for (const [p, c] of pairs) {
+        if (!parentsOf.has(c)) parentsOf.set(c, []);
+        parentsOf.get(c).push(p);
+    }
+    let frontier = [key], d = 0;
+    const seen = new Set([key]);
+    while (frontier.length) {
+        const next = [];
+        for (const k of frontier) for (const p of (parentsOf.get(k) || []))
+            if (!seen.has(p)) { seen.add(p); next.push(p); }
+        if (!next.length) break;
+        frontier = next;
+        d++;
+    }
+    return d;
+}
+
 // множество родни персоны key в радиусе radius: предки до radius поколений
 // (1=родители, 2=деды…) ∪ все их транзитивные потомки (сам key, сиблинги,
 // двоюродные и потомки всех); pairs — массивы [parent, child]
@@ -714,6 +735,144 @@ function focusWithSpouses(keys, spousePairs) {
     return [...set];
 }
 
+// kinship.js — ярлыки родства «кто цитируемому кто»: мать, сын, внучка,
+// двоюродный брат, жена внука, муж дочки… Чистая функция без зависимостей;
+// дословная копия живёт в lunarreturns.js (ВК) — менять в обоих местах
+// (проверка синхронности — dev/sync-check.mjs, раздел kinLabel).
+//
+// pairs — [[родитель, ребёнок], …]; spousePairs — [[ключ, ключ], …];
+// sexOf(key) → 'M' | 'F' | null. Возвращает ярлык или «» (без ярлыка —
+// родство не прослеживается по крови/браку либо вне таблицы степеней).
+
+function kinLabel(pairs, spousePairs, sexOf, from, to) {
+    if (from === to) return "";
+    const blood = kinBlood(pairs, sexOf, from, to);
+    if (blood) return blood;
+    // кровь не прослеживается — супруги: «муж/жена + родство партнёра»
+    // (жена внука, муж дочки…); у супруга цитируемого партнёр = from →
+    // просто «муж»/«жена»; партнёр вне родни — без ярлыка
+    for (const [x, y] of spousePairs || []) {
+        const partner = x === to ? y : y === to ? x : null;
+        if (partner === null) continue; // to — не супруг ни одной из пар
+        if ((x === from && y === to) || (y === from && x === to)) {
+            const s = sexOf ? sexOf(to) : null;
+            return s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
+        }
+        // родство партнёра — только по крови (без цепочек супругов,
+        // иначе «муж жены мужа…» зациклится)
+        const l = kinBlood(pairs, sexOf, from, partner);
+        if (l) {
+            const s = sexOf ? sexOf(to) : null;
+            const who = s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
+            return who + " " + genLabel(l);
+        }
+    }
+    return "";
+}
+
+// кровное родство (без супруговых переходов): ближайший общий предок (a↑b↓),
+// a⊕b — прямая линия, a=b=… — боковые степени; вне таблицы — «»
+function kinBlood(pairs, sexOf, from, to) {
+    const kidsOf = new Map(), parentsOf = new Map();
+    for (const [p, c] of pairs) {
+        if (!kidsOf.has(p)) kidsOf.set(p, []);
+        kidsOf.get(p).push(c);
+        if (!parentsOf.has(c)) parentsOf.set(c, []);
+        parentsOf.get(c).push(p);
+    }
+    // обход вширь: Map key → глубина (0 = сам start)
+    const walk = adj => {
+        return start => {
+            const m = new Map([[start, 0]]);
+            let frontier = [start];
+            for (let d = 1; ; d++) {
+                const next = [];
+                for (const k of frontier) for (const x of (adj.get(k) || []))
+                    if (!m.has(x)) { m.set(x, d); next.push(x); }
+                if (!next.length) break;
+                frontier = next;
+            }
+            return m;
+        };
+    };
+    const up = walk(parentsOf);
+    // слова женского рода (для согласования прилагательных) кончаются на «а»
+    const fem = w => /а$/.test(w);
+    // ярлык прямой линии (up: other — предок from; down: потомок); d ≥ 1
+    const line = (isUp, d, sex) => {
+        const f = sex === "F", u = sex !== "M" && sex !== "F";
+        if (d === 1) return isUp ? (u ? "родитель" : f ? "мать" : "отец")
+            : (u ? "ребёнок" : f ? "дочь" : "сын");
+        if (d === 2) return isUp ? (u ? "прародитель" : f ? "бабушка" : "дедушка")
+            : (f ? "внучка" : "внук");
+        return "пра".repeat(d - 2) + (isUp ? (f ? "бабушка" : "дед") : (f ? "правнучка" : "правнук"));
+    };
+    // словесная степень родства: 1 двоюродный, 2 троюродный, 3 четвероюродный
+    const degree = w => w === 1 ? "двоюродный" : w === 2 ? "троюродный" : w === 3 ? "четвероюродный" : null;
+    // боковые линии: a — вверх до общего предка, b — вниз к other
+    const side = (a, b, sex) => {
+        if (b === 0) return line(true, a, sex);  // other — прямой предок
+        if (a === 0) return line(false, b, sex); // прямой потомок
+        const f = sex === "F", u = sex !== "M" && sex !== "F";
+        const sib = u ? "сиблинг" : f ? "сестра" : "брат";
+        const niece = u ? "племянник" : f ? "племянница" : "племянник";
+        if (a === b) { // a=b=1 сиблинги, далее двоюродные/троюродные…
+            const w = a - 1;
+            return w < 1 ? sib : (degree(w) ? (fem(sib) ? degree(w).replace(/ый$/, "ая") : degree(w)) + " " + sib : "");
+        }
+        if (a > b && b === 1) { // брат/сестра предка: дядя, двоюродный дед…
+            if (a === 2) return u ? "дядя" : f ? "тётя" : "дядя";
+            const noun = line(true, a, sex);
+            return (fem(noun) ? "двоюродная" : "двоюродный") + " " + noun; // двоюродный прадед…
+        }
+        if (b > a && a === 1) { // потомки сиблинга: племянник, внучатый…
+            if (b === 2) return niece;
+            if (b === 3) return (fem(niece) ? "внучатая" : "внучатый") + " " + niece;
+            return "";
+        }
+        if (a === 3 && b === 2) return u ? "двоюродный дядя" : f ? "двоюродная тётя" : "двоюродный дядя";
+        if (a === 2 && b === 3) return (fem(niece) ? "двоюродная" : "двоюродный") + " " + niece; // сын двоюродного брата
+        return ""; // глубже таблицы — без ярлыка
+    };
+    const self = up(from);               // предки цитируемого
+    const other = up(to);                // предки другого (могут включать from)
+    let best = null, idx = 0;
+    for (const [k, a] of self) {
+        const b = other.get(k);
+        if (b === undefined) continue;
+        const i = idx++;
+        if (!best || a + b < best[0] + best[1] || (a + b === best[0] + best[1] && a < best[0]))
+            best = [a, b, i];
+    }
+    if (best) return side(best[0], best[1], sexOf ? sexOf(to) : null);
+    return "";
+}
+
+// родительный падеж ярлыка: «сын» → «сына», «двоюродный брат» → «двоюродного
+// брата», «прапрабабушка» → «прапрабабушки» (для «жена сына», «муж двоюродного
+// брата» и т.п.); незнакомые слова остаются как есть
+function genLabel(label) {
+    const GEN = {
+        мать: "матери", отец: "отца", сын: "сына", дочь: "дочери",
+        брат: "брата", сестра: "сестры", родитель: "родителя",
+        ребёнок: "ребёнка", сиблинг: "сиблинга", прародитель: "прародителя",
+        дедушка: "дедушки", бабушка: "бабушки", дед: "деда",
+        внук: "внука", внучка: "внучки", правнук: "правнука", правнучка: "правнучки",
+        дочь: "дочки", дядя: "дяди", тётя: "тёти", племянник: "племянника",
+        племянница: "племянницы",
+    };
+    const fold = w => {
+        if (GEN[w]) return GEN[w];
+        if (/^(двоюродный|троюродный|четвероюродный|внучатый)$/.test(w)) return w.slice(0, -2) + "ого";
+        if (/^(двоюродная|троюродная|четвероюродная|внучатая)$/.test(w)) return w.slice(0, -2) + "ой";
+        if (/правнучка$/.test(w)) return w.replace(/правнучка$/, "правнучки");
+        if (/правнук$/.test(w)) return w.replace(/правнук$/, "правнука");
+        if (/бабушка$/.test(w)) return w.replace(/бабушка$/, "бабушки");
+        if (/дед$/.test(w)) return w.replace(/дед$/, "деда");
+        return w;
+    };
+    return label.split(" ").map(fold).join(" ");
+}
 // ============================== ВЫВОД ==============================
 
 function jubileeText(rec, note, detail = false) {
@@ -1568,18 +1727,21 @@ async function handleGedDrop(peerId, doc, msgId, convMsgId, fromId) {
 // подпись радиуса: 1 родителей, 2 дедов, 3 прадедов, 4 прапрадедов…
 const focusLabel = radius =>
     radius === 1 ? "родителей" : radius === 2 ? "дедов" : "пра".repeat(radius - 3) + "прадедов";
-const focusHead = (key, radius) => key + " · от " + focusLabel(radius);
+// dd — дата смерти/развода, если есть; радиус — цифрой в квадрате перед ключом
+const focusHead = (key, radius, dd) => String(radius) + "\u20E3 " + key + (dd ? " " + dd : "");
 
 // клавиатура фокуса: как «/»-ответ по роли, но 🔔/🧬 действуют в радиусе,
-// а в ряд с ❌ добавлены неактивные цифры радиуса (активная скрыта)
-async function focusKeyboard(peerId, userId, key, radius) {
+// а в ряд с ❌ добавлены неактивные цифры радиуса (активная скрыта;
+// цифра r выводится, если есть предки глубины r — глубина depth = focusDepth)
+async function focusKeyboard(peerId, userId, key, radius, depth) {
     const mk = (label, payload) => ({
         action: { type: "callback", label, payload: JSON.stringify(payload) },
         color: "secondary"
     });
     const bell = mk("🔔", { c: "foc:bell", k: key, r: radius });
     const tree = mk("🧬", { c: "foc:tree", k: key, r: radius });
-    const digits = [1, 2, 3, 4, 5].filter(n => n !== radius)
+    const digits = [1, 2, 3, 4, 5]
+        .filter(n => n !== radius && n <= (depth === undefined ? 5 : depth))
         .map(n => mk(String(n) + "\u20E3", { c: "foc", k: key, r: n }));
     const tail = [...digits, mk("❌", { c: "close" })];
     const base = (peerId < 2000000000 || await isChatAdmin(peerId, userId))
@@ -1589,14 +1751,19 @@ async function focusKeyboard(peerId, userId, key, radius) {
     return JSON.stringify({ inline: true, buttons: [base, tail] });
 }
 
-// список событий чата только по множеству фокуса (пары — если оба супруга в нём)
-function focusListText(peerId, keys) {
+// список событий по множеству фокуса с ярлыками родства (kinLabel):
+// «Имя Д [Д(смерти)] [ЧЧ:ММ] родство»; items — записи {n, d, h, m, dd};
+// (items, keys, key, pairs, spousePairs, sexOf)
+function focusListText(items, keys, key, pairs, spousePairs, sexOf) {
     const set = new Set(keys);
     const sortKey = r => r.d.slice(5) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
-    return db.records
-        .filter(r => r.peerId === peerId && (set.has(pkey(r)) || (r.n.includes("+") && focusHasPair(r.n, keys))))
+    return items
+        .filter(r => set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys)))
         .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0))
-        .map(r => r.n + " " + r.d + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : ""))
+        .map(r => r.n + " " + r.d
+            + (r.dd ? " " + r.dd : "")
+            + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "")
+            + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d); return l ? " " + l : ""; })())
         .join("\n");
 }
 
@@ -1615,20 +1782,23 @@ function focusSpousePairs(peerId) {
     return pairs;
 }
 
-// текст фокуса: заголовок + (bell ? список : гедком-фрагмент) множества радиуса
-function focusText(peerId, key, radius, bell) {
-    const keys = focusWithSpouses(
-        focusKeys((db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]), key, radius),
-        focusSpousePairs(peerId));
+// текст фокуса: заголовок (с датой смерти dd) + (bell ? список : гедком-фрагмент)
+function focusText(peerId, key, radius, bell, dd) {
+    const pairs = (db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]);
+    const spPairs = focusSpousePairs(peerId);
+    const keys = focusWithSpouses(focusKeys(pairs, key, radius), spPairs);
+    const sexMap = new Map(db.records.filter(r => r.peerId === peerId).map(r => [pkey(r), r.sex ?? null]));
     const body = bell
-        ? (focusListText(peerId, keys) || "(в радиусе нет событий)")
+        ? (focusListText(db.records.filter(r => r.peerId === peerId), keys, key, pairs, spPairs, k => sexMap.get(k) ?? null)
+            || "(в радиусе нет событий)")
         : gedcomText(peerId, keys);
-    return focusHead(key, radius) + "\n" + body;
+    return focusHead(key, radius, dd) + "\n" + body;
 }
 
-async function sendFocus(peerId, key, msgId, convMsgId, fromId) {
-    const txt = focusHead(key, 1); // тело (список/гедком) — после тапа по кнопке
-    const kb = await focusKeyboard(peerId, fromId, key, 1);
+async function sendFocus(peerId, key, msgId, convMsgId, fromId, dd) {
+    const txt = focusHead(key, 1, dd); // тело (список/гедком) — после тапа по кнопке
+    const depth = focusDepth((db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]), key);
+    const kb = await focusKeyboard(peerId, fromId, key, 1, depth);
     await messagesSend(peerId, txt, msgId, convMsgId, kb);
     console.log("focus:", key, "peer", peerId);
 }
@@ -1640,12 +1810,14 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     if (date) markSeen(date);
     if (isStart(text, payload)) {
         // «/» ответом на триггер — фокус-сообщение с радиусом родни
+        // (заголовок фокуса «2⃣ Имя ГГГГ-ММ-ДД» — префикс кейкапа снимаем)
         const rh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
         if (rh) {
             const key = rh[1].trim() + " " + rh[2];
-            if (recordOf(peerId, key)) {
-                await sendFocus(peerId, key, msgId, convMsgId, fromId);
+            const rec = recordOf(peerId, key);
+            if (rec) {
+                await sendFocus(peerId, key, msgId, convMsgId, fromId, rec.dd);
                 return;
             }
         }
@@ -1660,12 +1832,14 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         const gm = t.match(/^(?:\/gedcom|гедком)([1-5])?(?:@\S+)?$/);
         const radius = Number(gm && gm[1]) || 1;
         // ответом на триггер — только текст родни выбранного радиуса, без кнопок
+        // (заголовок фокуса «2⃣ Имя ГГГГ-ММ-ДД» — префикс кейкапа снимаем)
         const grh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
         if (grh) {
             const key = grh[1].trim() + " " + grh[2];
-            if (recordOf(peerId, key)) {
-                const parts = splitText(focusText(peerId, key, radius, false));
+            const rec = recordOf(peerId, key);
+            if (rec) {
+                const parts = splitText(focusText(peerId, key, radius, false, rec.dd));
                 for (let i = 0; i < parts.length; i++)
                     await messagesSend(peerId, parts[i], i === 0 ? msgId : 0, i === 0 ? convMsgId : 0);
                 console.log("focus text:", key, "радиус", radius, "peer", peerId);
@@ -1819,8 +1993,11 @@ async function handleEvent(o) {
     // кнопки фокус-сообщения: радиус родни 1–5, 🔔/🧬 в радиусе
     if (p && typeof p === "object" && (p.c === "foc" || p.c === "foc:bell" || p.c === "foc:tree")) {
         const key = String(p.k || "");
-        const radius = Math.min(5, Math.max(1, Number(p.r) || 1));
-        if (!recordOf(peerId, key)) {
+        const depth = focusDepth((db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]), key);
+        // радиус не глубже имеющихся предков (старые сообщения могут нести снятые кнопки)
+        const radius = Math.min(5, Math.max(1, Number(p.r) || 1), Math.max(1, depth));
+        const rec = recordOf(peerId, key);
+        if (!rec) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "персона не найдена");
             return;
         }
@@ -1829,8 +2006,8 @@ async function handleEvent(o) {
             p.c === "foc" ? "от " + focusLabel(radius)
                 : (bell ? "список в радиусе" : "древо в радиусе"));
         // цифра — только заголовок; тело (список/гедком) — по 🔔/🧬
-        const txt = p.c === "foc" ? focusHead(key, radius) : focusText(peerId, key, radius, bell);
-        const kb = await focusKeyboard(peerId, o.user_id, key, radius);
+        const txt = p.c === "foc" ? focusHead(key, radius, rec.dd) : focusText(peerId, key, radius, bell, rec.dd);
+        const kb = await focusKeyboard(peerId, o.user_id, key, radius, depth);
         const parts = splitText(txt);
         await editOrigin(o, parts[0], kb);
         for (let i = 1; i < parts.length; i++) await messagesSend(peerId, parts[i]);
@@ -1991,6 +2168,10 @@ async function handleEvent(o) {
     }
 }
 
+// сообщения, развёрнутые 👀 (peerId:cmid) — при снятии реакции им возвращается
+// пустая клавиатура (не трогаем кнопки фокус-сообщений)
+const detailedMsgs = new Set();
+
 // реакции на ответы/уведомления бота; формат события (по факту):
 // { reacted_id, peer_id, cmid, reaction_id } — 👎 = 9, 👀 = REACTION_EYES_ID
 async function handleReaction(o) {
@@ -2009,7 +2190,10 @@ async function handleReaction(o) {
         try {
             await vkApi("messages.edit", {
                 peer_id: peerId, conversation_message_id: cmid,
-                message: jubileeText(rec, "")
+                message: jubileeText(rec, ""),
+                // у развёрнутого 👀 — снять фокус-кнопки
+                ...(detailedMsgs.delete(peerId + ":" + cmid)
+                    ? { keyboard: JSON.stringify({ inline: true, buttons: [] }) } : {})
             });
             console.log("reaction снята: сжато", rec.n, rec.d, "peer", peerId);
         } catch (e) {
@@ -2073,8 +2257,12 @@ async function handleReaction(o) {
         try {
             await vkApi("messages.edit", {
                 peer_id: peerId, conversation_message_id: cmid,
-                message: jubileeText(rec, "", true)
+                message: jubileeText(rec, "", true),
+                // кнопки фокуса как у «/»-ответа: радиусы, 🔔/🧬 (payload несёт k/r)
+                keyboard: await focusKeyboard(peerId, from, pkey(rec), 1,
+                    focusDepth((db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]), pkey(rec)))
             });
+            detailedMsgs.add(peerId + ":" + cmid);
             console.log("reaction 👀: детально", rec.n, rec.d, "peer", peerId);
         } catch (e) {
             console.error("reaction detail:", e.message);

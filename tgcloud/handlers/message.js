@@ -6,7 +6,7 @@ import { jubileeText } from '../lib/text.js';
 import {
     HELP, startMarkup, chatAdmin, getSettings, todayText, upsertEvent, eventMarkup, sendLong,
     addLink, setLinkCand, ensureFam, pairRecords, linkText, linkMarkup, gedcomText, importGedcom,
-    recordOf, chatLinks, focusKeys, focusHead, focusMarkup, splitText, focusWithSpouses, focusSpousePairs,
+    recordOf, chatLinks, focusKeys, focusHead, focusMarkup, splitText, focusWithSpouses, focusSpousePairs, focusDepth,
 } from '../lib/bot.js';
 
 const recOfRow = row => ({ n: row.name, d: row.date, h: row.hour ?? undefined, m: row.minute ?? undefined, dd: row.deathDate ?? undefined });
@@ -50,10 +50,11 @@ async function gedDrop(chatId, doc, fromId) {
 
 // фокус-сообщение: «/» ответом на триггер, радиус 1 сразу; ключ персоны —
 // в focus_view по id сообщения с кнопками (callback_data короткий)
-async function sendFocus(chat, chatId, key, radius) {
-    // тело (список/гедком) — после тапа по кнопке
-    const markup = focusMarkup(chat, chatId, await getSettings(chatId), radius);
-    const first = await api.sendMessage({ chat_id: chatId, text: focusHead(key, radius), reply_markup: markup });
+async function sendFocus(chat, chatId, key, radius, dd) {
+    // тело (список/гедком) — после тапа по кнопке; цифры радиуса — по глубине предков
+    const markup = focusMarkup(chat, chatId, await getSettings(chatId), radius,
+        focusDepth((await chatLinks(chatId)).map(l => [l.parent, l.child]), key));
+    const first = await api.sendMessage({ chat_id: chatId, text: focusHead(key, radius, dd), reply_markup: markup });
     if (first && first.message_id) {
         // чистка устаревших строк чата (старше 7 суток) + запись текущей
         const weekAgo = Date.now() - 7 * 24 * 3600000;
@@ -87,11 +88,11 @@ export default async function (message, ctx) {
         // «/» ответом на триггер — фокус-сообщение с радиусом родни
         const reply = message.reply_to_message;
         const rh = reply && reply.from && !reply.from.is_bot
-            ? String(reply.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
-        if (rh) {
+            ? String(reply.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;        if (rh) {
             const key = rh[1].trim() + " " + rh[2];
-            if (await recordOf(chatId, key)) {
-                await sendFocus(message.chat, chatId, key, 1);
+            const row = await recordOf(chatId, key);
+            if (row) {
+                await sendFocus(message.chat, chatId, key, 1, row.deathDate ?? undefined);
                 return;
             }
         }
@@ -119,14 +120,14 @@ export default async function (message, ctx) {
         const radius = Number(gm[1]) || 1;
         const reply = message.reply_to_message;
         const rh = reply && reply.from && !reply.from.is_bot
-            ? String(reply.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
-        if (rh) {
+            ? String(reply.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;        if (rh) {
             const key = rh[1].trim() + " " + rh[2];
-            if (await recordOf(chatId, key)) {
+            const row = await recordOf(chatId, key);
+            if (row) {
                 const keys = focusWithSpouses(
                     focusKeys((await chatLinks(chatId)).map(l => [l.parent, l.child]), key, radius),
                     await focusSpousePairs(chatId));
-                const parts = splitText(focusHead(key, radius) + "\n" + await gedcomText(chatId, keys));
+                const parts = splitText(focusHead(key, radius, row.deathDate ?? undefined) + "\n" + await gedcomText(chatId, keys));
                 for (const part of parts) await api.sendMessage({ chat_id: chatId, text: part });
                 console.log("focus text:", key, "радиус", radius, "chat", chatId);
                 return;
@@ -159,7 +160,7 @@ export default async function (message, ctx) {
     // заголовок «Имя ГГГГ-ММ-ДД» в цитируемом сообщении (у ответа бота связей нет)
     const reply = message.reply_to_message;
     const replyHead = reply && reply.from && !reply.from.is_bot
-        ? String(reply.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+        ? String(reply.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
 
     const lines = text.split(/\s*\n+\s*/).filter(Boolean);
     for (const line of lines) {

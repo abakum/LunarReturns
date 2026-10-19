@@ -1,5 +1,5 @@
 import { api, db } from 'sdk';
-import { eq } from 'sdk/db';
+import { and, eq } from 'sdk/db';
 import { events, settings, links, fams, gedDrops, focusView } from '../schema.js';
 import { jubileeText } from '../lib/text.js';
 import { parseGedcom } from '../lib/parse.js';
@@ -8,6 +8,7 @@ import {
         HELP, GED_TTL, relMarkup, upcomingText, getSettings, startMarkup, chatAdmin, eventMarkup,
         recordOf, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong, refreshFams, deleteEventCascade,
         importGedcom, chatLinks, focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText, focusWithSpouses, focusSpousePairs,
+        focusListText, focusDepth,
 } from '../lib/bot.js';
 
 export default async function (cq, ctx) {
@@ -153,9 +154,23 @@ export default async function (cq, ctx) {
         // spoiler-entity — оно детальное (в моке entity эмулирует repl)
         const ent = cq.message?.entities || [];
         const isDetail = !ent.some(e => e.type === 'spoiler');
-        await editText(
-            jubileeText(rec, "", !isDetail),
-            eventMarkup(id), 'HTML');
+        const depth = focusDepth((await chatLinks(chatId)).map(l => [l.parent, l.child]), row.name + " " + row.date);
+        if (!isDetail) { // детализировать + кнопки фокуса (как «/»-ответ)
+            // строка focusView по id сообщения — чтобы foc*/focbell/foctree/del
+            // работали на развёрнутом отчёте
+            await db.delete(focusView).where(and(eq(focusView.chatId, chatId), eq(focusView.messageId, cq.message.message_id))).run();
+            await db.insert(focusView).values({
+                chatId, messageId: cq.message.message_id, pkey: row.name + " " + row.date, radius: 1, ts: Date.now(),
+            }).run();
+            await editText(
+                jubileeText(rec, "", true),
+                focusMarkup(cq.message.chat, chatId, await getSettings(chatId), 1, depth), 'HTML');
+        } else { // повторное нажатие сворачивает обратно (как снятие реакции в VK)
+            await db.delete(focusView).where(and(eq(focusView.chatId, chatId), eq(focusView.messageId, cq.message.message_id))).run();
+            await editText(
+                jubileeText(rec, "", false),
+                eventMarkup(id), 'HTML');
+        }
         await answer(isDetail ? "сжато" : "подробно");
         return;
     }
@@ -233,33 +248,39 @@ export default async function (cq, ctx) {
         const row = (await db.select().from(focusView).where(eq(focusView.chatId, chatId)).all())
             .find(r => r.messageId === cq.message?.message_id);
         if (!row) { await answer("сообщение устарело — ответьте «/» на триггер заново"); return; }
-        if (!(await recordOf(chatId, row.pkey))) { await answer("персона не найдена"); return; }
+        const rec = await recordOf(chatId, row.pkey);
+        if (!rec) { await answer("персона не найдена"); return; }
+        // глубина предков: цифры радиуса без сведений не выводятся,
+        // радиус не глубже имеющихся предков (старые сообщения могут нести снятые кнопки)
+        const pairsL = await chatLinks(chatId);
+        const depth = focusDepth(pairsL.map(l => [l.parent, l.child]), row.pkey);
         const bell = data === "focbell";
-        const radius = bell || data === "foctree" ? row.radius : Number(data.slice(3));
+        const radius = bell || data === "foctree"
+            ? Math.min(row.radius, Math.max(1, depth))
+            : Number(data.slice(3));
         if (data !== "focbell" && data !== "foctree")
             await db.update(focusView).set({ radius }).where(eq(focusView.id, row.id)).run();
         await answer(data === "focbell" ? "список в радиусе" : (data === "foctree" ? "древо в радиусе" : "от " + focusLabel(radius)));
         // цифра — только заголовок; тело (список/гедком) — по 🔔/🧬
         let body = null;
         if (data === "focbell" || data === "foctree") {
+            const spPairs = await focusSpousePairs(chatId);
             const keys = focusWithSpouses(
-                focusKeys((await chatLinks(chatId)).map(l => [l.parent, l.child]), row.pkey, radius),
-                await focusSpousePairs(chatId));
-            const set = new Set(keys);
+                focusKeys(pairsL.map(l => [l.parent, l.child]), row.pkey, radius),
+                spPairs);
             if (bell) {
-                const rows = await db.select().from(events).where(eq(events.chatId, chatId)).all();
-                const sortKey = r => r.date.slice(5) + " " + (r.hour !== null && r.hour !== undefined ? String(r.hour).padStart(2, "0") + String(r.minute ?? 0).padStart(2, "0") : "");
-                body = rows
-                    .filter(r => set.has(r.name + " " + r.date) || (r.name.includes("+") && focusHasPair(r.name, keys)))
-                    .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0))
-                    .map(r => r.name + " " + r.date + (r.hour !== null && r.hour !== undefined ? " " + String(r.hour).padStart(2, "0") + ":" + String(r.minute).padStart(2, "0") : ""))
-                    .join("\n") || "(в радиусе нет событий)";
+                const evRows = await db.select().from(events).where(eq(events.chatId, chatId)).all();
+                const sexMap = new Map(evRows.filter(r => !r.name.includes("+")).map(r => [r.name + " " + r.date, r.sex ?? null]));
+                body = focusListText(
+                    evRows.map(r => ({ n: r.name, d: r.date, h: r.hour ?? undefined, m: r.minute ?? undefined, dd: r.deathDate ?? undefined })),
+                    keys, row.pkey, pairsL.map(l => [l.parent, l.child]), spPairs,
+                    k => sexMap.get(k) ?? null) || "(в радиусе нет событий)";
             } else {
                 body = await gedcomText(chatId, keys);
             }
         }
-        const parts = splitText(focusHead(row.pkey, radius) + (body ? "\n" + body : ""));
-        await editText(parts[0], focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius));
+        const parts = splitText(focusHead(row.pkey, radius, rec.deathDate ?? undefined) + (body ? "\n" + body : ""));
+        await editText(parts[0], focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth));
         for (let i = 1; i < parts.length; i++) await api.sendMessage({ chat_id: chatId, text: parts[i] });
         return;
     }

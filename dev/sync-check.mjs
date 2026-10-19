@@ -28,7 +28,7 @@ function cmp(what, vk, tg) {
 // ---- ВК: копия lunarreturns.js с дописанными тестовыми экспортами ----
 // argv "test" уводит main() в тихий путь (печать юбилея) без токена и poll.
 process.env.LR_DB = path.join(TMP, 'vk-db.json');
-const vkHook = '\nmodule.exports.__test = { parseTrigger, parseGedcom, gedStats, focusKeys, focusHasPair, focusWithSpouses, focusLabel, focusHead, addLink, ensureFam, ensureFamSingle, '
+const vkHook = '\nmodule.exports.__test = { parseTrigger, parseGedcom, gedStats, focusKeys, focusHasPair, focusWithSpouses, focusLabel, focusHead, focusListText, kinLabel, focusDepth, addLink, ensureFam, ensureFamSingle, '
     + 'pairRecords, confirmPair, linkText, gedcomText, importGedcom, upsertRecord, refreshFams, deleteEventCascade, jubileeText, '
     + 'getDb: () => db, setDb: d => { db = d; } };\n';
 const vkFile = path.join(TMP, 'vk.cjs');
@@ -143,8 +143,7 @@ cmp('focusKeys r2 состав', [...VK.focusKeys(focusPairs, son, 2)].sort(),
 cmp('focusHasPair оба в множестве', VK.focusHasPair('Отец+Мать', VK.focusKeys(focusPairs, son, 1)),
     TG.focusHasPair('Отец+Мать', TG.focusKeys(focusPairs, son, 1)));
 cmp('focusHasPair один вне', VK.focusHasPair('Дед+Чужая', VK.focusKeys(focusPairs, son, 2)),
-    TG.focusHasPair('Дед+Чужая', TG.focusKeys(focusPairs, son, 2)));
-// супруги: у Тёти появляется муж из семьи, половина которой в множестве
+    TG.focusHasPair('Дед+Чужая', TG.focusKeys(focusPairs, son, 2)));// супруги: у Тёти появляется муж из семьи, половина которой в множестве
 const r1tet = VK.focusKeys(focusPairs, 'Тётя 1957-04-04', 1); // {Тётя, Дед, Бабка, Двоюродный}
 const spPairs = [['Дед 1930-01-01', 'Бабка 1932-02-02'], ['Тётя 1957-04-04', 'Тесть 1931-12-12']];
 cmp('focusWithSpouses', VK.focusWithSpouses(r1tet, spPairs), TG.focusWithSpouses(r1tet, spPairs));
@@ -154,6 +153,135 @@ cmp('gedcomText фокус+супруги',
 cmp('focusHead подписи радиусов',
     [1, 2, 3, 4, 5].map(r => VK.focusHead('Имя 2000-01-01', r)),
     [1, 2, 3, 4, 5].map(r => TG.focusHead('Имя 2000-01-01', r)));
+cmp('focusHead с датой смерти',
+    [1, 3, 5].map(r => VK.focusHead('Пётр 1930-01-01', r, '2001-02-03')),
+    [1, 3, 5].map(r => TG.focusHead('Пётр 1930-01-01', r, '2001-02-03')));
+if (VK.focusHead('Имя 2000-01-01', 2) !== '2\u20E3 Имя 2000-01-01')
+    { failed++; console.log('✗ focusHead: префикс кейкапа\n  ' + VK.focusHead('Имя 2000-01-01', 2)); }
+// кусковой regex «/»-ответа снимает префикс кейкапа с заголовка фокуса
+const RH_RE = /^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/;
+if ('2\u20E3 Константин Абакумов 1963-09-27 2001-03-03'.match(RH_RE)?.slice(1).join(' ')
+    !== 'Константин Абакумов 1963-09-27')
+    { failed++; console.log('✗ regex reply-заголовка'); }
+
+// ==================== 7. kinLabel: ярлыки родства ====================
+const TGK = await import(path.join(ROOT, 'tgcloud', 'lib', 'kinship.js'));
+const kinPersons = [
+    ['Дед', '1930-01-01', 'M'], ['Бабка', '1932-02-02', 'F'],
+    ['Отец', '1955-03-03', 'M'], ['Тётя', '1957-04-04', 'F'], ['Мать', '1956-05-05', 'F'],
+    ['Сын', '1980-06-06', 'M'], ['Дочь', '1982-07-07', 'F'], ['Двоюродный', '1984-08-08', 'M'],
+    ['Тесть', '1931-12-12', 'M'], ['Чужая', '1991-10-10', 'F'], ['Сноха', '1981-03-03', 'F'],
+    ['Прадед', '1900-01-01', 'M'],
+];
+const kinKeys = Object.fromEntries(kinPersons.map(p => [p[0], p[0] + ' ' + p[1]]));
+const kinSex = Object.fromEntries(kinPersons.map(p => [p[0] + ' ' + p[1], p[2]]));
+const kinPairs = [
+    ['Прадед 1900-01-01', 'Дед 1930-01-01'],
+    ['Дед 1930-01-01', 'Отец 1955-03-03'], ['Бабка 1932-02-02', 'Отец 1955-03-03'],
+    ['Дед 1930-01-01', 'Тётя 1957-04-04'], ['Бабка 1932-02-02', 'Тётя 1957-04-04'],
+    ['Отец 1955-03-03', 'Сын 1980-06-06'], ['Мать 1956-05-05', 'Сын 1980-06-06'],
+    ['Отец 1955-03-03', 'Дочь 1982-07-07'], ['Мать 1956-05-05', 'Дочь 1982-07-07'],
+    ['Тётя 1957-04-04', 'Двоюродный 1984-08-08'],
+    ['Чужая 1991-10-10', 'Двоюродный 1984-08-08'],
+];
+const kinSpouses = [
+    ['Отец 1955-03-03', 'Мать 1956-05-05'], ['Дед 1930-01-01', 'Бабка 1932-02-02'],
+    ['Тётя 1957-04-04', 'Тесть 1931-12-12'], ['Сын 1980-06-06', 'Сноха 1981-03-03'],
+];
+const sonKey = 'Сын 1980-06-06';
+// focusDepth: глубина предков (цифры радиуса 2–5 — по сведениям о дедах/прадедах)
+cmp('focusDepth глубины',
+    [[kinPairs, sonKey], [kinPairs, kinKeys['Двоюродный']], [['Родитель 1930-01-01', 'Сын 1990-01-01'], 'Сын 1990-01-01']]
+        .map(c => VK.focusDepth(c[0], c[1])),
+    [[kinPairs, sonKey], [kinPairs, kinKeys['Двоюродный']], [['Родитель 1930-01-01', 'Сын 1990-01-01'], 'Сын 1990-01-01']]
+        .map(c => TG.focusDepth(c[0], c[1])));
+if (JSON.stringify([3, 3, 1]) !== JSON.stringify([
+    VK.focusDepth(kinPairs, sonKey), VK.focusDepth(kinPairs, kinKeys['Двоюродный']),
+    VK.focusDepth([['Родитель 1930-01-01', 'Сын 1990-01-01']], 'Сын 1990-01-01')]))
+    { failed++; console.log('✗ focusDepth: неверные глубины'); }
+// цифры радиуса: при depth 1 активная 1 скрыта и 2–5 нет — ряд только с ❌
+const digs = (radius, depth) => TG.focusMarkup('private', 1, {}, radius, depth)
+    .inline_keyboard[1].filter(b => /^\d/.test(b.text)).map(b => b.text).join('');
+if (digs(1, 1) !== '') { failed++; console.log('✗ focusMarkup: без дедов цифры не скрыты\n  ' + digs(1, 1)); }
+if (digs(1, 2) !== '2\u20E3') { failed++; console.log('✗ focusMarkup: с дедом нет 2️⃣\n  ' + digs(1, 2)); }
+if (digs(2, 2) !== '1\u20E3') { failed++; console.log('✗ focusMarkup: радиус 2/деды\n  ' + digs(2, 2)); }
+if (digs(1, 3) !== '2\u20E33\u20E3')
+    { failed++; console.log('✗ focusMarkup: прадеды 2⃣3⃣\n  ' + digs(1, 3)); }
+if (digs(3, 3) !== '1\u20E32\u20E3') { failed++; console.log('✗ focusMarkup: радиус 3/прадеды\n  ' + digs(3, 3)); }
+const KIN_CASES = [
+    [kinKeys['Отец'], 'отец'], [kinKeys['Мать'], 'мать'],
+    [kinKeys['Дед'], 'дедушка'], [kinKeys['Бабка'], 'бабушка'],
+    [kinKeys['Тётя'], 'тётя'], [kinKeys['Двоюродный'], 'двоюродный брат'],
+    [kinKeys['Дочь'], 'сестра'],
+    [kinKeys['Тесть'], 'муж тёти'],    // муж тёти — не процитируемому
+    [kinKeys['Прадед'], 'прадед'],     // глубина 3 — «пра»-приставка
+    [kinKeys['Чужая'], ''],            // родство не прослеживается
+];
+let kinOK = true;
+for (const [to, want] of KIN_CASES) {
+    const vkL = VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, to);
+    const tgL = TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, to);
+    cmp('kinLabel ' + to, vkL, tgL);
+    if (vkL !== want) kinOK = false;
+}
+if (!kinOK) { failed++; console.log('✗ kinLabel: неверные ярлыки (см. выше)'); }
+// без пола — нейтральные ярлыки
+const noSex = { ...kinSex };
+delete noSex[kinKeys['Отец']];
+cmp('kinLabel без пола', VK.kinLabel(kinPairs, kinSpouses, k => noSex[k] ?? null, sonKey, kinKeys['Отец']),
+    TGK.kinLabel(kinPairs, kinSpouses, k => noSex[k] ?? null, sonKey, kinKeys['Отец']));
+if (VK.kinLabel(kinPairs, kinSpouses, k => noSex[k] ?? null, sonKey, kinKeys['Отец']) !== 'родитель')
+    { failed++; console.log('✗ kinLabel нейтральный «родитель»'); }
+// супруг цитируемому
+cmp('kinLabel муж цитируемой', VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, 'Мать 1956-05-05', kinKeys['Отец']),
+    TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, 'Мать 1956-05-05', kinKeys['Отец']));
+if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, 'Мать 1956-05-05', kinKeys['Отец']) !== 'муж')
+    { failed++; console.log('✗ kinLabel супруг = «муж»'); }
+// супруги родни цитируемого: «муж дочки», «жена внука»
+cmp('kinLabel муж дочки',
+    VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Тесть']),
+    TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Тесть']));
+if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Тесть']) !== 'муж дочки')
+    { failed++; console.log('✗ kinLabel муж дочки'); }
+cmp('kinLabel жена внука',
+    VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Сноха']),
+    TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Сноха']));
+if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Сноха']) !== 'жена внука')
+    { failed++; console.log('✗ kinLabel жена внука'); }
+
+// ==================== 8. focusListText: список с датой смерти и родством ====================
+const kinItems = [
+    { n: 'Бабка', d: '1932-02-02', dd: '2000-03-03' }, { n: 'Дед', d: '1930-01-01' },
+    { n: 'Отец', d: '1955-03-03' }, { n: 'Тётя', d: '1957-04-04' }, { n: 'Мать', d: '1956-05-05' },
+    { n: 'Сын', d: '1980-06-06' }, { n: 'Дочь', d: '1982-07-07', h: 4, m: 5 },
+    { n: 'Двоюродный', d: '1984-08-08' },
+    { n: 'Отец+Мать', d: '1979-01-01', dd: '1990-01-01' },
+    { n: 'Тесть', d: '1931-12-12' },
+];
+for (const r of [1, 2]) {
+    const kset = VK.focusWithSpouses(VK.focusKeys(kinPairs, sonKey, r), kinSpouses);
+    const want = VK.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null);
+    cmp('focusListText радиус ' + r,
+        VK.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null),
+        TG.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null));
+    if (r === 2) {
+        if (!/^Бабка 1932-02-02 2000-03-03 бабушка$/m.test(want))
+            { failed++; console.log('✗ focusListText: Бабка без даты смерти/ярлыка'); }
+        const pairLine = (want.split('\n').find(l => l.startsWith('Отец+Мать')) || '').trim();
+        if (!/^Отец\+Мать 1979-01-01 1990-01-01$/.test(pairLine))
+            { failed++; console.log('✗ focusListText: пара без ярлыка\n  ' + pairLine); }
+        if (!/^Тесть 1931-12-12 муж тёти$/m.test(want))
+            { failed++; console.log('✗ focusListText: супруг тёти без «муж тёти»'); }
+    }
+}
+// состав по радиусам: r1 — родители и их потомки (дедов нет), r2 — деды
+// (прадедов нет), r3 — прадеды; ярлык «двоюродный дед» возможен только с r3
+const kinAt = (which, r) => which.focusKeys(kinPairs, sonKey, r);
+for (const r of [1, 2, 3]) cmp('фокус-множество радиус ' + r, kinAt(VK, r), kinAt(TG, r));
+if (kinAt(VK, 1).includes(kinKeys['Дед'])) { failed++; console.log('✗ r1 содержит деда'); }
+if (kinAt(VK, 2).includes(kinKeys['Прадед'])) { failed++; console.log('✗ r2 содержит прадеда'); }
+if (!kinAt(VK, 2).includes(kinKeys['Дед'])) { failed++; console.log('✗ r2 без деда'); }
+if (!kinAt(VK, 3).includes(kinKeys['Прадед'])) { failed++; console.log('✗ r3 без прадеда'); }
 
 // ==================== 3. импорт → полный экспорт гедкома ====================
 const g = VK.parseGedcom(GEDCOM);
