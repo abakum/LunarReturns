@@ -29,7 +29,7 @@ function cmp(what, vk, tg) {
 // argv "test" уводит main() в тихий путь (печать юбилея) без токена и poll.
 process.env.LR_DB = path.join(TMP, 'vk-db.json');
 const vkHook = '\nmodule.exports.__test = { parseTrigger, parseGedcom, gedStats, focusKeys, focusHasPair, focusWithSpouses, focusLabel, focusHead, focusListText, kinLabel, focusDepth, addLink, ensureFam, ensureFamSingle, '
-    + 'chartSvg, '
+    + 'chartPdf, chartModel, fileBaseOf, b64ToBytes, parseTtf, chartFor, '
     + 'pairRecords, confirmPair, linkText, gedcomText, importGedcom, upsertRecord, refreshFams, deleteEventCascade, jubileeText, '
     + 'getDb: () => db, setDb: d => { db = d; } };\n';
 const vkFile = path.join(TMP, 'vk.cjs');
@@ -410,8 +410,31 @@ VK.deleteEventCascade(CH, vkMRec);
 await TG.deleteEventCascade(CH, mk);
 cmp('gedcomText после удаления персоны', VK.gedcomText(CH), await TG.gedcomText(CH));
 
-// ==================== 9. chartSvg: гедком-древо → SVG ====================
-const { chartSvg: tgChartSvg } = await import(path.join(ROOT, 'tgcloud', 'lib', 'chart.js'));
+// ==================== 9. chartPdf: гедком-древо → PDF ====================
+const TGC = await import(path.join(ROOT, 'tgcloud', 'lib', 'chart.js'));
+// шрифт — единственный источник tgcloud/lib/font-cyr.js (ВК читает его же)
+const FONT = TGC.chartFont();
+cmp('b64ToBytes (префикс с «=» и переносом)',
+    [...VK.b64ToBytes('QUJDREVG//4=')].join(','),
+    [...TGC.b64ToBytes('QUJDREVG//4=')].join(','));
+cmp('parseTtf метрики', VK.parseTtf(FONT), TGC.parseTtf(FONT));
+// имя файла из заголовка: кейкап остаётся, эмодзи/разделители уходят, ≤ 64
+const FB_CASES = [
+    '1\u20E3 Пётр I Алексеевич Великий Романов 1672-05-30',
+    '🧬 Гедком-древо чата',
+    'a/b\\c:d*e?f"g<h>i|j#k',
+    'Имя с  точками...  и \n переносами ',
+    'В'.repeat(100),
+    '///',
+    '',
+];
+for (const c of FB_CASES) cmp('fileBaseOf ' + JSON.stringify(c.slice(0, 30)), VK.fileBaseOf(c), TGC.fileBaseOf(c));
+if (VK.fileBaseOf(FB_CASES[0]) !== '1\u20E3 Пётр I Алексеевич Великий Романов 1672-05-30')
+    { failed++; console.log('✗ fileBaseOf: кейкап-префикс не сохранён\n  ' + VK.fileBaseOf(FB_CASES[0])); }
+if (VK.fileBaseOf(FB_CASES[1]) !== 'Гедком-древо чата')
+    { failed++; console.log('✗ fileBaseOf: 🧬 не убран\n  ' + VK.fileBaseOf(FB_CASES[1])); }
+if ([...VK.fileBaseOf(FB_CASES[4])].length !== 64 || VK.fileBaseOf(FB_CASES[5]) !== 'tree' || VK.fileBaseOf(FB_CASES[6]) !== 'tree')
+    { failed++; console.log('✗ fileBaseOf: обрезка 64/фолбэк tree\n  ' + VK.fileBaseOf(FB_CASES[4]).length + ', ' + JSON.stringify(VK.fileBaseOf(FB_CASES[5])) + ', ' + JSON.stringify(VK.fileBaseOf(FB_CASES[6]))); }
 // краевые случаи: без смерти (бар до края), точечный бар birth==death,
 // близнецы-годы разных семей (цвета без коллизий), один родитель, без пола
 const CHART_ROWS = [
@@ -446,14 +469,28 @@ const TWIN_LINKS = [
 for (const [t, rows, ln] of [
     ['Пётр I: линии жизни', CHART_ROWS, CHART_LINKS],
     ['близнецы: две семьи, один год', TWIN_ROWS, TWIN_LINKS],
-]) cmp('chartSvg «' + t + '»', VK.chartSvg(t, rows, ln), tgChartSvg(t, rows, ln));
+]) {
+    cmp('chartModel «' + t + '»', VK.chartModel(t, rows, ln), TGC.chartModel(t, rows, ln));
+    cmp('chartPdf «' + t + '» (байты)', VK.chartPdf(t, rows, ln, FONT), TGC.chartPdf(t, rows, ln, FONT));
+}
+// sanity PDF: заголовок/шрифт/страницы согласованы с моделью
+const pdf = VK.chartPdf('Пётр I: линии жизни', CHART_ROWS, CHART_LINKS, FONT);
+const model = VK.chartModel('Пётр I: линии жизни', CHART_ROWS, CHART_LINKS);
+const scale = 842 / model.W;
+const wantPages = Math.max(1, Math.ceil(model.H / (595 / scale) - 1e-9));
+const gotPages = (pdf.match(/\/Type \/Page[^s]/g) || []).length;
+if (!pdf.startsWith('%PDF-1.4\n') || !pdf.includes('/Subtype /Type0') || !pdf.includes('/FontFile2'))
+    { failed++; console.log('✗ chartPdf: нет заголовка PDF/встроенного шрифта'); }
+if (gotPages !== wantPages)
+    { failed++; console.log('✗ chartPdf: страниц ' + gotPages + ', ожидалось ' + wantPages); }
 // две семьи одного года — вертикали разных цветов (главное требование отличимости)
-const twin = tgChartSvg('близнецы', TWIN_ROWS, TWIN_LINKS);
-const famColors1709 = [...twin.matchAll(/<(?:line|path)[^>]*stroke="(#[0-9a-f]+)" stroke-width="1\.5"/g)]
-    .map(m => m[1]);
-const nodeColors = [...new Set(famColors1709)];
-if (nodeColors.length !== 2)
-    { failed++; console.log('✗ chartSvg: близнецы-год не различён — вертикали ' + nodeColors.join(', ')); }
+const twin = VK.chartPdf('близнецы', TWIN_ROWS, TWIN_LINKS, FONT);
+const trip = h => [1, 3, 5].map(i => Math.round(parseInt(h.slice(i, i + 2), 16) / 255 * 1000) / 1000).join(' ');
+const famSet = new Set([...twin.matchAll(/1\.5 w ([\d.]+ [\d.]+ [\d.]+) RG/g)].map(m2 => m2[1]));
+if (famSet.size !== 2)
+    { failed++; console.log('✗ chartPdf: близнецы-год не различён — вертикали ' + [...famSet].join(' | ')); }
+for (const t of famSet) if (!['#e6194b', '#f58231', '#bfa100', '#3cb44b', '#1f77b4', '#0082c8', '#911eb4'].map(trip).includes(t))
+    { failed++; console.log('✗ chartPdf: цвет связи вне палитры: ' + t); }
 // ассерты: 3 родителя, родитель моложе ребёнка, неизвестное имя, неуникальный ключ
 const ASSERTS = [
     ['три родителя', { ...CHART_LINKS[1], parents: [...CHART_LINKS[1].parents, 'Пётр I 1672'] }, CHART_ROWS],
@@ -463,10 +500,11 @@ const ASSERTS = [
 ];
 for (const [what, ln, rows] of ASSERTS) {
     let vkE = '', tgE = '';
-    try { VK.chartSvg('ассерты', rows, Array.isArray(ln) ? ln : [ln]); } catch (e) { vkE = e.message; }
-    try { tgChartSvg('ассерты', rows, Array.isArray(ln) ? ln : [ln]); } catch (e) { tgE = e.message; }
-    cmp('chartSvg assert «' + what + '»', vkE, tgE);
+    try { VK.chartPdf('ассерты', rows, Array.isArray(ln) ? ln : [ln], FONT); } catch (e) { vkE = e.message; }
+    try { TGC.chartPdf('ассерты', rows, Array.isArray(ln) ? ln : [ln], FONT); } catch (e) { tgE = e.message; }
+    cmp('chartPdf assert «' + what + '»', vkE, tgE);
+    if (!vkE) { failed++; console.log('✗ chartPdf assert «' + what + '»: не бросил ошибку'); }
 }
 
 if (failed) { console.log('\n✗ расхождений: ' + failed); process.exit(1); }
-console.log('✓ ВК и ТГ синхронны (' + TRIGGERS.length + ' триггеров, гедком-импорт/экспорт, связи/семьи/каскад)');
+console.log('✓ ВК и ТГ синхронны (' + TRIGGERS.length + ' триггеров, гедком-импорт/экспорт, связи/семьи/каскад, chartPdf)');

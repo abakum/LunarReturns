@@ -624,11 +624,11 @@ export async function gedcomText(chatId, keys) {
     return out.join("\n");
 }
 
-// ============================== ГЕДКОМ → SVG ==============================
+// ============================== ГЕДКОМ → PDF ==============================
 // Чистая логика дословно продублирована в lunarreturns.js (dev/sync-check.mjs)
 
 import { InputFile } from 'sdk';
-import { SVG_MAX, chartSvg } from './chart.js';
+import { CHART_MAX, chartPdf, chartFont, fileBaseOf } from './chart.js';
 
 // диаграммные данные чата/фрагмента (как у gedcomText: те же INDI, свадьбы
 // «Имя+Имя» вне; семьи усекаются до персон фрагмента)
@@ -658,33 +658,34 @@ export async function chartFor(chatId, keys, title) {
     const ckey = k => k.slice(0, -11) + " " + keyY(k);
     const links = [...parentsOf].filter(([, ps]) => ps.length)
         .map(([c, ps]) => ({ child: ckey(c), parents: ps.map(ckey) }));
-    return { svg: chartSvg(title, rows, links), persons: Math.min(recs.length, SVG_MAX) };
+    return { pdf: chartPdf(title, rows, links, chartFont()), persons: Math.min(recs.length, CHART_MAX) };
 }
 
-// тап 🧬 / «/gedcom» / «/gedcomN»: tree.ged всегда, tree.svg (диаграмма)
-// при < SVG_MAX персон; неудача — фолбэк текстовым гедкомом (sendLong)
-export async function sendGedSvg(chatId, keys, head) {
+// тап 🧬 / «/gedcom» / «/gedcomN»: <имя>.ged всегда, <имя>.pdf (диаграмма,
+// имя из заголовка fileBaseOf); неудача — фолбэк текстовым гедкомом (sendLong)
+export async function sendGedPdf(chatId, keys, head) {
     const g = await gedcomText(chatId, keys);
-    let svg = null, persons = 0;
+    const base = fileBaseOf(head || "Гедком-древо");
+    let pdf = null, persons = 0;
     try {
         const res = await chartFor(chatId, keys, head || "Гедком-древо");
-        // chartSvg сам отсекает до 50 младших — файл всегда строится
+        // chartPdf сам отсекает до 50 младших — файл всегда строится
         persons = res.persons;
-        svg = res.svg;
+        pdf = res.pdf;
     } catch (e) { console.error("chart:", e.message); }
     try {
         const enc = new TextEncoder();
         await api.sendDocument({
             chat_id: chatId,
-            document: new InputFile(enc.encode(g), "tree.ged", { type: "text/plain" }),
+            document: new InputFile(enc.encode(g), base + ".ged", { type: "text/plain" }),
             caption: head,
         });
-        if (svg) await api.sendDocument({
+        if (pdf) await api.sendDocument({
             chat_id: chatId,
-            document: new InputFile(enc.encode(svg), "tree.svg", { type: "image/svg+xml" }),
+            document: new InputFile(Uint8Array.from(pdf, c => c.charCodeAt(0)), base + ".pdf", { type: "application/pdf" }),
             caption: "🧬 Диаграмма древа: " + persons + " персон",
         });
-        console.log("ged artifacts: tree.ged" + (svg ? " + tree.svg (" + persons + " персон)" : ""), "chat", chatId);
+        console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : ""), "chat", chatId);
         return;
     } catch (e) {
         console.error("sendDocument:", e.message);

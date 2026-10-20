@@ -8,7 +8,7 @@ import {
         HELP, GED_TTL, relMarkup, upcomingText, getSettings, startMarkup, chatAdmin, eventMarkup,
         recordOf, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong, refreshFams, deleteEventCascade,
         importGedcom, chatLinks, focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText, focusWithSpouses, focusSpousePairs,
-        focusListText, focusDepth, sendGedSvg,
+        focusListText, focusDepth, sendGedPdf,
 } from '../lib/bot.js';
 
 export default async function (cq, ctx) {
@@ -257,7 +257,7 @@ export default async function (cq, ctx) {
             return;
         }
         await answer("гедком-древо чата");
-        await sendGedSvg(chatId, undefined, "🧬 Гедком-древо чата");
+        await sendGedPdf(chatId, undefined, "🧬 Гедком-древо чата");
         return;
     }
 
@@ -334,13 +334,13 @@ export default async function (cq, ctx) {
         if (data !== "focbell" && data !== "foctree")
             await db.update(focusView).set({ radius }).where(eq(focusView.id, row.id)).run();
         await answer(data === "focbell" ? "список в радиусе" : (data === "foctree" ? "древо в радиусе" : "от " + focusLabel(radius)));
-        // 🧬 в радиусе: tree.ged + tree.svg (родство к герою), правка не нужна
+        // 🧬 в радиусе: <имя>.ged + <имя>.pdf (родство к герою), правка не нужна
         if (data === "foctree") {
             const spPairs = await focusSpousePairs(chatId);
             const keys = focusWithSpouses(
                 focusKeys(pairsL.map(l => [l.parent, l.child]), row.pkey, radius),
                 spPairs);
-            await sendGedSvg(chatId, keys, focusHead(row.pkey, radius, rec.deathDate ?? undefined));
+            await sendGedPdf(chatId, keys, focusHead(row.pkey, radius, rec.deathDate ?? undefined));
             return;
         }
         // цифра — только заголовок; тело (список/гедком) — по 🔔/🧬
