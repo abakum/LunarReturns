@@ -8,7 +8,7 @@ import {
         HELP, GED_TTL, relMarkup, upcomingText, getSettings, startMarkup, chatAdmin, eventMarkup,
         recordOf, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong, refreshFams, deleteEventCascade,
         importGedcom, chatLinks, focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText, focusWithSpouses, focusSpousePairs,
-        focusListText, focusDepth,
+        focusListText, focusDepth, sendGedSvg,
 } from '../lib/bot.js';
 
 export default async function (cq, ctx) {
@@ -257,13 +257,7 @@ export default async function (cq, ctx) {
             return;
         }
         await answer("гедком-древо чата");
-        if (cq.message?.text !== HELP) {
-            const parts = g.length > 4000 ? [g.slice(0, 4000), g.slice(4000)] : [g];
-            await editText(parts[0], cq.message.reply_markup);
-            for (let i = 1; i < parts.length; i++) await api.sendMessage({ chat_id: chatId, text: parts[i] });
-        } else {
-            await sendLong(chatId, g);
-        }
+        await sendGedSvg(chatId, undefined, "🧬 Гедком-древо чата");
         return;
     }
 
@@ -340,9 +334,18 @@ export default async function (cq, ctx) {
         if (data !== "focbell" && data !== "foctree")
             await db.update(focusView).set({ radius }).where(eq(focusView.id, row.id)).run();
         await answer(data === "focbell" ? "список в радиусе" : (data === "foctree" ? "древо в радиусе" : "от " + focusLabel(radius)));
+        // 🧬 в радиусе: tree.ged + tree.svg (родство к герою), правка не нужна
+        if (data === "foctree") {
+            const spPairs = await focusSpousePairs(chatId);
+            const keys = focusWithSpouses(
+                focusKeys(pairsL.map(l => [l.parent, l.child]), row.pkey, radius),
+                spPairs);
+            await sendGedSvg(chatId, keys, focusHead(row.pkey, radius, rec.deathDate ?? undefined));
+            return;
+        }
         // цифра — только заголовок; тело (список/гедком) — по 🔔/🧬
         let body = null;
-        if (bell || data === "foctree") {
+        if (bell) {
             const spPairs = await focusSpousePairs(chatId);
             const keys = focusWithSpouses(
                 focusKeys(pairsL.map(l => [l.parent, l.child]), row.pkey, radius),
@@ -370,8 +373,6 @@ export default async function (cq, ctx) {
                         k => sexMap.get(k) ?? null, byFull) || "(в радиусе нет событий)";
                 }
                 body = list;
-            } else {
-                body = await gedcomText(chatId, keys);
             }
         }
         const parts = splitText(focusHead(row.pkey, radius, rec.deathDate ?? undefined) + (body ? "\n" + body : ""));

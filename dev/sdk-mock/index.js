@@ -15,7 +15,14 @@ export class BotApiError extends Error {
     }
 }
 export class EndpointError extends Error {}
-export class InputFile {}
+// байты/имя — как на платформе: новые InputFile(bytes, name, { type })
+export class InputFile {
+    constructor(bytes, filename, opts = {}) {
+        this.bytes = bytes;
+        this.filename = filename;
+        this.type = opts.type || null;
+    }
+}
 
 export const fetch = async () => ({ ok: true, status: 200, statusText: 'mock', url: '', json: async () => ({}), text: async () => '' });
 

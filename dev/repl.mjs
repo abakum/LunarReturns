@@ -114,6 +114,21 @@ globalThis.__tgdev = {
         } else if (method === 'answerCallbackQuery') {
             const kind = params.show_alert ? 'alert' : 'toast';
             console.log(`    ↳ ${kind}: ${params.text || ''}`);
+        } else if (method === 'sendDocument') {
+            const n = ++counter;
+            const doc = params.document || {};
+            const size = doc.bytes ? doc.bytes.length : 0;
+            messages.push({ n, text: `[файл ${doc.filename || '?'} (${size} байт)]`, entities: [], markup: null, flat: [],
+                updateMsg: { chat: { id: CHAT, type: CHAT_TYPE }, from: { id: 999, is_bot: true } } });
+            console.log(`[${n}] sendDocument: ${doc.filename || '?'} (${doc.type || '—'}, ${size} байт)`);
+            if (doc.bytes && /svg$/.test(doc.filename || '')) {
+                const p = '/tmp/opencode/' + doc.filename;
+                fs.mkdirSync('/tmp/opencode', { recursive: true });
+                fs.writeFileSync(p, doc.bytes);
+                console.log(`    → ${p} (открыть в браузере)`);
+            }
+            if (params.caption) console.log('    caption: ' + params.caption);
+            return { message_id: n, chat: { id: CHAT, type: CHAT_TYPE } };
         } else if (method === 'getChatMember') {
             return { status: ADMIN ? 'administrator' : 'member' };
         } else {

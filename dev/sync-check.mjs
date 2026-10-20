@@ -29,6 +29,7 @@ function cmp(what, vk, tg) {
 // argv "test" уводит main() в тихий путь (печать юбилея) без токена и poll.
 process.env.LR_DB = path.join(TMP, 'vk-db.json');
 const vkHook = '\nmodule.exports.__test = { parseTrigger, parseGedcom, gedStats, focusKeys, focusHasPair, focusWithSpouses, focusLabel, focusHead, focusListText, kinLabel, focusDepth, addLink, ensureFam, ensureFamSingle, '
+    + 'chartSvg, '
     + 'pairRecords, confirmPair, linkText, gedcomText, importGedcom, upsertRecord, refreshFams, deleteEventCascade, jubileeText, '
     + 'getDb: () => db, setDb: d => { db = d; } };\n';
 const vkFile = path.join(TMP, 'vk.cjs');
@@ -408,6 +409,64 @@ const vkMRec = vdbP.records.find(r => r.peerId === CH && r.n === 'Мать');
 VK.deleteEventCascade(CH, vkMRec);
 await TG.deleteEventCascade(CH, mk);
 cmp('gedcomText после удаления персоны', VK.gedcomText(CH), await TG.gedcomText(CH));
+
+// ==================== 9. chartSvg: гедком-древо → SVG ====================
+const { chartSvg: tgChartSvg } = await import(path.join(ROOT, 'tgcloud', 'lib', 'chart.js'));
+// краевые случаи: без смерти (бар до края), точечный бар birth==death,
+// близнецы-годы разных семей (цвета без коллизий), один родитель, без пола
+const CHART_ROWS = [
+    { name: 'Пётр I', birth: '1672-06-09', death: '1725-02-08', sex: 'M' },
+    { name: 'Екатерина I', birth: '1684-05-04', death: '1727-05-17', sex: 'F' },
+    { name: 'Алексей Петрович', birth: '1690-02-28', death: '1718-07-07', sex: 'M' },
+    { name: 'Елизавета Петровна', birth: '1709-12-29', death: '1762-01-05', sex: 'F' },
+    { name: 'Павел Петрович', birth: '1691-09-13', death: '1691-09-13', sex: 'M' }, // бар-точка
+    { name: 'Без Смерти', birth: '1700-01-01', death: null, sex: null },            // бар до края
+];
+const CHART_LINKS = [
+    { child: 'Алексей Петрович 1690', parents: ['Пётр I 1672', 'Евдокия 1669'] },
+    { child: 'Елизавета Петровна 1709', parents: ['Пётр I 1672', 'Екатерина I 1684'] },
+    { child: 'Павел Петрович 1691', parents: ['Пётр I 1672'] }, // один родитель
+];
+CHART_ROWS.push({ name: 'Евдокия', birth: '1669-11-06', death: '1731-05-11', sex: 'F' });
+// близнецы-год: две семьи, дети родились в один год — вертикали разных цветов
+const TWIN_ROWS = [
+    { name: 'Пётр I', birth: '1672-06-09', death: '1725-02-08', sex: 'M' },
+    { name: 'Екатерина I', birth: '1684-05-04', death: '1727-05-17', sex: 'F' },
+    { name: 'Тест близнецов 1', birth: '1710-01-01', death: '1720-01-01', sex: 'M' },
+    { name: 'Тест близнецов 2', birth: '1710-01-01', death: '1762-01-05', sex: 'F' },
+    { name: 'Екатерина Ивановна', birth: '1691-02-02', death: '1733-01-01', sex: 'F' },
+    { name: 'Иван V', birth: '1666-08-27', death: '1696-02-08', sex: 'M' },
+    { name: 'Прасковья', birth: '1664-10-10', death: '1731-01-01', sex: 'F' },
+];
+const TWIN_LINKS = [
+    { child: 'Тест близнецов 1 1710', parents: ['Пётр I 1672', 'Екатерина I 1684'] },
+    { child: 'Тест близнецов 2 1710', parents: ['Пётр I 1672', 'Екатерина I 1684'] },
+    { child: 'Екатерина Ивановна 1691', parents: ['Иван V 1666', 'Прасковья 1664'] },
+];
+for (const [t, rows, ln] of [
+    ['Пётр I: линии жизни', CHART_ROWS, CHART_LINKS],
+    ['близнецы: две семьи, один год', TWIN_ROWS, TWIN_LINKS],
+]) cmp('chartSvg «' + t + '»', VK.chartSvg(t, rows, ln), tgChartSvg(t, rows, ln));
+// две семьи одного года — вертикали разных цветов (главное требование отличимости)
+const twin = tgChartSvg('близнецы', TWIN_ROWS, TWIN_LINKS);
+const famColors1709 = [...twin.matchAll(/<(?:line|path)[^>]*stroke="(#[0-9a-f]+)" stroke-width="1\.5"/g)]
+    .map(m => m[1]);
+const nodeColors = [...new Set(famColors1709)];
+if (nodeColors.length !== 2)
+    { failed++; console.log('✗ chartSvg: близнецы-год не различён — вертикали ' + nodeColors.join(', ')); }
+// ассерты: 3 родителя, родитель моложе ребёнка, неизвестное имя, неуникальный ключ
+const ASSERTS = [
+    ['три родителя', { ...CHART_LINKS[1], parents: [...CHART_LINKS[1].parents, 'Пётр I 1672'] }, CHART_ROWS],
+    ['родитель моложе', { ...CHART_LINKS[0], parents: ['Елизавета Петровна 1709', 'Екатерина I 1684'] }, CHART_ROWS],
+    ['имя не найдено', { ...CHART_LINKS[0], parents: ['Немо 1650', 'Екатерина I 1684'] }, CHART_ROWS],
+    ['ключ неуникален', CHART_LINKS, [...CHART_ROWS, { ...CHART_ROWS[0], sex: 'M' }]],
+];
+for (const [what, ln, rows] of ASSERTS) {
+    let vkE = '', tgE = '';
+    try { VK.chartSvg('ассерты', rows, Array.isArray(ln) ? ln : [ln]); } catch (e) { vkE = e.message; }
+    try { tgChartSvg('ассерты', rows, Array.isArray(ln) ? ln : [ln]); } catch (e) { tgE = e.message; }
+    cmp('chartSvg assert «' + what + '»', vkE, tgE);
+}
 
 if (failed) { console.log('\n✗ расхождений: ' + failed); process.exit(1); }
 console.log('✓ ВК и ТГ синхронны (' + TRIGGERS.length + ' триггеров, гедком-импорт/экспорт, связи/семьи/каскад)');

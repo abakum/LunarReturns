@@ -5,7 +5,7 @@ import { parseTrigger, parseGedcom, gedStats } from '../lib/parse.js';
 import { jubileeText } from '../lib/text.js';
 import {
     HELP, startMarkup, chatAdmin, getSettings, todayText, upsertEvent, eventMarkup, sendLong,
-    addLink, setLinkCand, ensureFam, pairRecords, linkText, linkMarkup, gedcomText, importGedcom,
+    addLink, setLinkCand, ensureFam, pairRecords, linkText, linkMarkup, gedcomText, importGedcom, sendGedSvg,
     recordOf, chatLinks, focusKeys, focusHead, focusMarkup, splitText, focusWithSpouses, focusSpousePairs, focusDepth,
 } from '../lib/bot.js';
 
@@ -127,8 +127,7 @@ export default async function (message, ctx) {
                 const keys = focusWithSpouses(
                     focusKeys((await chatLinks(chatId)).map(l => [l.parent, l.child]), key, radius),
                     await focusSpousePairs(chatId));
-                const parts = splitText(focusHead(key, radius, row.deathDate ?? undefined) + "\n" + await gedcomText(chatId, keys));
-                for (const part of parts) await api.sendMessage({ chat_id: chatId, text: part });
+                await sendGedSvg(chatId, keys, focusHead(key, radius, row.deathDate ?? undefined));
                 console.log("focus text:", key, "радиус", radius, "chat", chatId);
                 return;
             }
@@ -138,7 +137,7 @@ export default async function (message, ctx) {
             await api.sendMessage({ chat_id: chatId, text: "связей пока нет — ответьте триггером на триггер" });
             return;
         }
-        await sendLong(chatId, g);
+        await sendGedSvg(chatId, undefined, "🧬 Гедком-древо чата");
         return;
     }
 

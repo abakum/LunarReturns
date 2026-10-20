@@ -624,6 +624,74 @@ export async function gedcomText(chatId, keys) {
     return out.join("\n");
 }
 
+// ============================== ГЕДКОМ → SVG ==============================
+// Чистая логика дословно продублирована в lunarreturns.js (dev/sync-check.mjs)
+
+import { InputFile } from 'sdk';
+import { SVG_MAX, chartSvg } from './chart.js';
+
+// диаграммные данные чата/фрагмента (как у gedcomText: те же INDI, свадьбы
+// «Имя+Имя» вне; семьи усекаются до персон фрагмента)
+export async function chartFor(chatId, keys, title) {
+    const hasKeys = Array.isArray(keys) && keys.length > 0;
+    const recs = (await db.select().from(events).where(eq(events.chatId, chatId)).all())
+        .filter(r => !r.name.includes("+") && (!hasKeys || keys.includes(r.name + " " + r.date)));
+    const keySet = new Set(recs.map(r => r.name + " " + r.date));
+    const rows = recs.map(r => ({ name: r.name, birth: r.date, death: r.deathDate || null, sex: r.sex ?? null }));
+    const parentsOf = new Map();
+    for (const f of await chatFams(chatId)) {
+        const ps = JSON.parse(f.parents).filter(p => keySet.has(p));
+        for (const c of JSON.parse(f.children)) {
+            if (!keySet.has(c)) continue;
+            const arr = parentsOf.get(c) || [];
+            for (const p of ps) if (!arr.includes(p)) arr.push(p);
+            parentsOf.set(c, arr);
+        }
+    }
+    for (const l of await chatLinks(chatId)) {
+        if (!keySet.has(l.child) || !keySet.has(l.parent)) continue;
+        const arr = parentsOf.get(l.child) || [];
+        if (arr.length < 2 && !arr.includes(l.parent)) arr.push(l.parent);
+        parentsOf.set(l.child, arr);
+    }
+    // ключ «Имя год» из «Имя ГГГГ-ММ-ДД»
+    const ckey = k => k.slice(0, -11) + " " + keyY(k);
+    const links = [...parentsOf].filter(([, ps]) => ps.length)
+        .map(([c, ps]) => ({ child: ckey(c), parents: ps.map(ckey) }));
+    return { svg: chartSvg(title, rows, links), persons: Math.min(recs.length, SVG_MAX) };
+}
+
+// тап 🧬 / «/gedcom» / «/gedcomN»: tree.ged всегда, tree.svg (диаграмма)
+// при < SVG_MAX персон; неудача — фолбэк текстовым гедкомом (sendLong)
+export async function sendGedSvg(chatId, keys, head) {
+    const g = await gedcomText(chatId, keys);
+    let svg = null, persons = 0;
+    try {
+        const res = await chartFor(chatId, keys, head || "Гедком-древо");
+        // chartSvg сам отсекает до 50 младших — файл всегда строится
+        persons = res.persons;
+        svg = res.svg;
+    } catch (e) { console.error("chart:", e.message); }
+    try {
+        const enc = new TextEncoder();
+        await api.sendDocument({
+            chat_id: chatId,
+            document: new InputFile(enc.encode(g), "tree.ged", { type: "text/plain" }),
+            caption: head,
+        });
+        if (svg) await api.sendDocument({
+            chat_id: chatId,
+            document: new InputFile(enc.encode(svg), "tree.svg", { type: "image/svg+xml" }),
+            caption: "🧬 Диаграмма древа: " + persons + " персон",
+        });
+        console.log("ged artifacts: tree.ged" + (svg ? " + tree.svg (" + persons + " персон)" : ""), "chat", chatId);
+        return;
+    } catch (e) {
+        console.error("sendDocument:", e.message);
+    }
+    await sendLong(chatId, (head ? head + "\n" : "") + g);
+}
+
 export { focusKeys, focusHasPair, focusWithSpouses };
 
 // импорт разобранного гедкома: персоны (кроме свадеб «Имя+Имя»), связи

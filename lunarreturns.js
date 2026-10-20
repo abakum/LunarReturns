@@ -1345,6 +1345,274 @@ function gedcomText(peerId, keys) {
     return out.join("\n");
 }
 
+// ============================== ГЕДКОМ → SVG ==============================
+// Диаграмма «линии жизни»: бары рождения–смерти (без даты смерти — до правого
+// края), связи родитель→ребёнок в год рождения ребёнка. Отправляется файлом
+// tree.svg при < SVG_MAX персон (вместе с tree.ged). Чистая логика дословно
+// продублирована в lunarreturns.js (проверка синхронности — dev/sync-check.mjs,
+// раздел chartSvg).
+
+const SVG_MAX = 50;   // персон, до которых строим tree.svg
+const KIND_W = 170;          // колонка подписей слева (минимум)
+const TITLE_H = 34;          // поле заголовка
+const ROW_H = 16;            // высота строки персоны
+const LINE_H = 10;           // высота строки подписи (в многострочных именах)
+const PLOT_W = 950;          // ширина поля графика
+const BAR_H = 11;            // высота бара жизни
+// бар жизни — серый: мужчины темнее, женщины светлее, без пола — средний
+const BAR_M = "#5f6b76";
+const BAR_F = "#9aa5b0";
+const BAR_N = "#7f8c8d";
+// связи — цвета спектра
+const FAM_COLORS = ["#e6194b", "#f58231", "#bfa100", "#3cb44b", "#1f77b4", "#0082c8", "#911eb4"];
+
+const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+// rows — [{ name, birth: "ГГГГ-ММ-…", death: "…"/null, sex: "M"/"F"/null }];
+// links — [{ child: <ключ «Имя год»>, parents: [ключ, …] }]; никаких дат,
+// кроме годов; SVG — статическая картинка
+function chartSvg(title, rows, links) {
+    if (!rows.length) throw new Error("chart: персоны пусты");
+    const year = d => Number(String(d).slice(0, 4));
+    const keyOf = r => r.name + " " + year(r.birth);
+    // не более SVG_MAX: берём SVG_MAX МЛАДШИХ (снизу = младшие); связи, где
+    // кто-то из персон отсекся, удаляются; список всегда рисуем (без отказа)
+    if (rows.length > SVG_MAX) {
+        const sorted = [...rows].sort((a, b) => year(a.birth) - year(b.birth)
+            || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        const keep = new Set(sorted.slice(-SVG_MAX).map(keyOf));
+        rows = rows.filter(r => keep.has(keyOf(r)));
+        links = links.filter(l => keep.has(l.child) && l.parents.every(p => keep.has(p)));
+    }
+    const seen = new Set();
+    for (const r of rows) {
+        if (seen.has(keyOf(r))) throw new Error("chart: ключ неуникален " + keyOf(r));
+        if (r.death && year(r.death) < year(r.birth)) throw new Error("chart: смерть раньше рождения " + keyOf(r));
+        seen.add(keyOf(r));
+    }
+    const byKey = new Map(rows.map(r => [keyOf(r), r]));
+    for (const l of links) {
+        if (!byKey.has(l.child)) throw new Error("chart: имя не найдено " + l.child);
+        if (!l.parents.length || l.parents.length > 2) throw new Error("chart: родителей не 1–2 " + l.child);
+        for (const p of l.parents) {
+            if (!byKey.has(p)) throw new Error("chart: имя не найдено " + p);
+            if (year(byKey.get(p).birth) > year(byKey.get(l.child).birth))
+                throw new Error("chart: родитель не старше ребёнка " + p);
+        }
+    }
+    // оценка ширины текста в px (sans-serif 10px): прописные шире строчных,
+    // цифры средние, пробелы узкие
+    const textW = s => [...s].reduce((a, c) => a
+        + (c === " " ? 2.8
+            : c >= "0" && c <= "9" ? 5.6
+            : c === c.toUpperCase() && c !== c.toLowerCase() ? 6.8
+            : 5.2), 0);
+    // порядок строк: (год рождения, имя) — ключи «Имя год»
+    const people = [...rows].sort((a, b) => year(a.birth) - year(b.birth)
+        || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+        .map(r => ({ r, key: keyOf(r), yr: year(r.birth), dy: r.death ? year(r.death) : null, row: 0 }));
+    people.forEach((p, i) => { p.row = i; });
+    const rowOf = new Map(people.map(p => [p.key, p]));
+    const allYears = [
+        ...people.map(p => p.yr),
+        ...people.filter(p => p.dy !== null).map(p => p.dy),
+        ...links.map(l => year(byKey.get(l.child).birth)),
+    ];
+    const xMin = Math.floor(Math.min(...allYears) / 10) * 10;
+    const xMax = Math.max(Math.ceil(Math.max(...allYears) / 10) * 10, xMin + 10);
+
+    // колонка подписей: под самую длинную строку «Имя год», все — одной строкой
+    const KW = Math.max(KIND_W, Math.ceil(Math.max(...rows.map(r => textW(keyOf(r)))) + 12));
+    const maxL = KW - 14;
+    const wrapLabel = s => [s];
+    const xS = x => KW + (x - xMin) / (xMax - xMin) * PLOT_W;
+
+    // высоты строк: у людей с многострочными подписями строка выше
+    let acc = 0;
+    for (const p of people) {
+        p.lines = wrapLabel(p.key);
+        p.h = (p.lines.length - 1) * LINE_H + ROW_H;
+        p.y0 = acc;
+        acc += p.h;
+    }
+    const plotTop = TITLE_H + 12;
+    const H = plotTop + acc + 30;
+    const W = KW + PLOT_W + 16;
+
+    // family-связи: цвет — из спектра без коллизий внутри года рождения её
+    // детей (близнецы разных пар не спутать)
+    const famOf = new Map();        // fam → номер появления
+    const famYears = new Map();     // fam → годы рождения её детей
+    const famStr = l => l.parents.map(p => rowOf.get(p)).map(q => q.r.name + " " + q.yr).join(" и ");
+    for (const l of links) {
+        const fam = famStr(l);
+        const y = year(byKey.get(l.child).birth);
+        if (!famOf.has(fam)) { famOf.set(fam, famOf.size); famYears.set(fam, new Set()); }
+        famYears.get(fam).add(y);
+    }
+    const famColorIdx = new Map();
+    const busy = new Map();         // год → занятые индексы FAM_COLORS
+    for (const [fam] of famOf) {
+        const yrs = [...famYears.get(fam)];
+        let c = famOf.get(fam) % FAM_COLORS.length, tries = 0;
+        while (tries++ < FAM_COLORS.length
+            && yrs.some(y => (busy.get(y) || new Set()).has(c)))
+            c = (c + 1) % FAM_COLORS.length;
+        famColorIdx.set(fam, c);
+        for (const y of yrs) {
+            const s = busy.get(y) || new Set();
+            s.add(c);
+            busy.set(y, s);
+        }
+    }
+    const famColor = fam => FAM_COLORS[famColorIdx.get(fam)];
+
+    const s = [];
+    s.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="sans-serif">`);
+    s.push(`<rect x="0" y="0" width="${W}" height="${H}" fill="white"/>`);
+    s.push(`<text x="8" y="22" font-size="16" font-weight="bold" fill="#111">${esc(title)}</text>`);
+    // сетка-декады и подписи оси X
+    for (let x = xMin; x <= xMax; x += 10) {
+        s.push(`<line x1="${xS(x).toFixed(1)}" y1="${plotTop}" x2="${xS(x).toFixed(1)}" y2="${H - 26}" stroke="#eee" stroke-width="1"/>`);
+        s.push(`<line x1="${xS(x).toFixed(1)}" y1="${H - 26}" x2="${xS(x).toFixed(1)}" y2="${H - 20}" stroke="#888" stroke-width="1"/>`);
+        s.push(`<text x="${xS(x).toFixed(1)}" y="${H - 8}" font-size="10" fill="#666" text-anchor="middle">${x}</text>`);
+    }
+    s.push(`<line x1="${KW}" y1="${H - 26}" x2="${KW + PLOT_W}" y2="${H - 26}" stroke="#888" stroke-width="1"/>`);
+    // подписи (1–3 строки) + бары (серые: мужчины темнее, женщины светлее)
+    for (const p of people) {
+        const cy = plotTop + p.y0 + p.h / 2;
+        p.cy = cy;
+        for (let j = 0; j < p.lines.length; j++) {
+            const ly = cy - (p.lines.length - 1 - j) * LINE_H + 3.5;
+            s.push(`<text x="${KW - 8}" y="${ly.toFixed(1)}" font-size="10" fill="#333" text-anchor="end">${esc(p.lines[j])}</text>`);
+        }
+        const end = p.dy ?? xMax;
+        const x1 = xS(p.yr), x2 = xS(end);
+        const bar = p.r.sex === "M" ? BAR_M : p.r.sex === "F" ? BAR_F : BAR_N;
+        // выноска: тонкая линия от имени к началу бара
+        s.push(`<line x1="${KW - 6}" y1="${cy.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${cy.toFixed(1)}" stroke="#bbb" stroke-width="1"/>`);
+        s.push(`<rect x="${x1.toFixed(1)}" y="${(cy - BAR_H / 2).toFixed(1)}" width="${Math.max(2, x2 - x1).toFixed(1)}" height="${BAR_H}" rx="2" fill="${bar}"/>`);
+    }
+    // дуги родитель→ребёнок (в год рождения ребёнка), точки на строках;
+    // по родителю — одна точка даже при близнецах; цвет — цвет связи (семьи);
+    // радиус пропорционален вертикальному расстоянию родитель→ребёнок —
+    // короткие дуги прижаты к вертикали, длинные шире (пересечений меньше);
+    // плюс сдвиг 14px на каждую семью в этом же году — столбцы не совпадают
+    const slotOf = new Map();       // «fam\0год» → сдвиг (номер семьи на год)
+    const yearCount = new Map();    // год → сколько семей уже заняли столбец
+    const famSeen = new Set();
+    for (const l of links) {
+        const y = year(byKey.get(l.child).birth);
+        const kk = famStr(l) + "\0" + y;
+        if (!famSeen.has(kk)) {
+            famSeen.add(kk);
+            slotOf.set(kk, yearCount.get(y) || 0);
+            yearCount.set(y, (yearCount.get(y) || 0) + 1);
+        }
+    }
+    for (const l of links) {
+        const fam = famStr(l);
+        const col = famColor(fam);
+        const y = year(byKey.get(l.child).birth);
+        const lo0 = l.parents.map(p => rowOf.get(p)).sort((a, b) => a.cy - b.cy);
+        const ch0 = rowOf.get(l.child);
+        const gap = Math.abs(ch0.cy - lo0[lo0.length - 1].cy);
+        const side = -(14 * slotOf.get(fam + "\0" + y) + 22 * gap / ROW_H);
+        const x = xS(y).toFixed(1);
+        const chY = ch0.cy;
+        const py = p => p.cy.toFixed(1);
+        const ps = lo0;
+        // прямая между двумя родителями; к ребёнку — дуга, а если в этот год
+        // рождается ребёнок только у одной семьи — просто прямая линия
+        if (ps.length === 2 && py(ps[0]) !== py(ps[1]))
+            s.push(`<line x1="${x}" y1="${py(ps[0])}" x2="${x}" y2="${py(ps[1])}" stroke="${col}" stroke-width="1.5"/>`);
+        const lo = ps[ps.length - 1];
+        if (lo.key !== ch0.key) {
+            if ((yearCount.get(y) || 0) === 1)
+                s.push(`<line x1="${x}" y1="${py(lo)}" x2="${x}" y2="${chY.toFixed(1)}" stroke="${col}" stroke-width="1.5"/>`);
+            else
+                s.push(`<path d="M ${x} ${py(lo)} Q ${(xS(y) + side).toFixed(1)} ${((lo.cy + chY) / 2).toFixed(1)} ${x} ${chY.toFixed(1)}" fill="none" stroke="${col}" stroke-width="1.5"/>`);
+        }
+        // точки поверх линий
+        for (const p of ps)
+            s.push(`<circle cx="${x}" cy="${py(p)}" r="3.5" fill="${col}" stroke="white" stroke-width="1"/>`);
+        s.push(`<circle cx="${x}" cy="${chY.toFixed(1)}" r="3.5" fill="${col}" stroke="white" stroke-width="1"/>`);
+    }
+    s.push("</svg>");
+    return s.join("\n");
+}
+
+// ключ «Имя год» из pkey «Имя ГГГГ-ММ-ДД» (имя может содержать пробелы)
+const ckey = k => { const i = k.lastIndexOf(" "); return k.slice(0, i) + " " + Number(k.slice(i + 1, i + 5) || 0); };
+
+// диаграммные данные чата/фрагмента (как у gedcomText: те же INDI, свадьбы
+// «Имя+Имя» вне; семьи усекаются до персон фрагмента)
+function chartFor(peerId, keys, title) {
+    const hasKeys = Array.isArray(keys) && keys.length > 0;
+    const recs = db.records.filter(r => r.peerId === peerId && !r.n.includes("+")
+        && (!hasKeys || keys.includes(pkey(r))));
+    const keySet = new Set(recs.map(r => pkey(r)));
+    const rows = recs.map(r => ({ name: r.n, birth: r.d, death: r.dd || null, sex: r.sex || null }));
+    const parentsOf = new Map();
+    for (const f of (db.fams || []).filter(f => f.peerId === peerId)) {
+        const ps = f.parents.filter(p => keySet.has(p));
+        for (const c of f.children) {
+            if (!keySet.has(c)) continue;
+            const arr = parentsOf.get(c) || [];
+            for (const p of ps) if (!arr.includes(p)) arr.push(p);
+            parentsOf.set(c, arr);
+        }
+    }
+    for (const l of (db.links || []).filter(l => l.peerId === peerId)) {
+        if (!keySet.has(l.c) || !keySet.has(l.p)) continue;
+        const arr = parentsOf.get(l.c) || [];
+        if (arr.length < 2 && !arr.includes(l.p)) arr.push(l.p);
+        parentsOf.set(l.c, arr);
+    }
+    const links = [...parentsOf].filter(([, ps]) => ps.length)
+        .map(([c, ps]) => ({ child: ckey(c), parents: ps.map(ckey) }));
+    return { svg: chartSvg(title, rows, links), persons: Math.min(recs.length, SVG_MAX) };
+}
+
+// загрузка документа на серверы VK (docs… — файлы любого типа)
+async function vkUploadDoc(peerId, title, content) {
+    const up = await vkApi("docs.getMessagesUploadServer",
+        groupId ? { peer_id: peerId, group_id: groupId, type: "doc" } : { peer_id: peerId, type: "doc" });
+    const fd = new FormData();
+    fd.append("file", new Blob([content]), title);
+    const res = await fetch(up.upload_url, { method: "POST", body: fd, signal: AbortSignal.timeout(60000) });
+    const j = await res.json();
+    if (!j.file) throw new Error("docs upload: " + JSON.stringify(j).slice(0, 200));
+    const saved = await vkApi("docs.save", { file: j.file, title });
+    const d = saved.doc || (saved[0] || {}).doc;
+    if (!d) throw new Error("docs.save: нет документа");
+    return "doc" + d.owner_id + "_" + d.id;
+}
+
+// тап 🧬 / «/gedcom» / «/gedcomN»: tree.ged всегда, tree.svg (диаграмма)
+// при < SVG_MAX персон; неудача — фолбэк текстовым гедкомом
+async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId) {
+    const g = gedcomText(peerId, keys);
+    let svg = null, persons = 0;
+    try {
+        const res = chartFor(peerId, keys, head || "Гедком-древо");
+        persons = res.persons;
+        svg = res.svg;
+    } catch (e) { console.error("chart:", e.message); }
+    try {
+        const atts = [await vkUploadDoc(peerId, "tree.ged", g)];
+        if (svg) atts.push(await vkUploadDoc(peerId, "tree.svg", svg));
+        await messagesSend(peerId, head, msgId, convMsgId, null, atts.join(","));
+        console.log("ged artifacts: tree.ged" + (svg ? " + tree.svg (" + persons + " персон)" : ""), "peer", peerId);
+        return;
+    } catch (e) {
+        console.error("doc upload:", e.message);
+    }
+    const parts = splitText((head ? head + "\n" : "") + g);
+    for (let i = 0; i < parts.length; i++)
+        await messagesSend(peerId, parts[i], i === 0 ? msgId : 0, i === 0 ? convMsgId : 0);
+}
+
 // ============================== НАСТРОЙКИ ==============================
 // Оповещения о религиозных днях per peer: { orth, islam, bud, cath, jud }.
 
@@ -1589,7 +1857,7 @@ async function vkApi(method, params) {
 
 // ответ на сообщение: reply_to по глобальному id (личка) либо forward по
 // conversation_message_id (в чатах id приходит 0 — как в pinguin vk.go)
-async function messagesSend(peerId, text, msgId, convMsgId, keyboard) {
+async function messagesSend(peerId, text, msgId, convMsgId, keyboard, attachment) {
     const params = {
         peer_id: peerId,
         message: text,
@@ -1600,6 +1868,7 @@ async function messagesSend(peerId, text, msgId, convMsgId, keyboard) {
         peer_id: peerId, conversation_message_ids: [convMsgId], is_reply: true
     });
     if (keyboard) params.keyboard = keyboard;
+    if (attachment) params.attachment = attachment;
     return queueSend(params);
 }
 
@@ -1881,18 +2150,16 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             const key = grh[1].trim() + " " + grh[2];
             const rec = recordOf(peerId, key);
             if (rec) {
-                const parts = splitText(focusText(peerId, key, radius, false, rec.dd));
-                for (let i = 0; i < parts.length; i++)
-                    await messagesSend(peerId, parts[i], i === 0 ? msgId : 0, i === 0 ? convMsgId : 0);
+                const keys = focusWithSpouses(
+                    focusKeys((db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]), key, radius),
+                    focusSpousePairs(peerId));
+                await sendGedArtifacts(peerId, keys, focusHead(key, radius, rec.dd), msgId, convMsgId);
                 console.log("focus text:", key, "радиус", radius, "peer", peerId);
                 return;
             }
         }
-        const g = gedcomText(peerId);
         if (!db.links || !db.links.length) { await messagesSend(peerId, "связей пока нет — ответьте триггером на триггер", msgId, convMsgId); return; }
-        const parts = splitText(g);
-        for (let i = 0; i < parts.length; i++)
-            await messagesSend(peerId, parts[i], i === 0 ? msgId : 0, i === 0 ? convMsgId : 0);
+        await sendGedArtifacts(peerId, undefined, "🧬 Гедком-древо чата", msgId, convMsgId);
         return;
     }
     // ответ триггером на триггер пользователя = связь: заголовок «Имя ГГГГ-ММ-ДД»
@@ -2044,6 +2311,15 @@ async function handleEvent(o) {
         const rec = recordOf(peerId, key);
         if (!rec) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "персона не найдена");
+            return;
+        }
+        // 🧬 в радиусе: tree.ged + tree.svg (диаграмма — родство к герою),
+        // правка сообщения не нужна — файлы отдельным сообщением
+        if (p.c === "foc:tree") {
+            const pairs = (db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]);
+            const keys = focusWithSpouses(focusKeys(pairs, key, radius), focusSpousePairs(peerId));
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "древо в радиусе");
+            await sendGedArtifacts(peerId, keys, focusHead(key, radius, rec.dd));
             return;
         }
         const bell = p.c === "foc:bell";
@@ -2268,9 +2544,7 @@ async function handleEvent(o) {
             return;
         }
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "гедком-древо чата");
-        const parts = splitText(gedcomText(peerId));
-        await editOrigin(o, parts[0], await peerKeyboard(peerId, o.user_id));
-        for (let i = 1; i < parts.length; i++) await messagesSend(peerId, parts[i]);
+        await sendGedArtifacts(peerId, undefined, "🧬 Гедком-древо чата");
     } else if (payload.startsWith("rel:")) {
         const key = payload.slice(4);
         if (!REL_DEFS[key]) return;
@@ -2607,3 +2881,5 @@ async function main() {
 }
 
 main().catch(e => { console.error("fatal:", e); process.exit(1); });
+
+module.exports.__test = { parseTrigger, parseGedcom, gedStats, focusKeys, focusHasPair, focusWithSpouses, focusLabel, focusHead, focusListText, kinLabel, focusDepth, addLink, ensureFam, ensureFamSingle, chartSvg, pairRecords, confirmPair, linkText, gedcomText, importGedcom, upsertRecord, refreshFams, deleteEventCascade, jubileeText, getDb: () => db, setDb: d => { db = d; } };
