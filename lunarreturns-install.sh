@@ -60,14 +60,15 @@ pkill -u "$RUN_USER" -f "node .*$DIR/lunarreturns.js" 2>/dev/null && echo "ру�
 install -d -m 700 /var/lib/lunarreturns
 install -m 644 "$DIR/lunarreturns.js" /var/lib/lunarreturns/lunarreturns.js
 install -m 644 "$DIR/tgcloud/lib/font-cyr.js" /var/lib/lunarreturns/font-cyr.js
-if [ -f "$DIR/db.json" ] && [ ! -f /var/lib/lunarreturns/db.json ]; then
+if [ -f "$DIR/db.json" ] && [ ! -f /var/lib/lunarreturns/db.json ] && [ ! -f /var/lib/lunarreturns/db.json.migrated ]; then
     install -m 600 "$DIR/db.json" /var/lib/lunarreturns/db.json
     echo "база перенесена: $DIR/db.json -> /var/lib/lunarreturns/db.json"
-elif [ -f /var/lib/lunarreturns/db.json ]; then
-    echo "база /var/lib/lunarreturns/db.json не тронута (рабочая; $DIR/db.json игнорируется)"
 fi
-# db.json: владелец будет сменён systemd на динамического пользователя
-# (StateDirectory), скрипт читается сервисом — 644 root:root
+if [ -f /var/lib/lunarreturns/db.json.migrated ]; then
+    echo "база сконвертирована (db.json.migrated — резерв прежнего db.json)"
+elif [ -f /var/lib/lunarreturns/db.json ]; then
+    echo "db.json ждёт конвертации при первом старте сервиса"
+fi
 
 # 5. юнит из шаблона (пути, node)
 sed -e "s|@CFG@|$CFG|g" \
@@ -82,6 +83,6 @@ sleep 2
 systemctl --no-pager --lines 5 status $UNIT || true
 echo
 echo "Логи:      journalctl -u $UNIT -f"
-echo "База:      /var/lib/lunarreturns/db.json"
+echo "База:      /var/lib/lunarreturns/lunarreturns.db (конвертация: $ENV_FILE.migrated)"
 echo "Токен:     $ENV_FILE"
 echo "Остановка: sudo systemctl disable --now $UNIT"
