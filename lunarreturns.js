@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // lunarreturns.js — VK-бот лунно-солнечных юбилеев (порт логики из
-// LunarReturns/index.html). Один файл, ноль зависимостей, Node >= 18.
+// LunarReturns/index.html). Один файл, ноль зависимостей,
+// Node >= 22.5 (node:sqlite; проверено на 24.15). Хранилище — SQLite
+// lunarreturns.db: xref-дерево чата (indi/fam/chil), «Имя Д» и
+// «Имя+Имя Д» — производные виды (см. STORE).
 //
 // Запуск:  VK_TOKEN=... node lunarreturns.js
 // Проверка без токена:  node lunarreturns.js test "Дедушка Костя 1963-09-27 12:30 (Пермь)"
@@ -618,7 +621,7 @@ function parseGedcom(text) {
         if (lvl === 1) curTag = tag;
         if (lvl === 1) {
             if (tag === "NAME") cur.name = val.replace(/\/(.*?)\//g, "$1").trim();
-            else if (tag === "SEX") cur.sex = val.toUpperCase().startsWith("F") ? "F" : "M";
+            else if (tag === "SEX") cur.sex = /^F/i.test(val) ? "F" : /^M/i.test(val) ? "M" : null;
             else if (tag === "BIRT") cur.birt = cur.birt || {};
             else if (tag === "DEAT") cur.deat = cur.deat || {};
             else if (tag === "MARR") cur.marr = cur.marr || {};
@@ -927,112 +930,335 @@ function jubileeText(rec, note, detail = false) {
     return head + "\n" + la(t, detail).join("\n");
 }
 
-// ============================== STORE ==============================
+// ============================== STORE (SQLite, xref-дерево) ==============================
+// Источник истины — дерево чата с идентичностью по xref (как в гедкоме):
+//   indi — персоны (birt_d NULL — заглушки-половины свадеб без даты),
+//   fam  — пары (husb/wife = xref'ы, marr/div с датами и местами),
+//   chil — дети в семье (adopted), links — рёбра родитель→ребёнок
+//   «Имя Д» + состояние сообщений-связей (who/cmid/pairCand),
+//   sent — планировщик (последний год рассылки), settings/meta.
+// «Имя Д» и «Имя+Имя Д» — производные виды (personRows/weddingRows):
+// свадьба всегда привязана к xref'ам супругов, поисков «по первому имени»
+// нет — тёзки не перехватывают чужие свадьбы. Один файл lunarreturns.db
+// (LR_DB; «:memory:» — тесты): записи синхронные, второй процесс упирается
+// в блокировку файла. Прежний db.json конвертируется разово при первом
+// старте (остаётся рядом как db.json.migrated).
 
 const fs = require("fs");
 const path = require("path");
+const { DatabaseSync } = require("node:sqlite");
 
-// база рядом со скриптом; в сервисе (DynamicUser) путь задаёт LR_DB
-const DB_FILE = process.env.LR_DB || path.join(__dirname, "db.json");
-let db = { records: [] };
+// тестовый режим (`test`, sync-check): LR_DB задают явно (:memory: у тестов);
+// при LR_DB конвертация db.json отключена — тестовые экземпляры не трогают
+// боевую базу и dev-данные
+const TEST_MODE = process.argv[2] === "test";
+const DB_FILE = process.env.LR_DB || (TEST_MODE ? ":memory:" : path.join(__dirname, "lunarreturns.db"));
+const OLD_DB_FILE = path.join(__dirname, "db.json");
+let sdb = null;
 
-function loadDb() {
-    try {
-        const parsed = JSON.parse(fs.readFileSync(DB_FILE, "utf8"));
-        if (parsed && Array.isArray(parsed.records)) db = parsed;
-    } catch (e) {
-        // нет файла или повреждён — начинаем с пустой базы
-    }
+function sq() {
+    if (sdb) return sdb;
+    sdb = new DatabaseSync(DB_FILE);
+    sdb.exec(`
+CREATE TABLE IF NOT EXISTS indi(
+    chat INTEGER NOT NULL, xref TEXT NOT NULL, name TEXT NOT NULL,
+    birt_d TEXT, birt_h INTEGER, birt_m INTEGER, src_h INTEGER, src_m INTEGER,
+    deat_d TEXT, deat_h INTEGER, deat_m INTEGER, dsrc_h INTEGER, dsrc_m INTEGER,
+    sex TEXT, plac TEXT, PRIMARY KEY(chat, xref));
+CREATE TABLE IF NOT EXISTS fam(
+    chat INTEGER NOT NULL, xref TEXT NOT NULL, adhoc INTEGER NOT NULL DEFAULT 0,
+    husb TEXT, wife TEXT,
+    marr_d TEXT, marr_plac TEXT, div_d TEXT, div_plac TEXT, PRIMARY KEY(chat, xref));
+CREATE TABLE IF NOT EXISTS chil(
+    chat INTEGER NOT NULL, fam TEXT NOT NULL, indi TEXT NOT NULL,
+    adopted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(chat, fam, indi));
+CREATE TABLE IF NOT EXISTS links(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, chat INTEGER NOT NULL,
+    p TEXT NOT NULL, c TEXT NOT NULL, who TEXT, fam TEXT,
+    cmid INTEGER NOT NULL DEFAULT 0, pairCand TEXT, UNIQUE(chat, p, c));
+CREATE TABLE IF NOT EXISTS sent(
+    chat INTEGER NOT NULL, key TEXT NOT NULL, last_year INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(chat, key));
+CREATE TABLE IF NOT EXISTS settings(
+    chat INTEGER PRIMARY KEY, orth INTEGER NOT NULL DEFAULT 0, islam INTEGER NOT NULL DEFAULT 0,
+    bud INTEGER NOT NULL DEFAULT 0, cath INTEGER NOT NULL DEFAULT 0, jud INTEGER NOT NULL DEFAULT 0,
+    bell INTEGER NOT NULL DEFAULT 1);
+CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`);
+    convertOldDb();
+    return sdb;
 }
-
-function saveDb() {
-    const tmp = DB_FILE + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(db, null, 1) + "\n");
-    fs.renameSync(tmp, DB_FILE);
-}
-
-// событие своё у каждого пира, ключ — имя+дата: повторный триггер с той же
-// датой обновляет, с другой — отдельное событие (Георгий 1910 и Георгий 1963)
-function upsertRecord(rec, peerId) {
-    const same = db.records.find(r => r.peerId === peerId && r.n === rec.n && r.d === rec.d);
-    if (same) Object.assign(same, rec, { peerId });
-    else db.records.push(Object.assign({ peerId, lastSentYear: 0 }, rec));
-    saveDb();
-}
-
-// ---- гедком-база: персоны/связи/семьи, дерево в рамках чата (peerId) ----
-// персона = «Имя ГГГГ-ММ-ДД» (ключ), связь = родитель→ребёнок из ответа
-// триггером на триггер, семья = подтверждённая пара родителей
+const qa = (sql, ...a) => sq().prepare(sql).all(...a);
+const q1 = (sql, ...a) => sq().prepare(sql).get(...a);
+const qr = (sql, ...a) => sq().prepare(sql).run(...a);
 
 const pkey = r => r.n + " " + r.d;
 const keyN = k => k.slice(0, -11); // имя из ключа
 const keyY = k => Number(k.slice(-10, -6)); // год рождения из ключа
 
-function recordOf(peerId, key) {
-    return db.records.find(r => r.peerId === peerId && pkey(r) === key) || null;
+function nextIndiXref(peerId, pref) {
+    let max = 0;
+    for (const r of qa("SELECT xref FROM indi WHERE chat=? AND xref LIKE ?", peerId, pref + "%"))
+        max = Math.max(max, Number(String(r.xref).slice(pref.length)) || 0);
+    return pref + (max + 1);
+}
+function nextFamXref(peerId, pref) {
+    let max = 0;
+    for (const r of qa("SELECT xref FROM fam WHERE chat=? AND xref LIKE ?", peerId, pref + "%"))
+        max = Math.max(max, Number(String(r.xref).slice(pref.length)) || 0);
+    return pref + (max + 1);
 }
 
-// добавить связь родитель→ребёнок; who — кто из двоих пришёл новым триггером
+function recordOf(peerId, key) {
+    return personRows(peerId).find(r => pkey(r) === key) || null;
+}
+
+// ---- виды: «Имя Д» и «Имя+Имя Д» — выборка из дерева ----
+
+// персоны чата (только с датой рождения), порядок вставки
+function personRows(peerId) {
+    return qa(`SELECT xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac
+        FROM indi WHERE chat=? AND birt_d IS NOT NULL ORDER BY rowid`, peerId).map(r => {
+        const o = { n: r.name, d: r.birt_d };
+        if (r.birt_h !== null) { o.h = r.birt_h; o.m = r.birt_m ?? 0; }
+        if (r.src_h !== null) { o.srcH = r.src_h; o.srcM = r.src_m ?? 0; }
+        if (r.sex) o.sex = r.sex;
+        if (r.deat_d) {
+            o.dd = r.deat_d;
+            if (r.deat_h !== null) { o.dh = r.deat_h; o.dm = r.deat_m ?? 0; }
+            if (r.dsrc_h !== null) { o.dsrcH = r.dsrc_h; o.dsrcM = r.dsrc_m ?? 0; }
+        }
+        if (r.plac) o.plac = r.plac;
+        o.xref = r.xref;
+        return o;
+    });
+}
+
+// свадьбы чата: fam с marr и обоими супругами (имена по xref — точно);
+// та же пара+дата у второй семьи (после confirmPair) — один раз
+function weddingRows(peerId) {
+    const out = [], seen = new Set();
+    for (const r of qa(`SELECT f.xref AS fx, f.marr_d AS d, f.marr_plac AS plac, f.div_d AS dd, f.div_plac AS plac2,
+        (SELECT name FROM indi WHERE chat=f.chat AND xref=f.husb) AS hn,
+        (SELECT name FROM indi WHERE chat=f.chat AND xref=f.wife) AS wn
+        FROM fam f WHERE f.chat=? AND f.marr_d IS NOT NULL ORDER BY f.rowid`, peerId)) {
+        if (!r.hn || !r.wn) continue;
+        const o = { n: r.hn + "+" + r.wn, d: r.d };
+        if (seen.has(pkey(o))) continue;
+        seen.add(pkey(o));
+        if (r.plac) o.plac = r.plac;
+        if (r.dd) { o.dd = r.dd; if (r.plac2) o.plac2 = r.plac2; }
+        o.fx = r.fx;
+        out.push(o);
+    }
+    return out;
+}
+
+// запись по ключу «Имя Д» или «Имя+Имя Д» (правка сообщений по cmid)
+function recordAnyOf(peerId, key) {
+    return recordOf(peerId, key) || weddingRows(peerId).find(r => pkey(r) === key) || null;
+}
+
+function indiOf(peerId, xref) {
+    return q1("SELECT * FROM indi WHERE chat=? AND xref=?", peerId, xref) || null;
+}
+function xrefOfKey(peerId, key) {
+    const r = q1("SELECT xref FROM indi WHERE chat=? AND name=? AND birt_d IS NOT NULL AND birt_d=? LIMIT 1",
+        peerId, keyN(key), key.slice(-10));
+    return r ? r.xref : null;
+}
+function keyOfXref(peerId, xref) {
+    const r = indiOf(peerId, xref);
+    return r && r.birt_d ? r.name + " " + r.birt_d : null;
+}
+
+function famRaw(peerId, fx) {
+    return fx ? (q1("SELECT * FROM fam WHERE chat=? AND xref=?", peerId, fx) || null) : null;
+}
+function famNames(peerId, fx) {
+    const f = famRaw(peerId, fx);
+    if (!f) return { hn: null, wn: null };
+    return {
+        hn: f.husb ? (indiOf(peerId, f.husb) || {}).name || null : null,
+        wn: f.wife ? (indiOf(peerId, f.wife) || {}).name || null : null,
+    };
+}
+// fam в виде {xref, adhoc, parents/children — ключи «Имя Д», marr, div}
+function famView(peerId, fx) {
+    const f = famRaw(peerId, fx);
+    if (!f) return null;
+    return {
+        xref: f.xref, adhoc: !!f.adhoc,
+        parents: [f.husb, f.wife].filter(Boolean).map(x => keyOfXref(peerId, x)).filter(Boolean),
+        children: qa("SELECT indi FROM chil WHERE chat=? AND fam=? ORDER BY rowid", peerId, f.xref)
+            .map(r => keyOfXref(peerId, r.indi)).filter(Boolean),
+        marr: f.marr_d ? { d: f.marr_d, ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null,
+        div: f.div_d ? { d: f.div_d, ...(f.div_plac ? { plac: f.div_plac } : {}) } : null,
+    };
+}
+function famList(peerId) {
+    return qa("SELECT xref FROM fam WHERE chat=? ORDER BY rowid", peerId)
+        .map(r => famView(peerId, r.xref)).filter(Boolean);
+}
+function linkPairs(peerId) {
+    return qa("SELECT p,c FROM links WHERE chat=?", peerId).map(l => [l.p, l.c]);
+}
+// строка-связь в прежнем виде (+adopted из chil семьи связи)
+function linkRowOf(r) {
+    const cx = r.fam ? xrefOfKey(r.chat, r.c) : null;
+    const adopted = r.fam && cx
+        ? !!(q1("SELECT adopted FROM chil WHERE chat=? AND fam=? AND indi=?", r.chat, r.fam, cx) || {}).adopted
+        : false;
+    return { id: r.id, peerId: r.chat, p: r.p, c: r.c, who: r.who, fam: r.fam, cmid: r.cmid,
+        pairCand: r.pairCand ? JSON.parse(r.pairCand) : null, adopted };
+}
+function linkById(peerId, id) {
+    const r = q1("SELECT * FROM links WHERE chat=? AND id=?", peerId, id);
+    return r ? linkRowOf(r) : null;
+}
+function linkByCmid(peerId, cmid) {
+    const r = q1("SELECT * FROM links WHERE chat=? AND cmid=?", peerId, cmid);
+    return r ? linkRowOf(r) : null;
+}
+function setLinkCand(link, cand) {
+    qr("UPDATE links SET pairCand=? WHERE chat=? AND id=?", cand ? JSON.stringify(cand) : null, link.peerId, link.id);
+    link.pairCand = cand || null;
+}
+function setLinkCmid(link, cmid) {
+    qr("UPDATE links SET cmid=? WHERE chat=? AND id=?", cmid || 0, link.peerId, link.id);
+    link.cmid = cmid || 0;
+}
+
+// ---- мутации ----
+
+// событие своё у каждого пира, ключ — имя+дата: повторный триггер с той же
+// датой обновляет (только заданные поля), с другой — отдельное событие
+// (Георгий 1910 и Георгий 1963). «Имя+Имя Д» — свадьба: пара-заглушка
+// (половины без дат рождения) с marr/div
+function upsertPerson(peerId, rec) {
+    if (rec.n.includes("+")) return upsertWedding(peerId, rec);
+    const cur = q1("SELECT xref FROM indi WHERE chat=? AND name=? AND birt_d IS NOT NULL AND birt_d=? LIMIT 1",
+        peerId, rec.n, rec.d);
+    if (cur) {
+        const s = [], v = [];
+        const put = (col, val) => { s.push(col + "=?"); v.push(val); };
+        if (rec.h !== undefined) { put("birt_h", rec.h); put("birt_m", rec.m ?? 0); }
+        if (rec.srcH !== undefined) { put("src_h", rec.srcH); put("src_m", rec.srcM ?? 0); }
+        if (rec.dd !== undefined) {
+            put("deat_d", rec.dd || null);
+            if (rec.dh !== undefined) { put("deat_h", rec.dh); put("deat_m", rec.dm ?? 0); }
+            if (rec.dsrcH !== undefined) { put("dsrc_h", rec.dsrcH); put("dsrc_m", rec.dsrcM ?? 0); }
+        } else if (rec.dh !== undefined) { put("deat_h", rec.dh); put("deat_m", rec.dm ?? 0); }
+        if (rec.sex !== undefined) put("sex", rec.sex || null);
+        if (rec.plac !== undefined) put("plac", rec.plac || null);
+        if (s.length) qr("UPDATE indi SET " + s.join(",") + " WHERE chat=? AND xref=?", ...v, peerId, cur.xref);
+        return personRows(peerId).find(r => r.xref === cur.xref) || null;
+    }
+    const xref = nextIndiXref(peerId, "P");
+    qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        peerId, xref, rec.n, rec.d,
+        rec.h ?? null, rec.h !== undefined ? (rec.m ?? 0) : null,
+        rec.srcH ?? null, rec.srcH !== undefined ? (rec.srcM ?? 0) : null,
+        rec.dd ?? null, rec.dh ?? null, rec.dh !== undefined ? (rec.dm ?? 0) : null,
+        rec.dsrcH ?? null, rec.dsrcH !== undefined ? (rec.dsrcM ?? 0) : null,
+        rec.sex ?? null, rec.plac ?? null);
+    return personRows(peerId).find(r => r.xref === xref) || null;
+}
+
+// заглушка-половина свадьбы: персона без даты (одна на все свадьбы с именем)
+function stubOf(peerId, name) {
+    const cur = q1("SELECT xref FROM indi WHERE chat=? AND name=? AND birt_d IS NULL LIMIT 1", peerId, name);
+    if (cur) return cur.xref;
+    const xref = nextIndiXref(peerId, "S");
+    qr("INSERT INTO indi(chat,xref,name) VALUES(?,?,?)", peerId, xref, name);
+    return xref;
+}
+function weddingByFx(peerId, fx) {
+    return weddingRows(peerId).find(w => w.fx === fx) || null;
+}
+function upsertWedding(peerId, rec) {
+    const [a, b] = rec.n.split("+");
+    for (const r of qa("SELECT xref FROM fam WHERE chat=? AND marr_d=?", peerId, rec.d)) {
+        const nm = famNames(peerId, r.xref);
+        if ((nm.hn === a && nm.wn === b) || (nm.hn === b && nm.wn === a)) {
+            const s = [], v = [];
+            if (rec.plac !== undefined) { s.push("marr_plac=?"); v.push(rec.plac || null); }
+            if (rec.dd !== undefined) { s.push("div_d=?"); v.push(rec.dd || null); }
+            if (rec.plac2 !== undefined) { s.push("div_plac=?"); v.push(rec.plac2 || null); }
+            if (s.length) qr("UPDATE fam SET " + s.join(",") + " WHERE chat=? AND xref=?", ...v, peerId, r.xref);
+            return weddingByFx(peerId, r.xref);
+        }
+    }
+    const ha = stubOf(peerId, a), hb = stubOf(peerId, b);
+    const fx = nextFamXref(peerId, "W");
+    qr(`INSERT INTO fam(chat,xref,adhoc,husb,wife,marr_d,marr_plac,div_d,div_plac) VALUES(?,?,1,?,?,?,?,?,?)`,
+        peerId, fx, ha, hb, rec.d, rec.plac ?? null, rec.dd ?? null, rec.plac2 ?? null);
+    return weddingByFx(peerId, fx);
+}
+
+// добавить связь родитель→ребёнок; who — кто из двоих пришёл новым триггером.
+// Интерактивная семья — adhoc fam на ребёнка: второй родитель добирается в
+// неё же (третий — отдельной fam); ребро уже есть — dup
 function addLink(peerId, parentKey, childKey, who) {
-    if (!db.links) db.links = [];
-    const same = db.links.find(l => l.peerId === peerId && l.p === parentKey && l.c === childKey);
-    if (same) return { link: same, dup: true };
-    if (!db.nextLinkId) db.nextLinkId = 1;
-    const link = { id: db.nextLinkId++, peerId, p: parentKey, c: childKey, who, cmid: 0 };
-    db.links.push(link);
-    saveDb();
-    return { link, dup: false };
+    const same = q1("SELECT * FROM links WHERE chat=? AND p=? AND c=?", peerId, parentKey, childKey);
+    if (same) return { link: linkRowOf(same), dup: true };
+    const px = xrefOfKey(peerId, parentKey), cx = xrefOfKey(peerId, childKey);
+    if (!px || !cx) return { link: null, dup: false };
+    const newAdhocFam = () => {
+        const fx = nextFamXref(peerId, "L");
+        qr("INSERT INTO fam(chat,xref,adhoc,husb,wife) VALUES(?,?,1,?,NULL)", peerId, fx, px);
+        qr("INSERT OR IGNORE INTO chil(chat,fam,indi) VALUES(?,?,?)", peerId, fx, cx);
+        return fx;
+    };
+    const f = q1(`SELECT * FROM fam WHERE chat=? AND adhoc=1 AND xref IN
+        (SELECT fam FROM chil WHERE chat=? AND indi=?) ORDER BY rowid LIMIT 1`, peerId, peerId, cx);
+    let fx;
+    if (!f) fx = newAdhocFam();
+    else if (f.husb === null) { qr("UPDATE fam SET husb=? WHERE chat=? AND xref=?", px, peerId, f.xref); fx = f.xref; }
+    else if (f.wife === null) { qr("UPDATE fam SET wife=? WHERE chat=? AND xref=?", px, peerId, f.xref); fx = f.xref; }
+    else fx = newAdhocFam(); // оба места заняты — ещё один родитель отдельной fam
+    if (f) qr("INSERT OR IGNORE INTO chil(chat,fam,indi) VALUES(?,?,?)", peerId, fx, cx);
+    qr("INSERT INTO links(chat,p,c,who,fam,cmid) VALUES(?,?,?,?,?,0)", peerId, parentKey, childKey, who, fx);
+    return { link: linkRowOf(q1("SELECT * FROM links WHERE chat=? AND p=? AND c=?", peerId, parentKey, childKey)), dup: false };
 }
 
 // все родители ребёнка в чате
 function parentKeys(peerId, childKey) {
-    return [...new Set((db.links || [])
-        .filter(l => l.peerId === peerId && l.c === childKey)
-        .map(l => l.p))];
+    return [...new Set(qa("SELECT p FROM links WHERE chat=? AND c=?", peerId, childKey).map(l => l.p))];
 }
 
-// семья для свадьбы одного родителя: fam с этим родителем и ребёнком
-// (ensureFam добьёт второго родителя, когда появится вторая связь)
-function ensureFamSingle(peerId, childKey) {
-    const ps = parentKeys(peerId, childKey);
-    if (ps.length !== 1) return null;
-    if (!db.fams) db.fams = [];
-    if (!db.nextFamId) db.nextFamId = 1;
-    let f = db.fams.find(f => f.peerId === peerId && f.children.includes(childKey));
-    if (!f) { f = { id: db.nextFamId++, peerId, parents: [], children: [] }; db.fams.push(f); }
-    for (const p of ps) if (!f.parents.includes(p)) f.parents.push(p);
-    if (!f.children.includes(childKey)) f.children.push(childKey);
-    for (const l of db.links || [])
-        if (l.peerId === peerId && l.c === childKey) l.fam = f.id;
-    return f;
+// удалить связь: ребро + chil семьи, когда других связей ребёнка в ней нет;
+// опустевшая adhoc-семья без свадьбы уходит (пара с marr живёт — носитель)
+function deleteLink(peerId, link) {
+    qr("DELETE FROM links WHERE chat=? AND id=?", peerId, link.id);
+    if (link.fam) {
+        const cx = xrefOfKey(peerId, link.c);
+        if (cx && !q1("SELECT id FROM links WHERE chat=? AND fam=? AND c=?", peerId, link.fam, link.c))
+            qr("DELETE FROM chil WHERE chat=? AND fam=? AND indi=?", peerId, link.fam, cx);
+        normalizeFam(peerId, link.fam);
+    }
 }
-
-// двое родителей — уже семья: собрать всех родителей ребёнка в один FAM
-function ensureFam(peerId, childKey) {
-    const ps = parentKeys(peerId, childKey);
-    if (ps.length < 2) return null;
-    if (!db.fams) db.fams = [];
-    if (!db.nextFamId) db.nextFamId = 1;
-    let f = db.fams.find(f => f.peerId === peerId && f.children.includes(childKey));
-    if (!f) { f = { id: db.nextFamId++, peerId, parents: [], children: [] }; db.fams.push(f); }
-    for (const p of ps) if (!f.parents.includes(p)) f.parents.push(p);
-    if (!f.children.includes(childKey)) f.children.push(childKey);
-    for (const l of db.links || [])
-        if (l.peerId === peerId && l.c === childKey) l.fam = f.id;
-    return f;
+function normalizeFam(peerId, fx) {
+    const f = famRaw(peerId, fx);
+    if (!f) return;
+    const parents = [f.husb, f.wife].filter(Boolean).length;
+    const kids = q1("SELECT COUNT(*) AS n FROM chil WHERE chat=? AND fam=?", peerId, fx).n;
+    const linksN = q1("SELECT COUNT(*) AS n FROM links WHERE chat=? AND fam=?", peerId, fx).n;
+    if (parents === 0 || (kids === 0 && linksN === 0 && parents < 2 && !f.marr_d)) {
+        qr("DELETE FROM fam WHERE chat=? AND xref=?", peerId, fx);
+        qr("DELETE FROM chil WHERE chat=? AND fam=?", peerId, fx);
+    }
 }
-
-// кандидаты-свадьбы: триггеры «Иван+Мария ГГГГММДД» в базе; когда у ребёнка уже
-// два родителя — где одна половина текущий родитель, другая — другой родитель;
-// пока родитель один — все свадьбы с его участием (второй без даты рождения);
-// свадьба позже рождения обоих (второго не проверяем — даты нет); может быть
-// позже рождения ребёнка — это жизнь; релевантные — по близости года свадьбы
-// к году рождения ребёнка; при известном поле учитывается порядок в имени
-// («первый — М, второй — Ж», как расставляет пол confirmPair)
+// кандидаты-свадьбы (интерактивное связывание): fam с marr, где половина
+// имени — текущий родитель; когда у ребёнка два родителя — вторая половина
+// другой родитель; свадьба позже рождения родителя (родителей); релевантные —
+// по близости года свадьбы к году рождения ребёнка; при известном поле
+// учитывается порядок в имени («первый — М, второй — Ж», как в confirmPair);
+// свадьба уже на семье связи кандидатом не бывает
 function pairRecords(peerId, link) {
     const cy = keyY(link.c), pn = keyN(link.p), out = [], seen = new Set();
-    const recs = db.records.filter(r => r.peerId === peerId);
-    const byKey = pk => recs.find(x => pkey(x) === pk);
+    const persons = personRows(peerId);
+    const byKey = pk => persons.find(x => pkey(x) === pk);
     // половина пары согласуется с известным полом? (первая половина — М)
     const posMatch = (pk, isFirst) => {
         const r = byKey(pk);
@@ -1040,102 +1266,215 @@ function pairRecords(peerId, link) {
         return r.sex === "M" ? isFirst : !isFirst;
     };
     const others = parentKeys(peerId, link.c).filter(o => o !== link.p);
-    for (const o of others) {
-        for (const name of [pn + "+" + keyN(o), keyN(o) + "+" + pn]) {
-            for (const r of recs.filter(r => r.n === name)) {
-                const halves = r.n.split("+");
+    for (const w of weddingRows(peerId)) {
+        if (w.fx === link.fam) continue;
+        const halves = w.n.split("+");
+        const wy = keyY(pkey(w));
+        if (others.length) {
+            let hit = false;
+            for (const o of others) {
+                const a = halves[0] === pn && halves[1] === keyN(o);
+                const b = halves[1] === pn && halves[0] === keyN(o);
+                if (!a && !b) continue;
                 if (!posMatch(link.p, halves[0] === pn) || !posMatch(o, halves[0] === keyN(o))) continue;
-                const wy = keyY(pkey(r));
                 if (wy <= keyY(link.p) || wy <= keyY(o)) continue;
-                if (seen.has(pkey(r))) continue;
-                seen.add(pkey(r));
-                out.push({ pair: pkey(r), other: o, wy });
+                hit = true;
+                if (!seen.has(pkey(w))) { seen.add(pkey(w)); out.push({ pair: pkey(w), other: o, wy, fx: w.fx }); }
             }
-        }
-    }
-    // родитель пока один: кандидат — вторая половина «Имя+Имя», ключа у неё нет
-    if (!others.length) {
-        for (const r of recs.filter(r => r.n.includes("+"))) {
-            const halves = r.n.split("+");
+            if (!hit) continue;
+        } else {
+            // родитель пока один: кандидат — вторая половина «Имя+Имя», ключа у неё нет
             const i = halves.indexOf(pn);
             if (i !== 0 && i !== 1) continue;
             if (!posMatch(link.p, i === 0)) continue;
-            const other = i === 0 ? halves[1] : halves[0];
-            const wy = keyY(pkey(r));
             if (wy <= keyY(link.p)) continue;
-            if (seen.has(pkey(r))) continue;
-            seen.add(pkey(r));
-            out.push({ pair: pkey(r), other, wy });
+            if (seen.has(pkey(w))) continue;
+            seen.add(pkey(w));
+            out.push({ pair: pkey(w), other: i === 0 ? halves[1] : halves[0], wy, fx: w.fx });
         }
     }
     return out.sort((a, b) => Math.abs(a.wy - cy) - Math.abs(b.wy - cy)).slice(0, 5);
 }
 
-// подтвердить свадьбу: связывает Ивана и Марию с «Иван+Мария ГГГГММДД»,
-// первый в имени — М, второй — Ж; в гедком пишется MARR DATE/PLAC; если у
-// ребёнка пока один родитель — семья создаётся с ним (второй доберётся через
-// ensureFam, когда появится вторая связь)
+// подтвердить свадьбу: marr/div кандидата крепится к семье связи точно
+// (по xref, без угадывания имён); пара-заглушка без детей убирается вместе
+// с заглушками; пол родителей — по порядку половин (первый — М, второй — Ж)
 function confirmPair(peerId, link, cand) {
-    const f = ensureFam(peerId, link.c) || ensureFamSingle(peerId, link.c);
+    const f = famRaw(peerId, link.fam);
     if (!f) return null;
-    const pairRec = recordOf(peerId, cand.pair);
-    if (!pairRec) return null;
-    f.marr = { d: pairRec.d };
-    if (pairRec.plac) f.marr.plac = pairRec.plac;
-    // хвост «Иван+Мария ГГГГММДД ГГГГММДД» — развод (DIV)
-    if (pairRec.dd) {
-        f.div = { d: pairRec.dd };
-        if (pairRec.plac2) f.div.plac = pairRec.plac2;
+    const w = famRaw(peerId, cand.fx);
+    if (w && w.xref !== f.xref) {
+        const fps = new Set([f.husb, f.wife].filter(Boolean));
+        const wps = [w.husb, w.wife].filter(Boolean);
+        const wKids = q1("SELECT COUNT(*) AS n FROM chil WHERE chat=? AND fam=?", peerId, w.xref).n;
+        if (wps.length && wps.every(x => fps.has(x))) {
+            // та же пара (другая fam): детей и связи переносим в неё, дубль уходит
+            for (const r of qa("SELECT indi, adopted FROM chil WHERE chat=? AND fam=?", peerId, f.xref)) {
+                qr("INSERT OR IGNORE INTO chil(chat,fam,indi,adopted) VALUES(?,?,?,?)",
+                    peerId, w.xref, r.indi, r.adopted);
+            }
+            qr("UPDATE links SET fam=? WHERE chat=? AND fam=?", w.xref, peerId, f.xref);
+            qr("DELETE FROM chil WHERE chat=? AND fam=?", peerId, f.xref);
+            qr("DELETE FROM fam WHERE chat=? AND xref=?", peerId, f.xref);
+            link.fam = w.xref;
+            f.xref = w.xref;
+        } else if (wKids === 0) {
+            // пара-заглушка (или бездетная пара): marr/div переезжает, fam уходит
+            qr("UPDATE fam SET marr_d=?, marr_plac=?, div_d=?, div_plac=? WHERE chat=? AND xref=?",
+                w.marr_d, w.marr_plac, w.div_d, w.div_plac, peerId, f.xref);
+            qr("DELETE FROM chil WHERE chat=? AND fam=?", peerId, w.xref);
+            qr("UPDATE links SET fam=NULL WHERE chat=? AND fam=?", peerId, w.xref);
+            qr("DELETE FROM fam WHERE chat=? AND xref=?", peerId, w.xref);
+            for (const x of wps) dropStubIfOrphan(peerId, x);
+        } else {
+            // семья с детьми (напр., из гедкома): копируем marr, её не трогаем
+            qr("UPDATE fam SET marr_d=?, marr_plac=?, div_d=?, div_plac=? WHERE chat=? AND xref=?",
+                w.marr_d, w.marr_plac, w.div_d, w.div_plac, peerId, f.xref);
+        }
     }
-    const [n1, n2] = pairRec.n.split("+");
-    for (const pk of f.parents) {
-        const rec = recordOf(peerId, pk);
-        if (!rec) continue;
-        if (keyN(pk) === n1) rec.sex = "M";
-        else if (keyN(pk) === n2) rec.sex = "F";
+    const [n1, n2] = cand.pair.slice(0, -11).split("+");
+    for (const pk of [link.p, ...parentKeys(peerId, link.c)]) {
+        const x = xrefOfKey(peerId, pk);
+        if (!x) continue;
+        if (keyN(pk) === n1) qr("UPDATE indi SET sex='M' WHERE chat=? AND xref=?", peerId, x);
+        else if (keyN(pk) === n2) qr("UPDATE indi SET sex='F' WHERE chat=? AND xref=?", peerId, x);
     }
+    qr("UPDATE links SET pairCand=NULL WHERE chat=? AND id=?", peerId, link.id);
     link.pairCand = null;
-    saveDb();
-    return f;
+    return famView(peerId, f.xref);
 }
 
-// почистить семьи после удаления связей: ребёнок остаётся в семье, пока
-// есть связь с флагом fam; пустые семьи и висячие флаги снимаются; родители
-// без действующей связи тоже убираются
-function refreshFams() {
-    for (const f of db.fams || []) {
-        f.children = f.children.filter(c => (db.links || []).some(l => l.fam === f.id && l.c === c));
-        f.parents = f.parents.filter(p => (db.links || []).some(l => l.fam === f.id && l.p === p));
-    }
-    db.fams = (db.fams || []).filter(f => f.children.length);
-    for (const l of db.links || [])
-        if (l.fam !== undefined && !(db.fams || []).some(f => f.id === l.fam)) l.fam = undefined;
-    saveDb();
+// заглушка без семьи и без детей — мусор после привязки свадьбы
+function dropStubIfOrphan(peerId, xref) {
+    const i = indiOf(peerId, xref);
+    if (!i || i.birt_d !== null) return;
+    if (q1("SELECT xref FROM fam WHERE chat=? AND (husb=? OR wife=?) LIMIT 1", peerId, xref, xref)) return;
+    if (q1("SELECT fam FROM chil WHERE chat=? AND indi=? LIMIT 1", peerId, xref)) return;
+    qr("DELETE FROM indi WHERE chat=? AND xref=?", peerId, xref);
+}
+
+// разовая конвертация db.json → SQLite при первом старте (файл остаётся
+// рядом как db.json.migrated); метка converted_json защищает от повтора
+function convertOldDb() {
+    if (process.env.LR_DB) return; // LR_DB задан (тесты/синхронизация) — без конвертации
+    if (!fs.existsSync(OLD_DB_FILE)) return;
+    if (q1("SELECT v FROM meta WHERE k='converted_json'")) return;
+    let old;
+    try { old = JSON.parse(fs.readFileSync(OLD_DB_FILE, "utf8")); } catch (e) { return; }
+    if (!old || !Array.isArray(old.records)) return;
+    const body = () => {
+        const k2x = new Map(); // chat\0«Имя Д» → xref
+        for (const r of old.records) {
+            if (r.n.includes("+")) continue;
+            const x = nextIndiXref(r.peerId, "P");
+            qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+                r.peerId, x, r.n, r.d,
+                r.h ?? null, r.h !== undefined ? (r.m ?? 0) : null,
+                r.srcH ?? null, r.srcH !== undefined ? (r.srcM ?? 0) : null,
+                r.dd ?? null, r.dh ?? null, r.dh !== undefined ? (r.dm ?? 0) : null,
+                r.dsrcH ?? null, r.dsrcH !== undefined ? (r.dsrcM ?? 0) : null,
+                r.sex ?? null, r.plac ?? null);
+            k2x.set(r.peerId + "\0" + r.n + " " + r.d, x);
+        }
+        for (const f of old.fams || []) {
+            const ps = (f.parents || []).map(p => k2x.get(f.peerId + "\0" + p)).filter(Boolean);
+            if (!ps.length && !f.marr) continue;
+            const fx = "G" + f.id;
+            qr(`INSERT OR IGNORE INTO fam(chat,xref,adhoc,husb,wife,marr_d,marr_plac,div_d,div_plac) VALUES(?,?,1,?,?,?,?,?,?)`,
+                f.peerId, fx, ps[0] ?? null, ps[1] ?? null,
+                f.marr ? f.marr.d : null, f.marr && f.marr.plac ? f.marr.plac : null,
+                f.div ? f.div.d : null, f.div && f.div.plac ? f.div.plac : null);
+            for (const c of f.children || []) {
+                const cx = k2x.get(f.peerId + "\0" + c);
+                if (cx) qr("INSERT OR IGNORE INTO chil(chat,fam,indi) VALUES(?,?,?)", f.peerId, fx, cx);
+            }
+        }
+        for (const l of old.links || []) {
+            const px = k2x.get(l.peerId + "\0" + l.p), cx = k2x.get(l.peerId + "\0" + l.c);
+            if (!px || !cx) continue;
+            let fx = l.fam ? "G" + l.fam : null;
+            if (fx && !famRaw(l.peerId, fx)) fx = null;
+            if (!fx) {
+                fx = nextFamXref(l.peerId, "L");
+                qr("INSERT INTO fam(chat,xref,adhoc,husb,wife) VALUES(?,?,1,?,NULL)", l.peerId, fx, px);
+            }
+            qr("INSERT OR IGNORE INTO chil(chat,fam,indi) VALUES(?,?,?)", l.peerId, fx, cx);
+            if (l.adopted) qr("UPDATE chil SET adopted=1 WHERE chat=? AND fam=? AND indi=?", l.peerId, fx, cx);
+            qr("INSERT INTO links(chat,p,c,who,fam,cmid,pairCand) VALUES(?,?,?,?,?,?,?)",
+                l.peerId, l.p, l.c, l.who, fx, l.cmid || 0, l.pairCand ? JSON.stringify(l.pairCand) : null);
+        }
+        // свадьбы-записи → пары-заглушки (не покрытые семьёй с той же датой)
+        for (const r of old.records) {
+            if (!r.n.includes("+")) continue;
+            const [n1, n2] = r.n.split("+");
+            let covered = false;
+            for (const f of qa("SELECT xref FROM fam WHERE chat=? AND marr_d=?", r.peerId, r.d)) {
+                const nm = famNames(r.peerId, f.xref);
+                if (nm.hn === n1 || nm.hn === n2 || nm.wn === n1 || nm.wn === n2) { covered = true; break; }
+            }
+            if (covered) continue;
+            qr(`INSERT INTO fam(chat,xref,adhoc,husb,wife,marr_d,marr_plac,div_d,div_plac) VALUES(?,?,1,?,?,?,?,?,?)`,
+                r.peerId, nextFamXref(r.peerId, "W"), stubOf(r.peerId, n1), stubOf(r.peerId, n2),
+                r.d, r.plac ?? null, r.dd ?? null, r.plac2 ?? null);
+        }
+        for (const r of old.records)
+            if (r.lastSentYear)
+                qr("INSERT OR REPLACE INTO sent(chat,key,last_year) VALUES(?,?,?)", r.peerId, r.n + " " + r.d, r.lastSentYear);
+        for (const [peer, v] of Object.entries(old.settings || {}))
+            qr("INSERT OR REPLACE INTO settings(chat,orth,islam,bud,cath,jud,bell) VALUES(?,?,?,?,?,?,?)",
+                Number(peer), v.orth ? 1 : 0, v.islam ? 1 : 0, v.bud ? 1 : 0, v.cath ? 1 : 0, v.jud ? 1 : 0,
+                v.bell === false ? 0 : 1);
+        if (old.lastSeen) qr("INSERT OR REPLACE INTO meta(k,v) VALUES('lastSeen',?)", String(old.lastSeen));
+        if (old.checkedDate) qr("INSERT OR REPLACE INTO meta(k,v) VALUES('checkedDate',?)", old.checkedDate);
+        qr("INSERT OR REPLACE INTO meta(k,v) VALUES('converted_json','1')");
+    };
+    sq().exec("BEGIN");
+    try { body(); sq().exec("COMMIT"); }
+    catch (e) { sq().exec("ROLLBACK"); throw e; }
+    try { fs.renameSync(OLD_DB_FILE, OLD_DB_FILE + ".migrated"); }
+    catch (e) { console.error("db.json rename:", e.message); }
+    console.log("db.json сконвертирован в SQLite (резерв: db.json.migrated)");
+}
+
+// очистить дерево чата (замена при импорте; настройки/sent остаются)
+function clearChatTree(peerId) {
+    qr("DELETE FROM indi WHERE chat=?", peerId);
+    qr("DELETE FROM fam WHERE chat=?", peerId);
+    qr("DELETE FROM chil WHERE chat=?", peerId);
+    qr("DELETE FROM links WHERE chat=?", peerId);
 }
 
 // удалить событие с каскадом: связи персоны; у пары «Имя+Имя» — свадьба/развод
-// из семьи; висячие кандидаты-свадьбы у оставшихся связей; семьи чистятся
-function deleteEventCascade(peerId, rec) {
-    const pk = pkey(rec);
-    db.records = db.records.filter(r => r !== rec);
-    db.links = (db.links || []).filter(l => !(l.peerId === peerId && (l.p === pk || l.c === pk)));
-    if (rec.n.includes("+")) {
-        const [n1, n2] = rec.n.split("+");
-        for (const f of db.fams || [])
-            // второй родитель может быть ещё не в семье (ensureFamSingle)
-            if (f.marr && f.marr.d === rec.d
-                && f.parents.some(p => keyN(p) === n1 || keyN(p) === n2)) {
-                delete f.marr;
-                delete f.div;
-            }
+// с семей; висячие кандидаты-свадьбы у оставшихся связей; пустые семьи чистятся
+function deleteEventCascade(peerId, key) {
+    const name = key.slice(0, -11), d = key.slice(-10);
+    const person = q1("SELECT xref FROM indi WHERE chat=? AND name=? AND birt_d=?", peerId, name, d);
+    if (person) {
+        const x = person.xref;
+        const fams = new Set(qa("SELECT fam AS f FROM links WHERE chat=? AND (p=? OR c=?)", peerId, key, key)
+            .map(r => r.f).filter(Boolean));
+        qr("DELETE FROM links WHERE chat=? AND (p=? OR c=?)", peerId, key, key);
+        qr("DELETE FROM chil WHERE chat=? AND indi=?", peerId, x);
+        qr("UPDATE fam SET husb=NULL WHERE chat=? AND husb=?", peerId, x);
+        qr("UPDATE fam SET wife=NULL WHERE chat=? AND wife=?", peerId, x);
+        for (const fx of fams) normalizeFam(peerId, fx);
+    } else if (name.includes("+")) {
+        // свадьба «Имя1+Имя2 Д»: снять marr/div с семей с этой датой и половиной
+        const [n1, n2] = name.split("+");
+        for (const f of qa("SELECT xref FROM fam WHERE chat=? AND marr_d=?", peerId, d)) {
+            const nm = famNames(peerId, f.xref);
+            if (nm.hn === n1 || nm.hn === n2 || nm.wn === n1 || nm.wn === n2)
+                qr("UPDATE fam SET marr_d=NULL, marr_plac=NULL, div_d=NULL, div_plac=NULL WHERE chat=? AND xref=?",
+                    peerId, f.xref);
+        }
     }
-    for (const l of db.links || []) {
-        if (!l.pairCand) continue;
-        const cand = l.pairCand.filter(c =>
-            c.pair !== pk && !keyN(c.pair).split("+").includes(rec.n));
-        if (cand.length !== l.pairCand.length) l.pairCand = cand.length ? cand : null;
+    for (const l of qa("SELECT id, pairCand FROM links WHERE chat=? AND pairCand IS NOT NULL", peerId)) {
+        const cur = JSON.parse(l.pairCand);
+        const cand = cur.filter(c => c.pair !== key && !keyN(c.pair).split("+").includes(name));
+        if (cand.length !== cur.length)
+            qr("UPDATE links SET pairCand=? WHERE chat=? AND id=?", cand.length ? JSON.stringify(cand) : null, peerId, l.id);
     }
-    refreshFams();
 }
 
 // текст сообщения-связи: строки связи (+ семья/вопрос), без юбилеев события —
@@ -1143,7 +1482,7 @@ function deleteEventCascade(peerId, rec) {
 function linkText(peerId, link) {
     let t = "🔗 Родитель: " + link.p + " → ребёнок: " + link.c + (link.adopted ? " 🤱 (усыновление)" : "");
     if (link.fam) {
-        const f = (db.fams || []).find(f => f.id === link.fam);
+        const f = famView(peerId, link.fam);
         if (f) t += "\n🧬 " + f.parents.map(keyN).join("+") + " — родители: " + keyN(link.c)
             + (f.marr ? " (свадьба " + f.marr.d + (f.marr.plac ? ", " + f.marr.plac : "") + ")" : "")
             + (f.div ? " (развод " + f.div.d + ")" : "");
@@ -1181,128 +1520,135 @@ function linkKeyboard(peerId, link) {
     return JSON.stringify({ inline: true, buttons: rows });
 }
 
-// импорт разобранного гедкома: персоны (кроме свадеб «Имя+Имя»), связи
-// родитель→ребёнок, семьи (2 родителя) и свадьбы «Имя+Имя ДАТА» с разводом;
-// возвращает краткий отчёт
+// импорт разобранного гедкома = ЗАМЕНА: дерево чата очищается и заливается
+// заново (слияние больше не делаем — смешивание источников ломало базу).
+// fam — по одному на каждый FAM файла с точными xref'ами (без слипания
+// семей ребёнка); свадьбы живут на fam — точная привязка супругов;
+// возвращает краткий отчёт. Повторный импорт лечит любые старые данные
 function importGedcom(peerId, g) {
-    const byId = new Map(); // xref → ключ «Имя ГГГГ-ММ-ДД»
+    clearChatTree(peerId);
+    const byId = new Map(); // xref файла → xref в базе (совпавшие «Имя Д» — один)
     let persons = 0;
     for (const ind of g.indis) {
         if (!ind.name || !ind.birt || !ind.birt.date) continue;
-        const rec = { n: ind.name, d: ind.birt.date };
-        if (ind.sex) rec.sex = ind.sex;
-        if (ind.birt.time) {
-            const [h, m] = ind.birt.time.split(":").map(Number);
-            rec.srcH = h; rec.srcM = m;
-        }
-        if (ind.deat && ind.deat.date) {
-            rec.dd = ind.deat.date;
-            if (ind.deat.time) {
-                const [h, m] = ind.deat.time.split(":").map(Number);
-                rec.dsrcH = h; rec.dsrcM = m;
-            }
-        }
-        upsertRecord(rec, peerId);
-        byId.set(ind.__xref, pkey(rec));
+        let xref = ind.__xref;
+        const same = q1("SELECT xref FROM indi WHERE chat=? AND name=? AND birt_d=?", peerId, ind.name, ind.birt.date);
+        if (same) xref = same.xref;
+        else qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            peerId, xref, ind.name, ind.birt.date,
+            null, null,
+            ind.birt.time ? Number(ind.birt.time.slice(0, 2)) : null,
+            ind.birt.time ? Number(ind.birt.time.slice(3, 5)) : null,
+            ind.deat && ind.deat.date ? ind.deat.date : null,
+            null, null,
+            ind.deat && ind.deat.time ? Number(ind.deat.time.slice(0, 2)) : null,
+            ind.deat && ind.deat.time ? Number(ind.deat.time.slice(3, 5)) : null,
+            ind.sex ?? null, null);
+        byId.set(ind.__xref, xref);
         persons++;
     }
     let linkCount = 0, weddings = 0;
-    const children = new Set();
     for (const f of g.fams) {
-        const parents = [f.husb, f.wife].filter(Boolean).map(x => byId.get(x)).filter(Boolean);
-        const kids = f.chil.map(x => byId.get(x)).filter(Boolean);
-        for (const p of parents) for (const cx of f.chil) {
+        const h = f.husb && byId.get(f.husb), w = f.wife && byId.get(f.wife);
+        const hasMarr = f.marr && f.marr.date;
+        qr(`INSERT OR IGNORE INTO fam(chat,xref,adhoc,husb,wife,marr_d,marr_plac,div_d,div_plac) VALUES(?,?,0,?,?,?,?,?,?)`,
+            peerId, f.__xref, h ?? null, w ?? null,
+            hasMarr ? f.marr.date : null, hasMarr && f.marr.plac ? f.marr.plac : null,
+            f.div && f.div.date ? f.div.date : null, f.div && f.div.plac ? f.div.plac : null);
+        for (const cx of f.chil) {
             const c = byId.get(cx);
-            if (!c || p === c) continue;
-            const { link } = addLink(peerId, p, c, "c");
-            if (f.adopted.includes(cx)) link.adopted = true;
-            children.add(c);
-            linkCount++;
-        }
-        for (const c of kids) ensureFam(peerId, c);
-        // свадьба → запись «Имя+Имя ДАТА», развод — хвостом; MARR/DIV в семью
-        if (parents.length === 2 && f.marr && f.marr.date) {
-            const rec = { n: keyN(parents[0]) + "+" + keyN(parents[1]), d: f.marr.date };
-            if (f.marr.plac) rec.plac = f.marr.plac;
-            if (f.div && f.div.date) {
-                rec.dd = f.div.date;
-                if (f.div.plac) rec.plac2 = f.div.plac;
+            if (!c) continue;
+            qr("INSERT OR IGNORE INTO chil(chat,fam,indi,adopted) VALUES(?,?,?,?)",
+                peerId, f.__xref, c, f.adopted.includes(cx) ? 1 : 0);
+            for (const p of [h, w]) {
+                if (!p || p === c) continue;
+                const pk = keyOfXref(peerId, p), ck = keyOfXref(peerId, c);
+                if (!pk || !ck) continue;
+                const ins = qr("INSERT OR IGNORE INTO links(chat,p,c,who,fam,cmid) VALUES(?,?,?,?,?,0)",
+                    peerId, pk, ck, "c", f.__xref);
+                if (ins.changes) linkCount++;
             }
-            upsertRecord(rec, peerId);
-            const fam = (db.fams || []).find(f2 => f2.peerId === peerId
-                && parents.every(p => f2.parents.includes(p))
-                && kids.some(c => f2.children.includes(c)));
-            if (fam) {
-                fam.marr = { d: f.marr.date };
-                if (f.marr.plac) fam.marr.plac = f.marr.plac;
-                if (f.div && f.div.date) {
-                    fam.div = { d: f.div.date };
-                    if (f.div.plac) fam.div.plac = f.div.plac;
-                }
-            }
-            weddings++;
         }
+        if (h && w && hasMarr) weddings++;
     }
-    // ADOP + FAMC у персоны: связь с этой семьёй — усыновление
+    // ADOP + FAMC у персоны: усыновление в указанной семье (PEDI мог не быть)
     for (const ind of g.indis) {
         if (!ind.adopFams || !ind.adopFams.length) continue;
         const c = byId.get(ind.__xref);
         if (!c) continue;
-        for (const fx of ind.adopFams) {
-            const f = g.fams.find(x => x.__xref === fx);
-            if (!f) continue;
-            const ps = [f.husb, f.wife].map(x => byId.get(x));
-            for (const l of db.links || [])
-                if (l.peerId === peerId && l.c === c && ps.includes(l.p)) l.adopted = true;
-        }
+        for (const fx of ind.adopFams)
+            if (famRaw(peerId, fx))
+                qr("UPDATE chil SET adopted=1 WHERE chat=? AND fam=? AND indi=?", peerId, fx, c);
     }
-    saveDb();
     return { persons, links: linkCount, weddings };
 }
 
-// GEDCOM 5.5.1 по чату: INDI из записей, FAM из подтверждённых семей,
-// неподтверждённые связи — по семье на каждого родителя.
+// GEDCOM 5.5.1 по чату — выгрузка дерева: INDI из персон (плюс заглушки-
+// супруги без даты — без BIRT), FAM из семей (усекаются до выбранных
+// персон; группы с одинаковым набором родителей схлопываются — как прежде).
 // keys — необязательный набор персон: фрагмент только по ним (для
-// сообщений-связей), семьи усекаются до выбранных персон
+// сообщений-связей)
 function gedcomText(peerId, keys) {
     const MON = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
     const gdate = d => { const [y, mo, dd] = d.split("-").map(Number); return dd + " " + MON[mo - 1] + " " + y; };
     const hasKeys = Array.isArray(keys) && keys.length > 0;
-    // «Иван+Мария» — событие-свадьба, не персона: в INDI не попадает
-    const recs = db.records.filter(r => r.peerId === peerId && !r.n.includes("+")
-        && (!hasKeys || keys.includes(pkey(r))));
-    const idOf = new Map(recs.map((r, i) => [pkey(r), "I" + (i + 1)]));
-    const links = (db.links || []).filter(l => l.peerId === peerId && idOf.has(l.p) && idOf.has(l.c));
+    const persons = personRows(peerId).filter(r => !hasKeys || keys.includes(pkey(r)));
+    const idOf = new Map(persons.map((r, i) => [pkey(r), "I" + (i + 1)]));
+    const sexOf = new Map(persons.map(r => [pkey(r), r.sex || null]));
+    // усыновления: «Имя Д» ребёнка → xref семьи (chil.adopted)
+    const adoptedOf = new Map();
+    for (const c of qa("SELECT fam, indi FROM chil WHERE chat=? AND adopted=1", peerId)) {
+        const k = keyOfXref(peerId, c.indi);
+        if (k) adoptedOf.set(k, c.fam);
+    }
+    // семьи → {fx — список xref (после схлопывания), pkeys — датированные
+    // родители-ключи, stubs — [{xref,name}], children — ключи, marr, div}
     const fams = [];
-    for (const f of (db.fams || []).filter(f => f.peerId === peerId && f.children.every(c => idOf.has(c)) && f.parents.every(p2 => idOf.has(p2)))) {
-        const ps = hasKeys ? f.parents.filter(p => keys.includes(p)) : f.parents;
-        const cs = hasKeys ? f.children.filter(c => keys.includes(c)) : f.children;
-        if (!hasKeys || (ps.length && cs.length))
-            fams.push({ parents: ps, children: cs, marr: f.marr, div: f.div });
+    for (const f of qa("SELECT * FROM fam WHERE chat=? ORDER BY rowid", peerId)) {
+        const pkeys = [], stubs = [], children = [];
+        for (const x of [f.husb, f.wife]) {
+            if (!x) continue;
+            const k = keyOfXref(peerId, x);
+            if (k) pkeys.push(k);
+            else {
+                const i = indiOf(peerId, x);
+                if (i && !stubs.some(s => s.xref === x)) stubs.push({ xref: x, name: i.name });
+            }
+        }
+        for (const r of qa("SELECT indi FROM chil WHERE chat=? AND fam=? ORDER BY rowid", peerId, f.xref)) {
+            const k = keyOfXref(peerId, r.indi);
+            if (k) children.push(k);
+        }
+        let marr = f.marr_d ? { d: f.marr_d, ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null;
+        let div = f.div_d ? { d: f.div_d, ...(f.div_plac ? { plac: f.div_plac } : {}) } : null;
+        if (hasKeys) {
+            const ps = pkeys.filter(p => keys.includes(p));
+            const cs = children.filter(c => keys.includes(c));
+            if (!(ps.length && cs.length)) continue;
+            pkeys.length = 0; pkeys.push(...ps);
+            children.length = 0; children.push(...cs);
+            // фрагмент — только те персоны, что в keys
+        } else if (!pkeys.length && !stubs.length && !children.length) continue;
+        const s = pkeys.slice().sort();
+        const m = fams.find(x => x.s.length === s.length && x.s.every((p, i) => p === s[i]));
+        if (m) {
+            m.fx.push(f.xref);
+            for (const c of children) if (!m.children.includes(c)) m.children.push(c);
+            for (const st of stubs) if (!m.stubs.some(x => x.xref === st.xref)) m.stubs.push(st);
+            if (!m.marr) m.marr = marr;
+            if (!m.div) m.div = div;
+        } else fams.push({ s, fx: [f.xref], pkeys, stubs, children, marr, div });
     }
-    for (const l of links) {
-        if (fams.some(f => f.parents.includes(l.p) && f.children.includes(l.c))) continue;
-        let f = fams.find(f => f.parents.length === 1 && f.parents[0] === l.p);
-        if (!f) { f = { parents: [l.p], children: [] }; fams.push(f); }
-        if (!f.children.includes(l.c)) f.children.push(l.c);
-    }
-    // связь хранится по-ребёнку (свой fam у каждого), но в гедкоме FAM одна
-    // на набор родителей: группы с одинаковым набором схлопываем
-    const merged = [];
-    for (const f of fams) {
-        const ps = [...f.parents].sort();
-        const g = merged.find(x => x.ps.length === ps.length && x.ps.every((p, i) => p === ps[i]));
-        if (g) {
-            for (const c of f.children) if (!g.children.includes(c)) g.children.push(c);
-            if (!g.marr) g.marr = f.marr;
-            if (!g.div) g.div = f.div;
-        } else merged.push({ ps, parents: f.parents, children: [...f.children], marr: f.marr, div: f.div });
-    }
-    const famC = merged.map(x => ({ parents: x.parents, children: x.children, marr: x.marr, div: x.div }));
-    const fidOf = new Map(famC.map((f, i) => [f, "F" + (i + 1)]));
-    const adopted = new Map((db.links || []).filter(l => l.peerId === peerId && l.adopted).map(l => [l.c, true]));
+    // заглушкам — X-номера; FAM — по порядку; HUSB/WIFE по полу (без — HUSB)
+    let stubN = 0;
+    const stubId = new Map(), stubName = new Map();
+    for (const f of fams) for (const st of f.stubs)
+        if (!stubId.has(st.xref)) { stubId.set(st.xref, "X" + (++stubN)); stubName.set(st.xref, st.name); }
+    const fidOf = new Map(fams.map((f, i) => [f, "F" + (i + 1)]));
+    const adoptedHere = (f, k) => f.fx.some(x => adoptedOf.get(k) === x);
     const out = ["0 HEAD", "1 SOUR LunarReturns", "1 GEDC", "2 VERS 5.5.1", "2 FORM LINEAGE-LINKED", "1 CHAR UTF-8"];
-    for (const r of recs) {
+    for (const r of persons) {
         out.push("0 @" + idOf.get(pkey(r)) + "@ INDI");
         out.push("1 NAME " + r.n);
         if (r.sex) out.push("1 SEX " + r.sex);
@@ -1312,25 +1658,31 @@ function gedcomText(peerId, keys) {
             out.push("1 DEAT", "2 DATE " + gdate(r.dd));
             if (r.dsrcH !== undefined) out.push("2 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
         }
-        for (const f of famC) {
+        for (const f of fams) {
             if (f.children.includes(pkey(r))) {
                 out.push("1 FAMC @" + fidOf.get(f) + "@");
-                if (adopted.get(pkey(r))) out.push("1 ADOP", "2 FAMC @" + fidOf.get(f) + "@");
+                if (adoptedHere(f, pkey(r))) out.push("1 ADOP", "2 FAMC @" + fidOf.get(f) + "@");
             }
-            if (f.parents.includes(pkey(r))) out.push("1 FAMS @" + fidOf.get(f) + "@");
+            if (f.pkeys.includes(pkey(r))) out.push("1 FAMS @" + fidOf.get(f) + "@");
         }
     }
-    for (const f of famC) {
+    for (const [x, n] of stubId) {
+        out.push("0 @" + n + "@ INDI");
+        out.push("1 NAME " + stubName.get(x));
+        for (const f of fams) if (f.stubs.some(s => s.xref === x)) out.push("1 FAMS @" + fidOf.get(f) + "@");
+    }
+    for (const f of fams) {
         out.push("0 @" + fidOf.get(f) + "@ FAM");
-        // по практике 5.5.1: сначала HUSB, затем WIFE
-        const ps = f.parents.map(p => ({ p, r: recs.find(x => pkey(x) === p) }));
-        for (const x of ps.filter(x => !(x.r && x.r.sex === "F")))
-            out.push("1 HUSB @" + idOf.get(x.p) + "@");
-        for (const x of ps.filter(x => x.r && x.r.sex === "F"))
-            out.push("1 WIFE @" + idOf.get(x.p) + "@");
+        // по практике 5.5.1: сначала HUSB, затем WIFE; заглушки — без пола
+        const all = [
+            ...f.pkeys.map(k => ({ ref: idOf.get(k), sex: sexOf.get(k) })),
+            ...f.stubs.map(s => ({ ref: stubId.get(s.xref), sex: null })),
+        ];
+        for (const x of all.filter(x => x.sex !== "F")) out.push("1 HUSB @" + x.ref + "@");
+        for (const x of all.filter(x => x.sex === "F")) out.push("1 WIFE @" + x.ref + "@");
         for (const c of f.children) {
             out.push("1 CHIL @" + idOf.get(c) + "@");
-            if (adopted.get(c)) out.push("2 PEDI adopted");
+            if (adoptedHere(f, c)) out.push("2 PEDI adopted");
         }
         if (f.marr) {
             out.push("1 MARR", "2 DATE " + gdate(f.marr.d));
@@ -1812,12 +2164,11 @@ const ckey = k => { const i = k.lastIndexOf(" "); return k.slice(0, i) + " " + N
 // «Имя+Имя» вне; семьи усекаются до персон фрагмента)
 function chartFor(peerId, keys, title) {
     const hasKeys = Array.isArray(keys) && keys.length > 0;
-    const recs = db.records.filter(r => r.peerId === peerId && !r.n.includes("+")
-        && (!hasKeys || keys.includes(pkey(r))));
+    const recs = personRows(peerId).filter(r => !hasKeys || keys.includes(pkey(r)));
     const keySet = new Set(recs.map(r => pkey(r)));
     const rows = recs.map(r => ({ name: r.n, birth: r.d, death: r.dd || null, sex: r.sex || null }));
     const parentsOf = new Map();
-    for (const f of (db.fams || []).filter(f => f.peerId === peerId)) {
+    for (const f of famList(peerId)) {
         const ps = f.parents.filter(p => keySet.has(p));
         for (const c of f.children) {
             if (!keySet.has(c)) continue;
@@ -1825,12 +2176,6 @@ function chartFor(peerId, keys, title) {
             for (const p of ps) if (!arr.includes(p)) arr.push(p);
             parentsOf.set(c, arr);
         }
-    }
-    for (const l of (db.links || []).filter(l => l.peerId === peerId)) {
-        if (!keySet.has(l.c) || !keySet.has(l.p)) continue;
-        const arr = parentsOf.get(l.c) || [];
-        if (arr.length < 2 && !arr.includes(l.p)) arr.push(l.p);
-        parentsOf.set(l.c, arr);
     }
     const links = [...parentsOf].filter(([, ps]) => ps.length)
         .map(([c, ps]) => ({ child: ckey(c), parents: ps.map(ckey) }));
@@ -1881,16 +2226,26 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId) {
 // Оповещения о религиозных днях per peer: { orth, islam, bud, cath, jud }.
 
 function getSettings(peerId) {
-    if (!db.settings) db.settings = {};
-    if (!db.settings[peerId]) db.settings[peerId] = {};
-    return db.settings[peerId];
+    const r = q1("SELECT * FROM settings WHERE chat=?", peerId);
+    return r
+        ? { orth: !!r.orth, islam: !!r.islam, bud: !!r.bud, cath: !!r.cath, jud: !!r.jud, bell: r.bell !== 0 }
+        : {};
 }
 
 function toggleRel(peerId, key) {
-    const s = getSettings(peerId);
-    s[key] = !s[key];
-    saveDb();
-    return s[key];
+    const cur = !!getSettings(peerId)[key];
+    if (q1("SELECT chat FROM settings WHERE chat=?", peerId))
+        qr("UPDATE settings SET " + key + "=? WHERE chat=?", cur ? 0 : 1, peerId);
+    else
+        qr("INSERT INTO settings(chat," + key + ") VALUES(?,?)", peerId, cur ? 0 : 1);
+    return !cur;
+}
+
+function setBell(peerId, on) {
+    if (q1("SELECT chat FROM settings WHERE chat=?", peerId))
+        qr("UPDATE settings SET bell=? WHERE chat=?", on ? 1 : 0, peerId);
+    else
+        qr("INSERT INTO settings(chat,bell) VALUES(?,?)", peerId, on ? 1 : 0);
 }
 // клавиатура: по 4 кнопки в ряд, последняя — ❌ (закрыть, красная);
 // состояние — 🔔 (вкл) / 🔕 (выкл);
@@ -2045,19 +2400,18 @@ async function bisectKeyboard(params) {
 
 // ============================== CATCH UP ==============================
 // Как в pinguin (messages.getHistory): после простоя догоняем сообщения,
-// пришедшие пока бот не работал. Очерёдность — по db.lastSeen (unix время
-// последнего обработанного сообщения), пиры — из сохранённых событий.
+// пришедшие пока бот не работал. Очерёдность — по lastSeen (unix время
+// последнего обработанного сообщения; meta-таблица), пиры — из дерева.
 
 function markSeen(date) {
-    const last = db.lastSeen || 0;
-    if (date > last) {
-        db.lastSeen = date;
-        saveDb();
-    }
+    const last = Number((q1("SELECT v FROM meta WHERE k='lastSeen'") || {}).v || 0);
+    if (date > last)
+        qr("INSERT OR REPLACE INTO meta(k,v) VALUES('lastSeen',?)", String(date));
 }
 
 async function catchUp(startAt) {
-    const peers = [...new Set(db.records.map(r => r.peerId))];
+    const peers = qa("SELECT DISTINCT chat AS c FROM indi UNION SELECT DISTINCT chat AS c FROM links").map(r => r.c);
+    const lastSeen = Number((q1("SELECT v FROM meta WHERE k='lastSeen'") || {}).v || 0);
     for (const peer of peers) {
         let items;
         try {
@@ -2070,7 +2424,7 @@ async function catchUp(startAt) {
         let n = 0;
         for (const tm of items) { // от новых к старым
             if (tm.out || tm.from_id < 0) continue;   // только чужие входящие
-            if (tm.date <= (db.lastSeen || 0) || tm.date > startAt) continue;
+            if (tm.date <= lastSeen || tm.date > startAt) continue;
             n++;
             try {
                 await handleMessage(peer, String(tm.text || ""), tm.date, tm.id, tm.conversation_message_id);
@@ -2285,15 +2639,16 @@ async function handleGedDrop(peerId, doc, msgId, convMsgId, fromId) {
     }
     const s = gedStats(g);
     gedPending.set(peerId, { name, text, fromId, ts: Date.now() });
-    const kb = JSON.stringify({
-        inline: true,
-        buttons: [[
-            { action: { type: "callback", label: "✅ Да", payload: JSON.stringify({ c: "ged:add" }) }, color: "secondary" },
-            { action: { type: "callback", label: "❌ Нет", payload: JSON.stringify({ c: "ged:ign" }) }, color: "secondary" }
-        ]]
+    const btn = (label, c) => ({
+        action: { type: "callback", label, payload: JSON.stringify({ c }) }, color: "secondary"
     });
+    const kb = JSON.stringify({ inline: true, buttons: [[
+        btn("Нет", "ged:ign"),
+        btn("Да", "ged:rep"),
+        btn("Да, с резервом", "ged:bak"),
+    ]] });
     await messagesSend(peerId, "🧬 Файл " + name + ": персон " + s.persons + ", связей " + s.links
-        + ", свадеб " + s.weddings + ". Добавить в список событий?", msgId, convMsgId, kb);
+        + ", свадеб " + s.weddings + ". Заменить события чата деревом?", msgId, convMsgId, kb);
 }
 
 // ---- фокус-сообщение: «/» ответом на триггер, радиус родни 1–5 ----
@@ -2342,29 +2697,23 @@ function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate =
         .join("\n");
 }
 
-// супруги персон чата: пары семей с 2 родителями + свадьбы «Имя+Имя»,
-// разрешённые по записям чата (первая персона с таким именем)
+// супруги персон чата: fam с двумя датированными родителями — пары точные
+// (по xref); интерактивные свадьбы-заглушки без персон сюда не попадают —
+// привязываются confirmPair'ом (раньше «по первому имени» и тёзки ловили
+// чужие свадьбы)
 function focusSpousePairs(peerId) {
-    const pairs = (db.fams || []).filter(f => f.peerId === peerId && f.parents.length === 2)
-        .map(f => f.parents);
-    for (const r of db.records) {
-        if (r.peerId !== peerId || !r.n.includes("+")) continue;
-        const [a, b] = r.n.split("+");
-        const pa = db.records.find(x => x.peerId === peerId && !x.n.includes("+") && x.n === a);
-        const pb = db.records.find(x => x.peerId === peerId && !x.n.includes("+") && x.n === b);
-        if (pa && pb) pairs.push([pkey(pa), pkey(pb)]);
-    }
-    return pairs;
+    return famList(peerId).filter(f => f.parents.length === 2).map(f => f.parents);
 }
 
 // текст фокуса: заголовок (с датой смерти dd) + (bell ? список : гедком-фрагмент)
 function focusText(peerId, key, radius, bell, dd, byFull = false) {
-    const pairs = (db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]);
+    const pairs = linkPairs(peerId);
     const spPairs = focusSpousePairs(peerId);
     const keys = focusWithSpouses(focusKeys(pairs, key, radius), spPairs);
-    const sexMap = new Map(db.records.filter(r => r.peerId === peerId).map(r => [pkey(r), r.sex ?? null]));
+    const items = [...personRows(peerId), ...weddingRows(peerId)];
+    const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
     const body = bell
-        ? (focusListText(db.records.filter(r => r.peerId === peerId), keys, key, pairs, spPairs, k => sexMap.get(k) ?? null, byFull)
+        ? (focusListText(items, keys, key, pairs, spPairs, k => sexMap.get(k) ?? null, byFull)
             || "(в радиусе нет событий)")
         : gedcomText(peerId, keys);
     return focusHead(key, radius, dd) + "\n" + body;
@@ -2372,7 +2721,7 @@ function focusText(peerId, key, radius, bell, dd, byFull = false) {
 
 async function sendFocus(peerId, key, msgId, convMsgId, fromId, dd) {
     const txt = focusHead(key, 1, dd); // тело (список/гедком) — после тапа по кнопке
-    const depth = focusDepth((db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]), key);
+    const depth = focusDepth(linkPairs(peerId), key);
     const kb = await focusKeyboard(peerId, fromId, key, 1, depth);
     await messagesSend(peerId, txt, msgId, convMsgId, kb);
     console.log("focus:", key, "peer", peerId);
@@ -2415,14 +2764,14 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             const rec = recordOf(peerId, key);
             if (rec) {
                 const keys = focusWithSpouses(
-                    focusKeys((db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]), key, radius),
+                    focusKeys(linkPairs(peerId), key, radius),
                     focusSpousePairs(peerId));
                 await sendGedArtifacts(peerId, keys, focusHead(key, radius, rec.dd), msgId, convMsgId);
                 console.log("focus text:", key, "радиус", radius, "peer", peerId);
                 return;
             }
         }
-        if (!db.links || !db.links.length) { await messagesSend(peerId, "связей пока нет — ответьте триггером на триггер", msgId, convMsgId); return; }
+        if (!linkPairs(peerId).length) { await messagesSend(peerId, "связей пока нет — ответьте триггером на триггер", msgId, convMsgId); return; }
         await sendGedArtifacts(peerId, undefined, "🧬 Гедком-древо чата", msgId, convMsgId);
         return;
     }
@@ -2430,13 +2779,14 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     // в цитируемом сообщении (у ответа бота связей нет)
     const replyHead = replyMsg && replyMsg.from_id > 0
         ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
-    // сообщение-гедком → импорт древа (до разбора триггеров)
+    // сообщение-гедком → замена древа (до разбора триггеров); не пустой чат —
+    // сначала автоматический резерв прежнего дерева файлом
     const g = parseGedcom(text);
     if (g) {
-        const r = importGedcom(peerId, g);
-        if (r.persons || r.links) {
-            await messagesSend(peerId, "🧬 Гедком импортирован: персон " + r.persons
-                + ", связей " + r.links + (r.weddings ? ", свадеб " + r.weddings : ""), msgId, convMsgId);
+        const st = gedStats(g);
+        if (st.persons || st.links) {
+            const r = await replaceWithGedcom(peerId, g, true);
+            await messagesSend(peerId, r.head, msgId, convMsgId);
             return;
         }
         // гедком без персон с датами — молчим, дальше как триггеры
@@ -2450,7 +2800,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             await messagesSend(peerId, "💥 " + line + "\n" + parsed.error, msgId, convMsgId);
             continue;
         }
-        upsertRecord(parsed.rec, peerId);
+        upsertPerson(peerId, parsed.rec);
         // ответ триггером на триггер — связь родитель→ребёнок
         if (replyHead) {
             const otherKey = replyHead[1].trim() + " " + replyHead[2];
@@ -2468,29 +2818,63 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
                 continue;
             }
             // по-простому: ответ на триггер — связь «цитируемый = родитель,
-            // отвечающий = ребёнок» (без свопов по датам)
+            // отвечающий = ребёнок» (без свопов по датам); fam-addLink создаст
             const { link, dup } = addLink(peerId, otherKey, newKey, "c");
-            if (!dup) {
-                ensureFam(peerId, link.c); // двое родителей — уже семья
-                link.pairCand = pairRecords(peerId, link); // свадьбы «Иван+Мария»
+            if (link && !dup) setLinkCand(link, pairRecords(peerId, link)); // свадьбы «Иван+Мария»
+            if (link) {
+                const txt = (dup ? linkText(peerId, link) + "\n🔗 связь уже записана" : linkText(peerId, link))
+                    + "\n" + gedcomText(peerId, [link.p, link.c]);
+                const res = await messagesSend(peerId, txt,
+                    msgId, convMsgId, dup ? undefined : linkKeyboard(peerId, link));
+                if (!dup) {
+                    // cmid ответа — чтобы 👎 удалил именно связь
+                    const sent = res && typeof res === "object" ? res : {};
+                    setLinkCmid(link, sent.conversation_message_id || sent.message_id || 0);
+                }
+                console.log("link:", link.p, "→", link.c, "peer", peerId, dup ? "(повтор)" : "");
             }
-            saveDb();
-            const txt = (dup ? linkText(peerId, link) + "\n🔗 связь уже записана" : linkText(peerId, link))
-                + "\n" + gedcomText(peerId, [link.p, link.c]);
-            const res = await messagesSend(peerId, txt,
-                msgId, convMsgId, dup ? undefined : linkKeyboard(peerId, link));
-            if (!dup) {
-                // cmid ответа — чтобы 👎 удалил именно связь
-                const sent = res && typeof res === "object" ? res : {};
-                link.cmid = sent.conversation_message_id || sent.message_id || 0;
-                saveDb();
-            }
-            console.log("link:", link.p, "→", link.c, "peer", peerId, dup ? "(повтор)" : "");
             continue;
         }
         await messagesSend(peerId, jubileeText(parsed.rec, parsed.note), msgId, convMsgId);
         console.log("record:", parsed.rec.n, parsed.rec.d, "peer", peerId);
     }
+}
+
+// резерв прежнего дерева чата файлом <имя>-old.ged (фолбэк — текстом);
+// true — выложен (или чат пуст), false — не смогли (замена отменяется)
+async function sendTreeBackup(peerId) {
+    if (!q1("SELECT xref FROM indi WHERE chat=? AND birt_d IS NOT NULL LIMIT 1", peerId)) return true;
+    const g = gedcomText(peerId);
+    const base = fileBaseOf("Гедком-древо чата");
+    try {
+        await messagesSend(peerId, "🧬 Резерв прежнего дерева", 0, 0, null,
+            await vkUploadDoc(peerId, base + "-old.ged", g));
+        return true;
+    } catch (e) {
+        console.error("backup upload:", e.message);
+    }
+    try {
+        const parts = splitText("🧬 Резерв прежнего дерева (текстом):\n" + g);
+        for (const p of parts) await messagesSend(peerId, p);
+        return true;
+    } catch (e) {
+        console.error("backup text:", e.message);
+        return false;
+    }
+}
+
+// замена дерева чата гедкомом; backup=true — сначала выложить прежнее
+// дерево файлом (не смогли — замена отменяется, старые данные целы).
+// Возвращает {ok, head} для ответа в чат
+async function replaceWithGedcom(peerId, g, backup) {
+    if (backup && !(await sendTreeBackup(peerId)))
+        return { ok: false, head: "💥 Не удалось выложить резерв — замена отменена, прежнее дерево цело" };
+    const r = importGedcom(peerId, g);
+    return {
+        ok: true,
+        head: "♻️ Заменено: персон " + r.persons + ", связей " + r.links
+            + (r.weddings ? ", свадеб " + r.weddings : ""),
+    };
 }
 
 // payload — JSON-объект (после перехода на POST ВК отдаёт его объектом)
@@ -2508,7 +2892,7 @@ function unpay(p) {
 // ММ-ДД (не ломая год; список 🔔) или по полной дате (🔕/удаление); "" — записей нет
 function upcomingEvents(peerId, byFullDate = false) {
     const key = r => (byFullDate ? r.d : r.d.slice(5)) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
-    return db.records.filter(r => r.peerId === peerId)
+    return [...personRows(peerId), ...weddingRows(peerId)]
         .sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0))
         .map(r => r.n + " " + r.d
             + (r.dd !== undefined ? " " + r.dd : "")
@@ -2569,7 +2953,7 @@ async function handleEvent(o) {
     // кнопки фокус-сообщения: радиус родни 1–5, 🔔/🧬 в радиусе
     if (p && typeof p === "object" && (p.c === "foc" || p.c === "foc:bell" || p.c === "foc:tree")) {
         const key = String(p.k || "");
-        const depth = focusDepth((db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]), key);
+        const depth = focusDepth(linkPairs(peerId), key);
         // радиус не глубже имеющихся предков (старые сообщения могут нести снятые кнопки)
         const radius = Math.min(5, Math.max(1, Number(p.r) || 1), Math.max(1, depth));
         const rec = recordOf(peerId, key);
@@ -2580,8 +2964,7 @@ async function handleEvent(o) {
         // 🧬 в радиусе: <имя>.ged + <имя>.pdf (диаграмма — родство к герою),
         // правка сообщения не нужна — файлы отдельным сообщением
         if (p.c === "foc:tree") {
-            const pairs = (db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]);
-            const keys = focusWithSpouses(focusKeys(pairs, key, radius), focusSpousePairs(peerId));
+            const keys = focusWithSpouses(focusKeys(linkPairs(peerId), key, radius), focusSpousePairs(peerId));
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "древо в радиусе");
             await sendGedArtifacts(peerId, keys, focusHead(key, radius, rec.dd));
             return;
@@ -2605,8 +2988,8 @@ async function handleEvent(o) {
                 // «уже показан» — показанное длиннее заголовка (сообщение-заголовок
                 // само по себе префикс рендера списка)
                 if (cur !== null && cur !== focusHead(key, radius, rec.dd) && txt.startsWith(cur)) {
-                    s.bell = !on; saveDb();
-                    on = s.bell !== false;
+                    setBell(peerId, !on);
+                    on = !on;
                     byFull = !on;
                     txt = focusText(peerId, key, radius, bell, rec.dd, byFull);
                 }
@@ -2620,24 +3003,27 @@ async function handleEvent(o) {
     }
     // кнопки сообщения-связи: пол нового лица, свадьба, усыновление, удаление
     if (p && typeof p === "object" && (p.c === "sex" || p.c === "pair" || p.c === "adop" || p.c === "dell")) {
-        const link = (db.links || []).find(l => l.id === p.l && l.peerId === peerId);
+        const link = linkById(peerId, p.l);
         if (!link) { await answerEvent(o.event_id || o.id, o.user_id, peerId, "связь не найдена"); return; }
         let snack = "";
         if (p.c === "sex") {
-            const rec = recordOf(peerId, link[link.who]);
-            if (rec) { rec.sex = p.s === "F" ? "F" : "M"; saveDb(); }
-            snack = "пол: " + (rec && rec.sex === "F" ? "♀" : "♂");
+            const x = xrefOfKey(peerId, link[link.who]);
+            if (x) qr("UPDATE indi SET sex=? WHERE chat=? AND xref=?", p.s === "F" ? "F" : "M", peerId, x);
+            snack = "пол: " + (p.s === "F" ? "♀" : "♂");
         } else if (p.c === "adop") {
-            link.adopted = !link.adopted;
-            saveDb();
-            snack = link.adopted ? "🤱 усыновление" : "усыновление снято";
+            const cx = xrefOfKey(peerId, link.c);
+            const cur = link.fam && cx
+                ? !!(q1("SELECT adopted AS a FROM chil WHERE chat=? AND fam=? AND indi=?", peerId, link.fam, cx) || {}).a
+                : false;
+            if (link.fam && cx)
+                qr("UPDATE chil SET adopted=? WHERE chat=? AND fam=? AND indi=?", cur ? 0 : 1, peerId, link.fam, cx);
+            snack = !cur ? "🤱 усыновление" : "усыновление снято";
         } else if (p.c === "dell") {
             const head = "🔗 Связь удалена: " + link.p + " → " + link.c;
-            db.links = db.links.filter(l => l !== link);
-            refreshFams();
+            deleteLink(peerId, link);
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "связь удалена");
             const rec = await findRecordByCmid(peerId, o.conversation_message_id);
-            await editOrigin(o, (rec ? jubileeText(rec, "") + "\n" : "") + head, linkKeyboard(peerId, link));
+            await editOrigin(o, (rec ? jubileeText(rec, "") + "\n" : "") + head, JSON.stringify({ inline: true, buttons: [] }));
             return;
         } else {
             const i = Number(p.i);
@@ -2647,18 +3033,19 @@ async function handleEvent(o) {
                 snack = f && f.marr ? "💍 " + f.marr.d + (f.marr.plac ? ", " + f.marr.plac : "") : "не найдено";
                 if (f) fragKeys = [...f.parents, ...f.children]; // все трое
             } else {
-                link.pairCand = null;
-                saveDb();
+                setLinkCand(link, null);
                 snack = "без свадьбы";
             }
             await answerEvent(o.event_id || o.id, o.user_id, peerId, snack);
-            await editOrigin(o, linkText(peerId, link) + "\n" + gedcomText(peerId, fragKeys), linkKeyboard(peerId, link));
+            const fresh = linkById(peerId, link.id) || link;
+            await editOrigin(o, linkText(peerId, fresh) + "\n" + gedcomText(peerId, fragKeys), linkKeyboard(peerId, fresh));
             return;
         }
         await answerEvent(o.event_id || o.id, o.user_id, peerId, snack);
         // sex/adop: фрагмент — новое лицо (с полом) либо родитель+ребёнок
-        const fragKeys = p.c === "sex" ? [link[link.who]] : [link.p, link.c];
-        await editOrigin(o, linkText(peerId, link) + "\n" + gedcomText(peerId, fragKeys), linkKeyboard(peerId, link));
+        const fresh = linkById(peerId, link.id) || link;
+        const fragKeys = p.c === "sex" ? [fresh[fresh.who]] : [fresh.p, fresh.c];
+        await editOrigin(o, linkText(peerId, fresh) + "\n" + gedcomText(peerId, fragKeys), linkKeyboard(peerId, fresh));
         return;
     }
     // нормализуем: {c} / {rel} либо строка "del" / "del:yes" / "rel:orth"
@@ -2667,7 +3054,7 @@ async function handleEvent(o) {
     const fd = p && typeof p === "object" && (p.c === "del" || p.c === "del:yes") && p.k
         ? { k: String(p.k), r: Math.min(5, Math.max(1, Number(p.r) || 1)) } : null;
     console.log("event:", payload, "peer", peerId);
-    if (!["del", "del:yes", "del:no", "bell", "tree", "close", "ged:add", "ged:ign"].includes(payload) && !payload.startsWith("rel:")) {
+    if (!["del", "del:yes", "del:no", "bell", "tree", "close", "ged:rep", "ged:bak", "ged:ign"].includes(payload) && !payload.startsWith("rel:")) {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "неизвестная кнопка");
         return;
     }
@@ -2676,8 +3063,9 @@ async function handleEvent(o) {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "только владелец");
         return;
     }
-    // «Да/Нет» на дроп .ged: импорт или отказ (в группе — только отправивший файл)
-    if (payload === "ged:add" || payload === "ged:ign") {
+    // «Нет / Да / Да, с резервом» на дроп .ged: замена или отказ
+    // (в группе — только отправивший файл)
+    if (payload === "ged:rep" || payload === "ged:bak" || payload === "ged:ign") {
         const pend = gedPending.get(peerId);
         if (!pend || Date.now() - pend.ts > GED_TTL) {
             gedPending.delete(peerId);
@@ -2694,11 +3082,10 @@ async function handleEvent(o) {
             await editOrigin(o, "Файл не добавлен: " + pend.name, JSON.stringify({ inline: true, buttons: [] }));
             return;
         }
-        const r = importGedcom(peerId, parseGedcom(pend.text));
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, "гедком импортирован");
-        await editOrigin(o, "🧬 Гедком импортирован: персон " + r.persons + ", связей " + r.links
-            + (r.weddings ? ", свадеб " + r.weddings : ""), JSON.stringify({ inline: true, buttons: [] }));
-        console.log("ged import:", r.persons, "persons peer", peerId);
+        const r = await replaceWithGedcom(peerId, parseGedcom(pend.text), payload === "ged:bak");
+        await answerEvent(o.event_id || o.id, o.user_id, peerId, r.ok ? "дерево заменено" : "замена отменена");
+        await editOrigin(o, r.head, JSON.stringify({ inline: true, buttons: [] }));
+        console.log("ged replace:", r.head, "peer", peerId);
         return;
     }
     if (payload === "del") {
@@ -2711,12 +3098,12 @@ async function handleEvent(o) {
                 await answerEvent(o.event_id || o.id, o.user_id, peerId, "персона не найдена");
                 return;
             }
-            const pairs = (db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]);
+            const pairs = linkPairs(peerId);
             fd.r = Math.min(fd.r, Math.max(1, focusDepth(pairs, fd.k)));
             const spPairs = focusSpousePairs(peerId);
             const keys = focusWithSpouses(focusKeys(pairs, fd.k, fd.r), spPairs);
-            const sexMap = new Map(db.records.filter(r => r.peerId === peerId).map(r => [pkey(r), r.sex ?? null]));
-            list = focusListText(db.records.filter(r => r.peerId === peerId), keys, fd.k, pairs, spPairs, k => sexMap.get(k) ?? null);
+            const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
+            list = focusListText([...personRows(peerId), ...weddingRows(peerId)], keys, fd.k, pairs, spPairs, k => sexMap.get(k) ?? null);
             if (!list) {
                 await answerEvent(o.event_id || o.id, o.user_id, peerId, "в радиусе нет событий");
                 return;
@@ -2751,24 +3138,23 @@ async function handleEvent(o) {
                 await answerEvent(o.event_id || o.id, o.user_id, peerId, "персона не найдена");
                 return;
             }
-            const pairs = (db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]);
+            const pairs = linkPairs(peerId);
             const spPairs = focusSpousePairs(peerId);
             const keys = focusWithSpouses(focusKeys(pairs, fd.k, fd.r), spPairs);
             const set = new Set(keys);
-            const victims = db.records.filter(r => r.peerId === peerId
-                && (set.has(pkey(r)) || (r.n.includes("+") && focusHasPair(r.n, keys))));
-            for (const v of victims) deleteEventCascade(peerId, v);
-            console.log("deleted", victims.length, "records (focus", fd.k, "r" + fd.r + ") peer", peerId);
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "удалено событий: " + victims.length);
-            await editOrigin(o, "Удалено событий: " + victims.length + "\n" + HELP, await peerKeyboard(peerId, o.user_id));
+            // жертвы: персоны множества + свадьбы, обе половины которых в нём
+            const all = [
+                ...personRows(peerId).map(r => pkey(r)).filter(k => set.has(k)),
+                ...weddingRows(peerId).map(r => pkey(r)).filter(k => focusHasPair(k.slice(0, -11), keys)),
+            ];
+            for (const k of new Set(all)) deleteEventCascade(peerId, k);
+            console.log("deleted", all.length, "records (focus", fd.k, "r" + fd.r + ") peer", peerId);
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "удалено событий: " + all.length);
+            await editOrigin(o, "Удалено событий: " + all.length + "\n" + HELP, await peerKeyboard(peerId, o.user_id));
             return;
         }
-        const n = db.records.filter(r => r.peerId === peerId).length;
-        db.records = db.records.filter(r => r.peerId !== peerId);
-        // связи и семьи чата ссылаются на записи — уходят вместе с ними
-        db.links = (db.links || []).filter(l => l.peerId !== peerId);
-        db.fams = (db.fams || []).filter(f => f.peerId !== peerId);
-        saveDb();
+        const n = personRows(peerId).length + weddingRows(peerId).length;
+        clearChatTree(peerId);
         console.log("deleted", n, "records peer", peerId);
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "удалено событий: " + n);
         await editOrigin(o, "Удалено событий: " + n + "\n" + HELP, await peerKeyboard(peerId, o.user_id));
@@ -2789,21 +3175,20 @@ async function handleEvent(o) {
         const cur = await cmidText(peerId, o.conversation_message_id);
         const shown = cur !== null
             && ((md && (cur === md || md.startsWith(cur))) || (full && (cur === full || full.startsWith(cur))));
-        if (shown) { s.bell = !on; saveDb(); }
-        const list = upcomingEvents(peerId, s.bell === false);
+        if (shown) setBell(peerId, !on);
+        const list = upcomingEvents(peerId, !bellOnOf(getSettings(peerId)));
         if (!list) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "событий нет");
             return;
         }
         // снекбар останавливает «вращение» на кнопке
         await answerEvent(o.event_id || o.id, o.user_id, peerId,
-            shown ? (s.bell !== false ? "подписка включена" : "подписка отключена") : "список событий");
+            shown ? (bellOnOf(getSettings(peerId)) ? "подписка включена" : "подписка отключена") : "список событий");
         const parts = splitText(list);
         await editOrigin(o, parts[0], await peerKeyboard(peerId, o.user_id));
         for (let i = 1; i < parts.length; i++) await messagesSend(peerId, parts[i]);
     } else if (payload === "tree") { // 🧬 — гедком-древо чата (как /gedcom)
-        const links = (db.links || []).filter(l => l.peerId === peerId);
-        if (!links.length) {
+        if (!linkPairs(peerId).length) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "связей пока нет");
             return;
         }
@@ -2863,11 +3248,10 @@ async function handleReaction(o) {
         return;
     }
     if (o.reaction_id === 9) { // 👎 — удалить связь (сообщение-связь) либо событие
-        const link = (db.links || []).find(l => l.peerId === peerId && l.cmid === cmid);
+        const link = linkByCmid(peerId, cmid);
         if (link) {
             const head = "🔗 Связь удалена: " + link.p + " → " + link.c;
-            db.links = db.links.filter(l => l !== link);
-            refreshFams();
+            deleteLink(peerId, link);
             console.log("reaction 👎: удалена связь", link.p, "→", link.c, "peer", peerId);
             // остаётся текст события без строки связи
             const rec = await findRecordByCmid(peerId, cmid);
@@ -2890,7 +3274,7 @@ async function handleReaction(o) {
         const rec = await findRecordByCmid(peerId, cmid);
         if (!rec) return;
         // связи персоны, свадьба пары «Имя+Имя», висячие кандидаты, семьи
-        deleteEventCascade(peerId, rec);
+        deleteEventCascade(peerId, pkey(rec));
         console.log("reaction 👎: удалено событие", rec.n, rec.d, "peer", peerId);
         // правим сообщение события в пометку об удалении (реакции сохраняются),
         // при неудаче — reply
@@ -2921,7 +3305,7 @@ async function handleReaction(o) {
                 message: jubileeText(rec, "", true),
                 // кнопки фокуса как у «/»-ответа: радиусы, 🔔/🧬 (payload несёт k/r)
                 keyboard: await focusKeyboard(peerId, from, pkey(rec), 1,
-                    focusDepth((db.links || []).filter(l => l.peerId === peerId).map(l => [l.p, l.c]), pkey(rec)))
+                    focusDepth(linkPairs(peerId), pkey(rec)))
             });
             detailedMsgs.add(peerId + ":" + cmid);
             console.log("reaction 👀: детально", rec.n, rec.d, "peer", peerId);
@@ -2948,13 +3332,12 @@ async function findRecordByCmid(peerId, cmid) {
     }
     const m = text.match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/);
     if (!m) return null;
-    const name = m[1].trim(), d = m[2];
-    return db.records.find(r => r.peerId === peerId && r.n === name && r.d === d) || null;
+    return recordAnyOf(peerId, m[1].trim() + " " + m[2]) || null;
 }
 
 // ============================== ПЛАНИРОВЩИК ==============================
 // Ежедневно в 09:00 МСК: события с сегодняшней датой (МСК) получают список
-// раз в год (lastSentYear).
+// раз в год (sent.last_year — переживает замену дерева).
 
 function mskNowParts() {
     const t = new Date(Date.now() + TZ_MS);
@@ -2978,28 +3361,44 @@ async function dailyCheck() {
     const n = mskNowParts();
     const today = n.y + "-" + String(n.mo).padStart(2, "0") + "-" + String(n.d).padStart(2, "0");
     const mmdd = String(n.mo).padStart(2, "0") + String(n.d).padStart(2, "0");
-    if (db.checkedDate === today) return;
-    db.checkedDate = today;
-    saveDb();
-    for (const rec of db.records) {
-        if (rec.d.slice(5).replace("-", "") !== mmdd) continue;
-        if (rec.lastSentYear >= n.y) continue;
-        const prev = rec.lastSentYear;
-        rec.lastSentYear = n.y; // отметка до отправки, чтобы не задвоить
-        saveDb();
+    if ((q1("SELECT v FROM meta WHERE k='checkedDate'") || {}).v === today) return;
+    qr("INSERT OR REPLACE INTO meta(k,v) VALUES('checkedDate',?)", today);
+    // годовщины персон и свадеб с сегодняшней датой (МСК); sent — раз в год
+    const jobs = [
+        ...qa(`SELECT chat, name, birt_d, birt_h, birt_m, deat_d FROM indi
+            WHERE birt_d IS NOT NULL AND substr(birt_d, 6, 5) = ?`, mmdd)
+            .map(r => ({
+                chat: r.chat, key: r.name + " " + r.birt_d,
+                rec: { n: r.name, d: r.birt_d, ...(r.birt_h !== null ? { h: r.birt_h, m: r.birt_m } : {}), ...(r.deat_d ? { dd: r.deat_d } : {}) },
+            })),
+        ...qa(`SELECT f.chat, (SELECT name FROM indi i WHERE i.chat=f.chat AND i.xref=f.husb) AS hn,
+            (SELECT name FROM indi i WHERE i.chat=f.chat AND i.xref=f.wife) AS wn,
+            f.marr_d, f.div_d FROM fam f WHERE f.marr_d IS NOT NULL AND substr(f.marr_d, 6, 5) = ?`, mmdd)
+            .filter(r => r.hn && r.wn)
+            .map(r => ({
+                chat: r.chat, key: r.hn + "+" + r.wn + " " + r.marr_d,
+                rec: { n: r.hn + "+" + r.wn, d: r.marr_d, ...(r.div_d ? { dd: r.div_d } : {}) },
+            })),
+    ];
+    for (const j of jobs) {
+        const s = q1("SELECT last_year FROM sent WHERE chat=? AND key=?", j.chat, j.key);
+        if (s && s.last_year >= n.y) continue;
+        qr("INSERT OR REPLACE INTO sent(chat,key,last_year) VALUES(?,?,?)", j.chat, j.key, n.y); // до отправки — не задвоить
         try {
-            await messagesSend(rec.peerId, jubileeText(rec, ""));
-            console.log("annual:", rec.n, rec.d, "peer", rec.peerId);
+            await messagesSend(j.chat, jubileeText(j.rec, ""));
+            console.log("annual:", j.rec.n, j.rec.d, "peer", j.chat);
         } catch (e) {
-            rec.lastSentYear = prev; // откат — повторим при следующем прогоне
-            saveDb();
+            qr("INSERT OR REPLACE INTO sent(chat,key,last_year) VALUES(?,?,?)", j.chat, j.key, s ? s.last_year : 0); // откат
             console.error("annual send failed:", e.message);
         }
     }
     // религиозный дайджест: чатам с включёнными религиями, только если есть дни
-    const peers = [...new Set(Object.keys(db.settings || {}).concat(db.records.map(r => r.peerId)))];
+    const peers = [...new Set([
+        ...qa("SELECT chat AS c FROM settings").map(r => r.c),
+        ...qa("SELECT DISTINCT chat AS c FROM indi").map(r => r.c),
+    ])];
     for (const peer of peers) {
-        const settings = db.settings[peer] || {};
+        const settings = getSettings(peer);
         if (!REL_ORDER.some(k => settings[k])) continue;
         const digest = religiousDigest(settings);
         if (!digest) continue;
@@ -3109,14 +3508,14 @@ async function main() {
         console.error("нет токена: задайте VK_TOKEN (env или .env рядом с lunarreturns.js)");
         process.exit(1);
     }
-    loadDb();
+    initDb();
     await longPollInit();
     await initOwner();
     // догнать сообщения, накопившиеся за простой (как catchUp в pinguin)
     const startAt = Math.floor(Date.now() / 1000);
-    if (!db.lastSeen) {
-        db.lastSeen = startAt;
-        saveDb();
+    const lastSeen = Number((q1("SELECT v FROM meta WHERE k='lastSeen'") || {}).v || 0);
+    if (!lastSeen) {
+        qr("INSERT OR REPLACE INTO meta(k,v) VALUES('lastSeen',?)", String(startAt));
     } else {
         try { await catchUp(startAt); } catch (e) { console.error("catchUp:", e.message); }
     }
@@ -3146,4 +3545,10 @@ async function main() {
 
 main().catch(e => { console.error("fatal:", e); process.exit(1); });
 
-module.exports.__test = { parseTrigger, parseGedcom, gedStats, focusKeys, focusHasPair, focusWithSpouses, focusLabel, focusHead, focusListText, kinLabel, focusDepth, addLink, ensureFam, ensureFamSingle, chartPdf, chartModel, fileBaseOf, b64ToBytes, parseTtf, chartFor, pairRecords, confirmPair, linkText, gedcomText, importGedcom, upsertRecord, refreshFams, deleteEventCascade, jubileeText, getDb: () => db, setDb: d => { db = d; } };
+module.exports.__test = {
+    parseTrigger, parseGedcom, gedStats, focusKeys, focusHasPair, focusWithSpouses, focusLabel, focusHead,
+    focusListText, kinLabel, focusDepth, addLink, deleteLink, pairRecords, confirmPair, linkText, linkPairs,
+    personRows, weddingRows, famList, famView, focusSpousePairs, upsertPerson, deleteEventCascade,
+    clearChatTree, recordOf, recordAnyOf, chartPdf, chartModel, chartFor, fileBaseOf, b64ToBytes, parseTtf,
+    gedcomText, importGedcom, jubileeText, setLinkCand, setLinkCmid, weddingByFx, upsertWedding, linkRowOf,
+};

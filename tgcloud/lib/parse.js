@@ -153,7 +153,7 @@ function parseGedcom(text) {
         if (lvl === 1) curTag = tag;
         if (lvl === 1) {
             if (tag === "NAME") cur.name = val.replace(/\/(.*?)\//g, "$1").trim();
-            else if (tag === "SEX") cur.sex = val.toUpperCase().startsWith("F") ? "F" : "M";
+            else if (tag === "SEX") cur.sex = /^F/i.test(val) ? "F" : /^M/i.test(val) ? "M" : null;
             else if (tag === "BIRT") cur.birt = cur.birt || {};
             else if (tag === "DEAT") cur.deat = cur.deat || {};
             else if (tag === "MARR") cur.marr = cur.marr || {};

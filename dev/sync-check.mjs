@@ -25,13 +25,11 @@ function cmp(what, vk, tg) {
     console.log('  ТГ: ' + b);
 }
 
-// ---- ВК: копия lunarreturns.js с дописанными тестовыми экспортами ----
-// argv "test" уводит main() в тихий путь (печать юбилея) без токена и poll.
-process.env.LR_DB = path.join(TMP, 'vk-db.json');
-const vkHook = '\nmodule.exports.__test = { parseTrigger, parseGedcom, gedStats, focusKeys, focusHasPair, focusWithSpouses, focusLabel, focusHead, focusListText, kinLabel, focusDepth, addLink, ensureFam, ensureFamSingle, '
-    + 'chartPdf, chartModel, fileBaseOf, b64ToBytes, parseTtf, chartFor, '
-    + 'pairRecords, confirmPair, linkText, gedcomText, importGedcom, upsertRecord, refreshFams, deleteEventCascade, jubileeText, '
-    + 'getDb: () => db, setDb: d => { db = d; } };\n';
+// ---- ВК: копия lunarreturns.js уходит в тихий test-режим; __test-экспорт
+// уже в файле (SQLite store: personRows/weddingRows/famList/upsertPerson…);
+// __extra — низкоуровневый доступ к SQL для VK-only сценариев (sent)
+process.env.LR_DB = path.join(TMP, 'vk.db');
+const vkHook = '\nmodule.exports.__extra = { qa, q1, qr };\n';
 const vkFile = path.join(TMP, 'vk.cjs');
 fs.writeFileSync(vkFile, fs.readFileSync(path.join(ROOT, 'lunarreturns.js'), 'utf8') + vkHook);
 const require = createRequire(import.meta.url);
@@ -41,14 +39,13 @@ const prevLog = console.log;
 console.log = () => {};
 let VK;
 try { VK = require(vkFile).__test; } finally { console.log = prevLog; process.argv = prevArgv; }
+const VKX = require(vkFile).__extra; // низкоуровневые qa/q1/qr для VK-only (sent)
 
 // ---- ТГ: tgcloud/lib через sdk-mock (как dev/repl.mjs) ----
 process.env.LR_DEV_DB = path.join(TMP, 'tg-db.json');
 fs.cpSync(path.join(ROOT, 'dev', 'sdk-mock'), path.join(ROOT, 'node_modules', 'sdk'), { recursive: true });
 const TG = await import(path.join(ROOT, 'tgcloud', 'lib', 'bot.js'));
 const TGP = await import(path.join(ROOT, 'tgcloud', 'lib', 'parse.js'));
-const { db, eq, and, or } = await import(path.join(ROOT, 'node_modules', 'sdk', 'db.js'));
-const { links } = await import(path.join(ROOT, 'tgcloud', 'schema.js'));
 
 // ============================== 1. parseTrigger ==============================
 const TRIGGERS = [
@@ -126,8 +123,8 @@ const focusPersons = [
     { n: 'Чужой', d: '1990-09-09' },
 ];
 const fkeys = p => p.n + ' ' + p.d;
-VK.setDb({ records: [] });
-for (const p of focusPersons) { VK.upsertRecord(p, FOCUS_CH); await TG.upsertEvent(FOCUS_CH, p); }
+VK.clearChatTree(FOCUS_CH);
+for (const p of focusPersons) { VK.upsertPerson(FOCUS_CH, p); await TG.upsertPerson(FOCUS_CH, p); }
 const focusPairs = [
     ['Дед 1930-01-01', 'Отец 1955-03-03'], ['Бабка 1932-02-02', 'Отец 1955-03-03'],
     ['Дед 1930-01-01', 'Тётя 1957-04-04'], ['Бабка 1932-02-02', 'Тётя 1957-04-04'],
@@ -137,10 +134,10 @@ const focusPairs = [
     ['Чужой 1990-09-09', 'Сын 1980-06-06'], // чужой родитель — тоже предки
 ];
 for (const [p, c] of focusPairs) { VK.addLink(FOCUS_CH, p, c, 'c'); await TG.addLink(FOCUS_CH, p, c, 'c'); }
-VK.upsertRecord({ n: 'Отец+Мать', d: '1979-01-01' }, FOCUS_CH);
-await TG.upsertEvent(FOCUS_CH, { n: 'Отец+Мать', d: '1979-01-01' });
-VK.upsertRecord({ n: 'Дед+Чужая', d: '1954-01-01' }, FOCUS_CH);
-await TG.upsertEvent(FOCUS_CH, { n: 'Дед+Чужая', d: '1954-01-01' });
+VK.upsertPerson(FOCUS_CH, { n: 'Отец+Мать', d: '1979-01-01' });
+await TG.upsertPerson(FOCUS_CH, { n: 'Отец+Мать', d: '1979-01-01' });
+VK.upsertPerson(FOCUS_CH, { n: 'Дед+Чужая', d: '1954-01-01' });
+await TG.upsertPerson(FOCUS_CH, { n: 'Дед+Чужая', d: '1954-01-01' });
 const son = 'Сын 1980-06-06';
 for (const r of [1, 2, 3, 5]) {
     const vkK = VK.focusKeys(focusPairs, son, r);
@@ -348,12 +345,29 @@ if (!kinAt(VK, 2).includes(kinKeys['Дед'])) { failed++; console.log('✗ r2 �
 if (!kinAt(VK, 3).includes(kinKeys['Прадед'])) { failed++; console.log('✗ r3 без прадеда'); }
 
 // ==================== 3. импорт → полный экспорт гедкома ====================
+// непустой чат до импорта: ЗАМЕНА должна стереть старое
 const g = VK.parseGedcom(GEDCOM);
-VK.setDb({ records: [] });
+VK.clearChatTree(1);
+for (const p of [{ n: 'Старьё', d: '1900-01-01' }, { n: 'Старьё2', d: '1901-01-01' }])
+    { VK.upsertPerson(1, p); await TG.upsertPerson(1, p); }
+const junk = { n: 'Старьё+Старьё2', d: '1920-01-01' };
+VK.upsertPerson(1, junk); await TG.upsertPerson(1, junk);
 const vkImp = VK.importGedcom(1, g);
 const tgImp = await TG.importGedcom(1, g);
+cmp('importGedcom: замена стирает старое',
+    [VK.personRows(1).length, VK.weddingRows(1).length, VK.recordAnyOf(1, 'Старьё 1900-01-01')],
+    [(await TG.personRows(1)).length, (await TG.weddingRows(1)).length, await TG.recordOf(1, 'Старьё 1900-01-01')]);
+if (VK.recordAnyOf(1, 'Старьё 1900-01-01') !== null) { failed++; console.log('✗ замена: старое «Старьё» не стёрто'); }
 cmp('importGedcom отчёт', vkImp, tgImp);
 cmp('gedcomText после импорта', VK.gedcomText(1), await TG.gedcomText(1));
+
+// SEX пустой → null (нет половых ярлыков; «unknown» тоже null)
+{
+    const gNosex = VK.parseGedcom('0 HEAD\n1 GEDC\n2 VERS 5.5.1\n0 @N1@ INDI\n1 NAME Безпола /П/\n1 BIRT\n2 DATE 1 JAN 1960\n1 SEX unknown\n0 TRLR');
+    const gNosexTg = TGP.parseGedcom('0 HEAD\n1 GEDC\n2 VERS 5.5.1\n0 @N1@ INDI\n1 NAME Безпола /П/\n1 BIRT\n2 DATE 1 JAN 1960\n1 SEX unknown\n0 TRLR');
+    cmp('parseGedcom SEX unknown → null', gNosex.indis[0].sex, gNosexTg.indis[0].sex);
+    if (gNosex.indis[0].sex !== null) { failed++; console.log('✗ SEX unknown → null, получил ' + gNosex.indis[0].sex); }
+}
 
 // ==================== 4. связи: reply-флоу, свадьба, каскад ====================
 const CH = 2; // VK peerId = TG chatId
@@ -363,9 +377,9 @@ const persons = [
     { n: 'Дочь', d: '1982-09-09' },
 ];
 const pair = { n: 'Отец+Мать', d: '1980-01-20', plac: 'Пермь' };
-VK.setDb({ records: [] });
-for (const p of persons) { VK.upsertRecord(p, CH); await TG.upsertEvent(CH, p); }
-VK.upsertRecord(pair, CH); await TG.upsertEvent(CH, pair);
+VK.clearChatTree(CH);
+for (const p of persons) { VK.upsertPerson(CH, p); await TG.upsertPerson(CH, p); }
+VK.upsertPerson(CH, pair); await TG.upsertPerson(CH, pair);
 
 // связь родитель→ребёнок (как reply-триггер)
 const pk = 'Отец ' + persons[0].d, mk = 'Мать ' + persons[1].d, ck = 'Дочь ' + persons[2].d;
@@ -373,10 +387,11 @@ const vkL1 = VK.addLink(CH, pk, ck, 'c').link;
 const tgL1 = (await TG.addLink(CH, pk, ck, 'c')).link;
 cmp('pairRecords (один родитель)', VK.pairRecords(CH, vkL1), await TG.pairRecords(CH, tgL1));
 
-// второй родитель → семья; кандидаты свадьбы с обоими
+// второй родитель добирается в ту же fam: семья на ребёнка в обеих сторонах
 const vkL2 = VK.addLink(CH, mk, ck, 'c').link;
 const tgL2 = (await TG.addLink(CH, mk, ck, 'c')).link;
-VK.ensureFam(CH, ck); await TG.ensureFam(CH, ck);
+cmp('двое родителей — одна fam', [VK.famView(CH, vkL1.fam).parents, VK.famView(CH, vkL1.fam).children],
+    [(await TG.famView(CH, tgL1.famXref)).parents, (await TG.famView(CH, tgL1.famXref)).children]);
 cmp('pairRecords (двое родителей)', VK.pairRecords(CH, vkL2), await TG.pairRecords(CH, tgL2));
 
 // подтвердить свадьбу — сравнить текст связи и фрагмент гедкома
@@ -384,7 +399,7 @@ const vkCand = VK.pairRecords(CH, vkL2);
 const tgCand = await TG.pairRecords(CH, tgL2);
 VK.confirmPair(CH, vkL2, vkCand[0]);
 await TG.confirmPair(CH, tgL2, tgCand[0]);
-const tgFresh = await db.select().from(links).where(eq(links.id, tgL2.id)).get();
+const tgFresh = await TG.linkById(CH, tgL2.id);
 cmp('linkText после confirmPair', VK.linkText(CH, vkL2), await TG.linkText(CH, tgFresh));
 cmp('gedcomText фрагмент', VK.gedcomText(CH, [pk, mk, ck]), await TG.gedcomText(CH, [pk, mk, ck]));
 cmp('gedcomText весь чат', VK.gedcomText(CH), await TG.gedcomText(CH));
@@ -394,21 +409,83 @@ cmp('gedcomText весь чат', VK.gedcomText(CH), await TG.gedcomText(CH));
 const pairKey = pair.n + ' ' + pair.d;
 const vkCand0 = VK.pairRecords(CH, vkL1);
 await TG.setLinkCand(tgL1, vkCand0);
-vkL1.pairCand = vkCand0;
-const vdbPair = VK.getDb();
-const vkPairRec = vdbPair.records.find(r => r.peerId === CH && r.n + ' ' + r.d === pairKey);
-VK.deleteEventCascade(CH, vkPairRec);
+VK.setLinkCand(vkL1, vkCand0);
+VK.deleteEventCascade(CH, pairKey);
 await TG.deleteEventCascade(CH, pairKey);
-const tgL1f = await db.select().from(links).where(eq(links.id, tgL1.id)).get();
+const tgL1f = await TG.linkById(CH, tgL1.id);
 cmp('linkText: pairCand после удаления пары', VK.linkText(CH, vkL1), await TG.linkText(CH, tgL1f));
 cmp('gedcomText: MARR после удаления пары', VK.gedcomText(CH), await TG.gedcomText(CH));
 
 // каскад: удалить персону «Мать» — связи падают, семья остаётся с «Отцом»
-const vdbP = VK.getDb();
-const vkMRec = vdbP.records.find(r => r.peerId === CH && r.n === 'Мать');
-VK.deleteEventCascade(CH, vkMRec);
+VK.deleteEventCascade(CH, mk);
 await TG.deleteEventCascade(CH, mk);
 cmp('gedcomText после удаления персоны', VK.gedcomText(CH), await TG.gedcomText(CH));
+
+// ==================== 4b. тёзки: MARR по xref, не «по первому имени» ========
+// отец и сын-тёзка «Пётр Сидоров» 1908/1965; жена 1968; MARR у сына + ребёнок
+const CPS = 11;
+const gedTz = ['0 HEAD',
+    '0 @I1@ INDI', '1 NAME Пётр /Сидоров/', '1 SEX M', '1 BIRT', '2 DATE 5 MAR 1908',
+    '0 @I2@ INDI', '1 NAME Пётр /Сидоров/', '1 SEX M', '1 BIRT', '2 DATE 9 AUG 1965',
+    '0 @I3@ INDI', '1 NAME Ольга /Фёдорова/', '1 SEX F', '1 BIRT', '2 DATE 2 FEB 1968',
+    '0 @I4@ INDI', '1 NAME Дед Друга /Тёзок/', '1 BIRT', '2 DATE 1 DEC 1909',
+    '0 @F1@ FAM', '1 CHIL @I2@', '1 HUSB @I1@',
+    '0 @F2@ FAM', '1 HUSB @I2@', '1 WIFE @I3@', '1 CHIL @I5@',
+    '0 @I5@ INDI', '1 NAME Павел /Сидоров/', '1 BIRT', '2 DATE 5 MAY 1990', '1 FAMS @F5@',
+    '0 @F3@ FAM', '1 CHIL @I2@', '1 HUSB @I4@',
+    '0 @F4@ FAM', '1 CHIL @I1@', '1 WIFE @I6@',
+    '0 @I6@ INDI', '1 NAME Мамчий /Тёзок/', '1 SEX F', '1 BIRT', '2 DATE 1 NOV 1889',
+    '0 @F5@ FAM', '1 HUSB @I2@', '1 WIFE @I3@', '1 MARR', '2 DATE 10 JUN 1989', '1 CHIL @I7@',
+    '0 @I7@ INDI', '1 NAME Павел /Сидоров/', '1 BIRT', '2 DATE 5 MAY 1990', '0 TRLR'].join('\n');
+// СХЕМА: @I1@ и @I2@ — тёзки-фамилии; @I2@ (сын 1965) женат на @I3@; MARR —
+// только в @F5@ (семья сына). Пара в выводе — лишь [сын, жена]: тёзка-отец
+// (1908) не перехватывает свадьбу сына даже без SEX.
+const gTz = VK.parseGedcom(gedTz);
+const vkTz = VK.importGedcom(CPS, gTz);
+const tgTz = await TG.importGedcom(CPS, gTz);
+cmp('тёзки: отчёт импорта', vkTz, tgTz);
+const vkW = VK.weddingRows(CPS), tgW = await TG.weddingRows(CPS);
+cmp('тёзки: свадьба одна и у сына', [vkW.length, vkW.map(w => w.n)],
+    [tgW.length, tgW.map(w => w.n)]);
+if (JSON.stringify(vkW.map(w => w.n)) !== JSON.stringify(['Пётр Сидоров+Ольга Фёдорова'])) {
+    failed++;
+    console.log('✗ тёзки: свадьба прилипла не туда\n  ' + JSON.stringify(vkW.map(w => w.n)));
+}
+cmp('тёзки: гедком целиком', VK.gedcomText(CPS), await TG.gedcomText(CPS));
+// «предок-тёзка», сам с MARR-семой в другом: still — точная пара
+const vkP = VK.famList(CPS);
+cmp('тёзки: famList без слипания', vkP, await TG.famList(CPS));
+if (vkP.length !== 5) { failed++; console.log('✗ тёзки: fams ' + vkP.length + ', ожидается 5'); }
+// подтверждение по xref: кандидат-линк связывает точную пару, не тёзку
+const vkPk = 'Пётр Сидоров 1965-08-09', ckc = 'Павел Сидоров 1990-05-05',
+    vl2k = 'Ольга Фёдорова' + ' 1968-02-02';
+const vkL2b = VK.addLink(CPS, vl2k, ckc, 'c').link;
+const tgL2b = (await TG.addLink(CPS, vl2k, ckc, 'c')).link;
+if (!vkL2b) { failed++; console.log('✗ тёзки: линк не создан'); }
+const vkLP = VK.pairRecords(CPS, vkL2b), tgLP = await TG.pairRecords(CPS, tgL2b);
+cmp('тёзки: кандидаты пары', vkLP, tgLP);
+VK.confirmPair(CPS, vkL2b, vkLP[0]);
+await TG.confirmPair(CPS, tgL2b, tgLP[0]);
+cmp('тёзки: гедком после confirmPair', VK.gedcomText(CPS), await TG.gedcomText(CPS));
+// sent переживает замену (VK-only: запись планировщика по ключу остаётся)
+VKX.qr('INSERT OR REPLACE INTO sent(chat,key,last_year) VALUES(?,?,?)', CPS, vkPk, 2020);
+VK.importGedcom(CPS, VK.parseGedcom(gedTz));
+const sentRow = VKX.q1('SELECT last_year FROM sent WHERE chat=? AND key=?', CPS, vkPk);
+if (!sentRow || sentRow.last_year !== 2020) { failed++; console.log('✗ sent не пережил замену'); }
+// дубль fam: ребёнок с двумя FAMC → две fam (не слипаются в одну)
+const g2f = VK.parseGedcom(['0 HEAD',
+    '0 @I1@ INDI', '1 NAME Ребёнок /Двухсемейный/', '1 BIRT', '2 DATE 1 JAN 1980',
+    '0 @I2@ INDI', '1 NAME Мать1 /Один/', '1 SEX F', '1 BIRT', '2 DATE 1 JAN 1950',
+    '0 @I3@ INDI', '1 NAME Мать2 /Два/', '1 SEX F', '1 BIRT', '2 DATE 1 JAN 1952',
+    '0 @F1@ FAM', '1 CHIL @I1@', '1 WIFE @I2@',
+    '0 @F2@ FAM', '1 CHIL @I1@', '1 WIFE @I3@', '0 TRLR'].join('\n'));
+const CH2 = 12;
+VK.clearChatTree(CH2);
+VK.importGedcom(CH2, g2f);
+await TG.importGedcom(CH2, g2f);
+cmp('две FAMC: fams', VK.famList(CH2).length, (await TG.famList(CH2)).length);
+if (VK.famList(CH2).length !== 2) { failed++; console.log('✗ две FAMC: fams != 2'); }
+cmp('две FAMC: гедком', VK.gedcomText(CH2), await TG.gedcomText(CH2));
 
 // ==================== 9. chartPdf: гедком-древо → PDF ====================
 const TGC = await import(path.join(ROOT, 'tgcloud', 'lib', 'chart.js'));

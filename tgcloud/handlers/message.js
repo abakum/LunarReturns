@@ -4,15 +4,19 @@ import { gedDrops, focusView } from '../schema.js';
 import { parseTrigger, parseGedcom, gedStats } from '../lib/parse.js';
 import { jubileeText } from '../lib/text.js';
 import {
-    HELP, startMarkup, chatAdmin, getSettings, todayText, upsertEvent, eventMarkup, sendLong,
-    addLink, setLinkCand, ensureFam, pairRecords, linkText, linkMarkup, gedcomText, importGedcom, sendGedPdf,
-    recordOf, chatLinks, focusKeys, focusHead, focusMarkup, splitText, focusWithSpouses, focusSpousePairs, focusDepth,
+    HELP, startMarkup, chatAdmin, getSettings, todayText, eventMarkup, sendLong,
+    addLink, setLinkCand, pairRecords, linkText, linkMarkup, recordOf, replaceWithGedcom,
+    linkPairs, gedcomText, sendGedPdf, splitText, focusKeys, focusHead, focusMarkup,
+    focusWithSpouses, focusSpousePairs, focusDepth, upsertPerson,
 } from '../lib/bot.js';
 
-const recOfRow = row => ({ n: row.name, d: row.date, h: row.hour ?? undefined, m: row.minute ?? undefined, dd: row.deathDate ?? undefined });
+// заголовок «Имя ГГГГ-ММ-ДД» (+ кейкап радиуса у фокус-сообщений) в цитате
+const replyHeadOf = reply => reply && reply.from && !reply.from.is_bot
+    ? String(reply.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
 
 // дроп .ged-документа: скачать, разобрать, запомнить в ged_drops (последний
-// дроп выигрывает) и спросить кнопками «Да/Нет»
+// дроп выигрывает); «Да» — ЗАМЕНА дерева (с резервом — прежнее дерево файлом
+// <имя>-old.ged перед очисткой)
 async function gedDrop(chatId, doc, fromId) {
     const name = doc.file_name || "gedcom.ged";
     let content;
@@ -37,11 +41,12 @@ async function gedDrop(chatId, doc, fromId) {
     await api.sendMessage({
         chat_id: chatId,
         text: "🧬 Файл " + name + ": персон " + s.persons + ", связей " + s.links
-            + ", свадеб " + s.weddings + ". Добавить в список событий?",
+            + ", свадеб " + s.weddings + ". Заменить события чата деревом?",
         reply_markup: {
             inline_keyboard: [[
-                { text: "✅ Да", callback_data: "gedadd" },
-                { text: "❌ Нет", callback_data: "gedign" },
+                { text: "Нет", callback_data: "ged:ign" },
+                { text: "Да", callback_data: "ged:rep" },
+                { text: "Да, с резервом", callback_data: "ged:bak" },
             ]],
         },
     });
@@ -53,7 +58,7 @@ async function gedDrop(chatId, doc, fromId) {
 async function sendFocus(chat, chatId, key, radius, dd) {
     // тело (список/гедком) — после тапа по кнопке; цифры радиуса — по глубине предков
     const markup = focusMarkup(chat, chatId, await getSettings(chatId), radius,
-        focusDepth((await chatLinks(chatId)).map(l => [l.parent, l.child]), key));
+        focusDepth(await linkPairs(chatId), key));
     const first = await api.sendMessage({ chat_id: chatId, text: focusHead(key, radius, dd), reply_markup: markup });
     if (first && first.message_id) {
         // чистка устаревших строк чата (старше 7 суток) + запись текущей
@@ -72,8 +77,8 @@ export default async function (message, ctx) {
     const chatId = message.chat.id;
     const text = (message.text || "").trim();
 
-    // дроп .ged-документа → вопрос «Да/Нет» (до разбора команд/триггеров;
-    // сообщение может быть без текста, caption не разбираем)
+    // дроп .ged-документа → вопрос «Нет / Да / Да, с резервом» (до разбора
+    // команд/триггеров; сообщение может быть без текста, caption не разбираем)
     if (message.document && /\.ged$/i.test(message.document.file_name || "")) {
         await gedDrop(chatId, message.document, message.from?.id);
         return;
@@ -86,13 +91,12 @@ export default async function (message, ctx) {
 
     if (cmd === "/start" || text === "/") {
         // «/» ответом на триггер — фокус-сообщение с радиусом родни
-        const reply = message.reply_to_message;
-        const rh = reply && reply.from && !reply.from.is_bot
-            ? String(reply.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;        if (rh) {
+        const rh = replyHeadOf(message.reply_to_message);
+        if (rh) {
             const key = rh[1].trim() + " " + rh[2];
-            const row = await recordOf(chatId, key);
-            if (row) {
-                await sendFocus(message.chat, chatId, key, 1, row.deathDate ?? undefined);
+            const rec = await recordOf(chatId, key);
+            if (rec) {
+                await sendFocus(message.chat, chatId, key, 1, rec.dd);
                 return;
             }
         }
@@ -118,22 +122,20 @@ export default async function (message, ctx) {
     const gm = text.match(/^\/gedcom([1-5])?(?:@\S+)?$/);
     if (gm) {
         const radius = Number(gm[1]) || 1;
-        const reply = message.reply_to_message;
-        const rh = reply && reply.from && !reply.from.is_bot
-            ? String(reply.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;        if (rh) {
+        const rh = replyHeadOf(message.reply_to_message);
+        if (rh) {
             const key = rh[1].trim() + " " + rh[2];
-            const row = await recordOf(chatId, key);
-            if (row) {
+            const rec = await recordOf(chatId, key);
+            if (rec) {
+                const pairs = await linkPairs(chatId);
                 const keys = focusWithSpouses(
-                    focusKeys((await chatLinks(chatId)).map(l => [l.parent, l.child]), key, radius),
-                    await focusSpousePairs(chatId));
-                await sendGedPdf(chatId, keys, focusHead(key, radius, row.deathDate ?? undefined));
+                    focusKeys(pairs, key, radius), await focusSpousePairs(chatId));
+                await sendGedPdf(chatId, keys, focusHead(key, radius, rec.dd));
                 console.log("focus text:", key, "радиус", radius, "chat", chatId);
                 return;
             }
         }
-        const g = await gedcomText(chatId);
-        if (!g.includes("FAM")) {
+        if (!(await linkPairs(chatId)).length) {
             await api.sendMessage({ chat_id: chatId, text: "связей пока нет — ответьте триггером на триггер" });
             return;
         }
@@ -141,13 +143,14 @@ export default async function (message, ctx) {
         return;
     }
 
-    // сообщение-гедком → импорт древа (до разбора триггеров)
+    // сообщение-гедком → ЗАМЕНА древа (до разбора триггеров); не пустой чат —
+    // сначала автоматический резерв прежнего дерева файлом
     const g = parseGedcom(text);
     if (g) {
-        const r = await importGedcom(chatId, g);
-        if (r.persons || r.links) {
-            await api.sendMessage({ chat_id: chatId, text: "🧬 Гедком импортирован: персон " + r.persons
-                + ", связей " + r.links + (r.weddings ? ", свадеб " + r.weddings : "") });
+        const st = gedStats(g);
+        if (st.persons || st.links) {
+            const r = await replaceWithGedcom(chatId, g, true);
+            await sendLong(chatId, r.head);
             return;
         }
         // гедком без персон с датами — дальше как триггеры
@@ -157,9 +160,7 @@ export default async function (message, ctx) {
 
     // ответ триггером на триггер пользователя = связь родитель→ребёнок:
     // заголовок «Имя ГГГГ-ММ-ДД» в цитируемом сообщении (у ответа бота связей нет)
-    const reply = message.reply_to_message;
-    const replyHead = reply && reply.from && !reply.from.is_bot
-        ? String(reply.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+    const replyHead = replyHeadOf(message.reply_to_message);
 
     const lines = text.split(/\s*\n+\s*/).filter(Boolean);
     for (const line of lines) {
@@ -169,38 +170,35 @@ export default async function (message, ctx) {
             await api.sendMessage({ chat_id: chatId, text: "💥 " + line + "\n" + parsed.error });
             continue;
         }
-        const row = await upsertEvent(chatId, parsed.rec);
+        const rec = await upsertPerson(chatId, parsed.rec);
         if (replyHead) {
             const otherKey = replyHead[1].trim() + " " + replyHead[2];
-            const newKey = row.name + " " + row.date;
-            if (row.name.includes("+")) {
+            const newKey = rec.n + " " + rec.d;
+            if (rec.n.includes("+")) {
                 // пара «Имя+Имя» — свадьба, ребёнком быть не может
-                await sendLong(chatId, jubileeText(recOfRow(row), parsed.note)
-                    + "\n🔗 связь не добавлена: пара «" + row.name + "» не может быть ребёнком");
+                await sendLong(chatId, jubileeText(rec, parsed.note)
+                    + "\n🔗 связь не добавлена: пара «" + rec.n + "» не может быть ребёнком");
                 continue;
             }
-            if (row.date === replyHead[2]) {
+            if (rec.d === replyHead[2]) {
                 // близнецы: даты рождения совпали — связь не добавляем
-                await sendLong(chatId, jubileeText(recOfRow(row), parsed.note)
+                await sendLong(chatId, jubileeText(rec, parsed.note)
                     + "\n🔗 связь не добавлена: даты рождения совпадают (близнецы?)");
                 continue;
             }
             // по-простому: ответ на триггер — связь «цитируемый = родитель,
             // отвечающий = ребёнок» (без свопов по датам)
             const { link, dup } = await addLink(chatId, otherKey, newKey, 'c');
-            if (!dup) {
-                const f = await ensureFam(chatId, link.child); // 2 родителя — семья
-                if (f) link.famId = f.id;
-                await setLinkCand(link, await pairRecords(chatId, link));
+            if (link && !dup) setLinkCand(link, await pairRecords(chatId, link)); // свадьбы «Иван+Мария»
+            if (link) {
+                const txt = (dup ? await linkText(chatId, link) + "\n🔗 связь уже записана" : await linkText(chatId, link))
+                    + "\n" + await gedcomText(chatId, [link.p, link.c]);
+                await sendLong(chatId, txt, dup ? eventMarkup(rec.xref) : await linkMarkup(chatId, link));
+                console.log("link:", link.p, "→", link.c, "chat", chatId, dup ? "(повтор)" : "");
             }
-            const txt = (dup ? await linkText(chatId, link) + "\n🔗 связь уже записана" : await linkText(chatId, link))
-                + "\n" + await gedcomText(chatId, [link.parent, link.child]);
-            await sendLong(chatId, txt,
-                dup ? eventMarkup(row.id) : await linkMarkup(chatId, link));
-            console.log("link:", link.parent, "→", link.child, "chat", chatId, dup ? "(повтор)" : "");
             continue;
         }
-        await sendLong(chatId, jubileeText(recOfRow(row), parsed.note), eventMarkup(row.id));
-        console.log("record:", row.name, row.date, "chat", chatId);
+        await sendLong(chatId, jubileeText(rec, parsed.note), eventMarkup(rec.xref));
+        console.log("record:", rec.n, rec.d, "xref", rec.xref, "chat", chatId);
     }
 }

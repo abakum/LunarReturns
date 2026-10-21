@@ -1,14 +1,16 @@
 import { api, db } from 'sdk';
 import { and, eq } from 'sdk/db';
-import { events, settings, links, fams, gedDrops, focusView } from '../schema.js';
+import { settings, gedDrops, focusView } from '../schema.js';
 import { jubileeText } from '../lib/text.js';
 import { parseGedcom } from '../lib/parse.js';
 import { REL_DEFS, religiousYear } from '../lib/religion.js';
 import {
-        HELP, GED_TTL, relMarkup, upcomingText, getSettings, startMarkup, chatAdmin, eventMarkup,
-        recordOf, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong, refreshFams, deleteEventCascade,
-        importGedcom, chatLinks, focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText, focusWithSpouses, focusSpousePairs,
-        focusListText, focusDepth, sendGedPdf,
+    HELP, GED_TTL, relMarkup, upcomingText, getSettings, startMarkup, chatAdmin, eventMarkup,
+    recordOf, recordByXref, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong,
+    deleteEventCascade, replaceWithGedcom, clearChatTree, deleteLink, setIndiSex, toggleAdopted,
+    linkById, linkPairs, xrefOfKey, personRows, weddingRows,
+    focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText,
+    focusWithSpouses, focusSpousePairs, focusListText, focusDepth, sendGedPdf,
 } from '../lib/bot.js';
 
 export default async function (cq, ctx) {
@@ -85,7 +87,7 @@ export default async function (cq, ctx) {
         // как в VK: список в этом же сообщении, клавиатура с новой подпиской
         const markup = await startMarkup(cq.message.chat, await chatAdmin(cq.message.chat, cq.from?.id),
             chatId, await getSettings(chatId));
-        const parts = splitList(list);
+        const parts = splitText(list);
         await editText(parts[0], markup);
         for (let i = 1; i < parts.length; i++) {
             await api.sendMessage({ chat_id: chatId, text: parts[i] });
@@ -102,29 +104,39 @@ export default async function (cq, ctx) {
         }
     }
 
+    // строка focus_view по сообщению с кнопками
+    const fvOf = async () =>
+        (await db.select().from(focusView).where(eq(focusView.chatId, chatId)).all())
+            .find(r => r.messageId === cq.message?.message_id);
+
+    // события чата записями {n,d,h,m,dd} (персоны + свадьбы)
+    const items = async () => [...await personRows(chatId), ...await weddingRows(chatId)];
+    // пол по ключу «Имя Д» (ярлыки родства)
+    const sexOf = async () => (rows => k => (rows.find(r => r.n + " " + r.d === k) || {}).sex ?? null)
+        (await personRows(chatId));
+    // радиус не глубже имеющихся предков; [radius, ключи родни]
+    const radiusOf = async (key, fvRadius) => {
+        const depth = Math.max(1, focusDepth(await linkPairs(chatId), key));
+        const r = Math.min(fvRadius, depth);
+        const keys = focusWithSpouses(focusKeys(await linkPairs(chatId), key, r),
+            await focusSpousePairs(chatId));
+        return [r, keys, depth];
+    };
+
     if (data === "del") {
         // список подтверждения — по полной дате ГГГГ-ММ-ДД (🔔 — по ММ-ДД без года);
         // 🗑 на фокус-сообщении — только родня в радиусе (список тот же, что у 🔔)
-        const fv = (await db.select().from(focusView).where(eq(focusView.chatId, chatId)).all())
-            .find(r => r.messageId === cq.message?.message_id);
+        const fv = await fvOf();
         let head, list;
         if (fv) {
             const rec = await recordOf(chatId, fv.pkey);
             if (!rec) { await answer("персона не найдена"); return; }
-            const pairsL = await chatLinks(chatId);
-            const radius = Math.min(fv.radius, Math.max(1, focusDepth(pairsL.map(l => [l.parent, l.child]), fv.pkey)));
-            const spPairs = await focusSpousePairs(chatId);
-            const keys = focusWithSpouses(
-                focusKeys(pairsL.map(l => [l.parent, l.child]), fv.pkey, radius),
-                spPairs);
-            const evRows = await db.select().from(events).where(eq(events.chatId, chatId)).all();
-            const sexMap = new Map(evRows.filter(r => !r.name.includes("+")).map(r => [r.name + " " + r.date, r.sex ?? null]));
-            list = focusListText(
-                evRows.map(r => ({ n: r.name, d: r.date, h: r.hour ?? undefined, m: r.minute ?? undefined, dd: r.deathDate ?? undefined })),
-                keys, fv.pkey, pairsL.map(l => [l.parent, l.child]), spPairs,
-                k => sexMap.get(k) ?? null);
-            if (!list) { await answer("в радиусе нет событий"); return; }
-            head = focusHead(fv.pkey, radius, rec.deathDate ?? undefined) + "\nУдалить родню в радиусе?";
+            const [radius, keys, depth] = await radiusOf(fv.pkey, fv.radius);
+            const list0 = focusListText(await items(), keys, fv.pkey,
+                await linkPairs(chatId), await focusSpousePairs(chatId), await sexOf());
+            if (!list0) { await answer("в радиусе нет событий"); return; }
+            list = list0;
+            head = focusHead(fv.pkey, radius, rec.dd) + "\nУдалить родню в радиусе?";
         } else {
             list = await upcomingText(chatId, true);
             if (!list) {
@@ -151,38 +163,27 @@ export default async function (cq, ctx) {
     if (data === "del:yes") {
         // фокус-контекст: удалить родню в радиусе; связи/свадьбы/семьи — каскадом,
         // как при одиночном удалении (deleteEventCascade)
-        const fv = (await db.select().from(focusView).where(eq(focusView.chatId, chatId)).all())
-            .find(r => r.messageId === cq.message?.message_id);
+        const fv = await fvOf();
         if (fv) {
-            const rec = await recordOf(chatId, fv.pkey);
-            if (!rec) { await answer("персона не найдена"); return; }
-            const pairsL = await chatLinks(chatId);
-            const radius = Math.min(fv.radius, Math.max(1, focusDepth(pairsL.map(l => [l.parent, l.child]), fv.pkey)));
-            const spPairs = await focusSpousePairs(chatId);
-            const keys = focusWithSpouses(
-                focusKeys(pairsL.map(l => [l.parent, l.child]), fv.pkey, radius),
-                spPairs);
-            const set = new Set(keys);
-            const rows = await db.select().from(events).where(eq(events.chatId, chatId)).all();
-            const victims = rows.filter(r => set.has(r.name + " " + r.date)
-                || (r.name.includes("+") && focusHasPair(r.name, keys)));
-            for (const v of victims) await deleteEventCascade(chatId, v.name + " " + v.date);
+            const [radius, keys] = await radiusOf(fv.pkey, fv.radius);
+            const victimRows = (await items()).filter(r => keys.includes(r.n + " " + r.d)
+                || (r.n.includes("+") && focusHasPair(r.n, keys)));
+            for (const v of victimRows) await deleteEventCascade(chatId, v.n + " " + v.d);
             // фокус-строки удалённых персон устарели
-            const gone = new Set(victims.map(v => v.name + " " + v.date));
+            const gone = new Set(victimRows.map(v => v.n + " " + v.d));
             for (const r of (await db.select().from(focusView).where(eq(focusView.chatId, chatId)).all()))
                 if (gone.has(r.pkey)) await db.delete(focusView).where(eq(focusView.id, r.id)).run();
-            console.log("deleted:", victims.length, "events (focus) chat", chatId);
+            console.log("deleted:", victimRows.length, "events (focus) chat", chatId);
             // клавиатуру снимаем явно: повторный тап по висячей кнопке не должен
             // уйти в глобальное удаление (focusView-строка уже удалена)
-            await editText("🗑 Удалено событий: " + victims.length, { inline_keyboard: [] });
+            await editText("🗑 Удалено событий: " + victimRows.length, { inline_keyboard: [] });
             await answer("🗑 События родни удалены");
             return;
         }
-        const n = await db.$count(events, eq(events.chatId, chatId));
-        await db.delete(events).where(eq(events.chatId, chatId)).run();
-        // связи и семьи чата ссылаются на записи — уходят вместе с ними
-        await db.delete(links).where(eq(links.chatId, chatId)).run();
-        await db.delete(fams).where(eq(fams.chatId, chatId)).run();
+        // глобальное удаление: дерево чата (персоны/свадьбы/связи/семьи) целиком,
+        // настройки остаются
+        const n = (await items()).length;
+        await clearChatTree(chatId);
         await editText("🗑 Удалено событий: " + n, undefined);
         await answer("🗑 События чата удалены");
         return;
@@ -203,47 +204,42 @@ export default async function (cq, ctx) {
     }
 
     if (data.startsWith("del1:")) {
-        // 👎 — удалить событие, правкой самого сообщения (как реакция 👎 в VK-боте)
-        const id = Number(data.slice(5));
-        const row = await db.select().from(events).where(eq(events.id, id)).get();
-        if (!row || row.chatId !== chatId) { await answer("Событие не найдено"); return; }
+        // 👎 — удалить событие правкой сообщения (как реакция 👎 в VK-боте);
+        // xref — персоны (INDI) либо fam-пары (свадьба/развод)
+        const xref = data.slice(5);
+        const rec = await recordByXref(chatId, xref);
+        if (!rec) { await answer("Событие не найдено"); return; }
         // связи персоны, свадьба пары «Имя+Имя», висячие кандидаты, семьи
-        await deleteEventCascade(chatId, row.name + " " + row.date);
-        await editText("🗑 Событие удалено: " + row.name + " " + row.date, undefined);
+        await deleteEventCascade(chatId, rec.n + " " + rec.d);
+        await editText("🗑 Событие удалено: " + rec.n + " " + rec.d, undefined);
         await answer();
-        console.log("deleted:", row.name, row.date, "chat", chatId);
+        console.log("deleted:", rec.n, rec.d, "xref", xref, "chat", chatId);
         return;
     }
 
     if (data.startsWith("det:")) {
         // 👀 — детализировать правкой сообщения, кнопки сохраняются;
         // повторное нажатие сворачивает обратно (как снятие реакции в VK)
-        const id = Number(data.slice(4));
-        const row = await db.select().from(events).where(eq(events.id, id)).get();
-        if (!row || row.chatId !== chatId) { await answer("Событие не найдено"); return; }
-        const rec = { n: row.name, d: row.date };
-        if (row.hour !== null && row.hour !== undefined) { rec.h = row.hour; rec.m = row.minute; }
-        if (row.deathDate) rec.dd = row.deathDate; // † / развод — в голове результата
+        const xref = data.slice(4);
+        const rec = await recordByXref(chatId, xref);
+        if (!rec) { await answer("Событие не найдено"); return; }
         // сжатый вид отличается от детального спойлером: если в сообщении нет
         // spoiler-entity — оно детальное (в моке entity эмулирует repl)
         const ent = cq.message?.entities || [];
         const isDetail = !ent.some(e => e.type === 'spoiler');
-        const depth = focusDepth((await chatLinks(chatId)).map(l => [l.parent, l.child]), row.name + " " + row.date);
+        const depth = focusDepth(await linkPairs(chatId), rec.n + " " + rec.d);
         if (!isDetail) { // детализировать + кнопки фокуса (как «/»-ответ)
             // строка focusView по id сообщения — чтобы foc*/focbell/foctree/del
             // работали на развёрнутом отчёте
             await db.delete(focusView).where(and(eq(focusView.chatId, chatId), eq(focusView.messageId, cq.message.message_id))).run();
             await db.insert(focusView).values({
-                chatId, messageId: cq.message.message_id, pkey: row.name + " " + row.date, radius: 1, ts: Date.now(),
+                chatId, messageId: cq.message.message_id, pkey: rec.n + " " + rec.d, radius: 1, ts: Date.now(),
             }).run();
-            await editText(
-                jubileeText(rec, "", true),
+            await editText(jubileeText(rec, "", true),
                 focusMarkup(cq.message.chat, chatId, await getSettings(chatId), 1, depth), 'HTML');
         } else { // повторное нажатие сворачивает обратно (как снятие реакции в VK)
             await db.delete(focusView).where(and(eq(focusView.chatId, chatId), eq(focusView.messageId, cq.message.message_id))).run();
-            await editText(
-                jubileeText(rec, "", false),
-                eventMarkup(id), 'HTML');
+            await editText(jubileeText(rec, "", false), eventMarkup(xref), 'HTML');
         }
         await answer(isDetail ? "сжато" : "подробно");
         return;
@@ -251,8 +247,7 @@ export default async function (cq, ctx) {
 
     // 🧬 — гедком-древо чата (как /gedcom); /start править нельзя — тост
     if (data === "tree") {
-        const g = await gedcomText(chatId);
-        if (!g.includes("FAM")) {
+        if (!(await linkPairs(chatId)).length) {
             await answer("связей пока нет");
             return;
         }
@@ -265,47 +260,45 @@ export default async function (cq, ctx) {
     // 👎 — удалить связь
     if (data.startsWith("sex:") || data.startsWith("pair:") || data.startsWith("adop:") || data.startsWith("dell:")) {
         const [act, idStr, arg] = data.split(":");
-        const link = (await db.select().from(links).where(eq(links.id, Number(idStr))).get());
-        if (!link || link.chatId !== chatId) { await answer("связь не найдена"); return; }
+        const link = await linkById(chatId, Number(idStr));
+        if (!link) { await answer("связь не найдена"); return; }
         if (act === "sex") {
-            const rec = await recordOf(chatId, link[link.who === 'p' ? 'parent' : 'child']);
-            if (rec) await db.update(events).set({ sex: arg === 'F' ? 'F' : 'M' }).where(eq(events.id, rec.id)).run();
+            const xref = await xrefOfKey(chatId, link[link.who === 'p' ? 'p' : 'c']);
+            if (xref) await setIndiSex(chatId, xref, arg);
             await answer("пол: " + (arg === 'F' ? "♀" : "♂"));
         } else if (act === "adop") {
-            await db.update(links).set({ adopted: !link.adopted }).where(eq(links.id, link.id)).run();
-            link.adopted = !link.adopted;
-            await answer(link.adopted ? "🤱 усыновление" : "усыновление снято");
+            const on = await toggleAdopted(chatId, link);
+            link.adopted = on;
+            await answer(on ? "🤱 усыновление" : "усыновление снято");
         } else if (act === "pair") {
             const i = Number(arg);
-            let fragKeys = [link.parent, link.child];
-            const cand = link.pairCand ? JSON.parse(link.pairCand) : null;
+            let fragKeys = [link.p, link.c];
+            const cand = link.pairCand;
             if (i >= 0 && cand && cand[i]) {
                 const f = await confirmPair(chatId, link, cand[i]);
-                await answer(f && f.marrD ? "💍 " + f.marrD + (f.marrPlac ? ", " + f.marrPlac : "") : "не найдено");
+                await answer(f && f.marr ? "💍 " + f.marr.d + (f.marr.plac ? ", " + f.marr.plac : "") : "не найдено");
                 if (f) fragKeys = [...f.parents, ...f.children]; // все трое
             } else {
                 await setLinkCand(link, null);
                 await answer("без свадьбы");
             }
-            const fresh = await db.select().from(links).where(eq(links.id, link.id)).get();
+            const fresh = await linkById(chatId, link.id);
             if (fresh) await editText(await linkText(chatId, fresh) + "\n" + await gedcomText(chatId, fragKeys), await linkMarkup(chatId, fresh), 'HTML');
             return;
-        } else { // dell — удалить связь, событие остаётся
-            await db.delete(links).where(eq(links.id, link.id)).run();
-            // почистить семьи: ребёнок в семье, пока есть связь с famId
-            await refreshFams(chatId);
-            const rec = await recordOf(chatId, link[link.who === 'p' ? 'parent' : 'child']);
-            await editText("🔗 Связь удалена: " + link.parent + " → " + link.child
-                + (rec ? "\n" + jubileeText({ n: rec.name, d: rec.date, h: rec.hour ?? undefined, m: rec.minute ?? undefined, dd: rec.deathDate ?? undefined }, "") : ""),
-                undefined, 'HTML');
+        } else { // dell — удалить связь, событие остаётся; семья чистится
+            const heroKey = link[link.who === 'p' ? 'p' : 'c'];
+            const rec = await recordOf(chatId, heroKey);
+            await deleteLink(chatId, link);
+            await editText("🔗 Связь удалена: " + link.p + " → " + link.c
+                + (rec ? "\n" + jubileeText(rec, "") : ""), undefined, 'HTML');
             await answer();
-            console.log("link deleted:", link.parent, "→", link.child, "chat", chatId);
+            console.log("link deleted:", link.p, "→", link.c, "chat", chatId);
             return;
         }
-        const fresh = await db.select().from(links).where(eq(links.id, link.id)).get();
+        const fresh = await linkById(chatId, link.id);
         if (fresh) {
             // sex/adop: фрагмент — новое лицо (с полом) либо родитель+ребёнок
-            const fragKeys = act === "sex" ? [fresh[fresh.who === 'p' ? 'parent' : 'child']] : [fresh.parent, fresh.child];
+            const fragKeys = act === "sex" ? [fresh[fresh.who === 'p' ? 'p' : 'c']] : [fresh.p, fresh.c];
             await editText(await linkText(chatId, fresh) + "\n" + await gedcomText(chatId, fragKeys), await linkMarkup(chatId, fresh), 'HTML');
         }
         return;
@@ -313,76 +306,56 @@ export default async function (cq, ctx) {
 
     // фокус-сообщение: радиус родни 1–5, 🔔/🧬 в радиусе
     if (/^foc[1-5]$/.test(data) || data === "focbell" || data === "foctree") {
-        const row = (await db.select().from(focusView).where(eq(focusView.chatId, chatId)).all())
-            .find(r => r.messageId === cq.message?.message_id);
+        const row = await fvOf();
         if (!row) { await answer("сообщение устарело — ответьте «/» на триггер заново"); return; }
         const rec = await recordOf(chatId, row.pkey);
         if (!rec) { await answer("персона не найдена"); return; }
-        // глубина предков: цифры радиуса без сведений не выводятся,
-        // радиус не глубже имеющихся предков (старые сообщения могут нести снятые кнопки)
-        const pairsL = await chatLinks(chatId);
-        const depth = focusDepth(pairsL.map(l => [l.parent, l.child]), row.pkey);
+        const [radius, keys, depth] = await radiusOf(row.pkey, row.radius);
         const bell = data === "focbell";
         // сортировка списка — по подписке (🔔 вкл — ММ-ДД, 🔕 выкл — ГГГГММДД);
         // клик по уже показанному списку переключает подписку
         const s = await getSettings(chatId);
         const on = s.bell !== false;
         let byFull = bell && !on;
-        const radius = bell || data === "foctree"
-            ? Math.min(row.radius, Math.max(1, depth))
-            : Number(data.slice(3));
         if (data !== "focbell" && data !== "foctree")
             await db.update(focusView).set({ radius }).where(eq(focusView.id, row.id)).run();
         await answer(data === "focbell" ? "список в радиусе" : (data === "foctree" ? "древо в радиусе" : "от " + focusLabel(radius)));
         // 🧬 в радиусе: <имя>.ged + <имя>.pdf (родство к герою), правка не нужна
         if (data === "foctree") {
-            const spPairs = await focusSpousePairs(chatId);
-            const keys = focusWithSpouses(
-                focusKeys(pairsL.map(l => [l.parent, l.child]), row.pkey, radius),
-                spPairs);
-            await sendGedPdf(chatId, keys, focusHead(row.pkey, radius, rec.deathDate ?? undefined));
+            await sendGedPdf(chatId, keys, focusHead(row.pkey, radius, rec.dd));
             return;
         }
         // цифра — только заголовок; тело (список/гедком) — по 🔔/🧬
         let body = null;
         if (bell) {
+            const pairs = await linkPairs(chatId);
             const spPairs = await focusSpousePairs(chatId);
-            const keys = focusWithSpouses(
-                focusKeys(pairsL.map(l => [l.parent, l.child]), row.pkey, radius),
-                spPairs);
-            if (bell) {
-                const evRows = await db.select().from(events).where(eq(events.chatId, chatId)).all();
-                const sexMap = new Map(evRows.filter(r => !r.name.includes("+")).map(r => [r.name + " " + r.date, r.sex ?? null]));
-                let list = focusListText(
-                    evRows.map(r => ({ n: r.name, d: r.date, h: r.hour ?? undefined, m: r.minute ?? undefined, dd: r.deathDate ?? undefined })),
-                    keys, row.pkey, pairsL.map(l => [l.parent, l.child]), spPairs,
-                    k => sexMap.get(k) ?? null, byFull) || "(в радиусе нет событий)";
-                const cur = cq.message?.text || "";
-                const head = focusHead(row.pkey, radius, rec.deathDate ?? undefined);
-                // «уже показан» — показанное длиннее заголовка (сообщение-заголовок
-                // само по себе префикс рендера списка)
-                if (cur && cur !== head && (head + "\n" + list).startsWith(cur)) {
-                    s.bell = !on;
-                    const srow = await db.select().from(settings).where(eq(settings.chatId, chatId)).get();
-                    if (srow) await db.update(settings).set({ bell: s.bell }).where(eq(settings.chatId, chatId)).run();
-                    else await db.insert(settings).values({ chatId, bell: s.bell }).run();
-                    byFull = s.bell === false;
-                    list = focusListText(
-                        evRows.map(r => ({ n: r.name, d: r.date, h: r.hour ?? undefined, m: r.minute ?? undefined, dd: r.deathDate ?? undefined })),
-                        keys, row.pkey, pairsL.map(l => [l.parent, l.child]), spPairs,
-                        k => sexMap.get(k) ?? null, byFull) || "(в радиусе нет событий)";
-                }
-                body = list;
+            const render = async bf => focusListText(await items(), keys, row.pkey, pairs, spPairs, await sexOf(), bf)
+                || "(в радиусе нет событий)";
+            let list = await render(byFull);
+            const cur = cq.message?.text || "";
+            const head = focusHead(row.pkey, radius, rec.dd);
+            // «уже показан» — показанное длиннее заголовка (сообщение-заголовок
+            // само по себе префикс рендера списка)
+            if (cur && cur !== head && (head + "\n" + list).startsWith(cur)) {
+                s.bell = !on;
+                const srow = await db.select().from(settings).where(eq(settings.chatId, chatId)).get();
+                if (srow) await db.update(settings).set({ bell: s.bell }).where(eq(settings.chatId, chatId)).run();
+                else await db.insert(settings).values({ chatId, bell: s.bell }).run();
+                byFull = s.bell === false;
+                list = await render(byFull);
             }
+            body = list;
         }
-        const parts = splitText(focusHead(row.pkey, radius, rec.deathDate ?? undefined) + (body ? "\n" + body : ""));
+        const parts = splitText(focusHead(row.pkey, radius, rec.dd) + (body ? "\n" + body : ""));
         await editText(parts[0], focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth));
         for (let i = 1; i < parts.length; i++) await api.sendMessage({ chat_id: chatId, text: parts[i] });
         return;
     }
 
-    // «Да/Нет» на дроп .ged: импорт или отказ (в группе — только отправивший)
-    if (data === "gedadd" || data === "gedign") {
+    // «Нет / Да / Да, с резервом» на дроп .ged: ЗАМЕНА дерева или отказ
+    // (в группе — только отправивший файл)
+    if (data === "ged:rep" || data === "ged:bak" || data === "ged:ign") {
         const row = await db.select().from(gedDrops).where(eq(gedDrops.chatId, chatId)).get();
         if (!row || Date.now() - row.ts > GED_TTL) {
             if (row) await db.delete(gedDrops).where(eq(gedDrops.chatId, chatId)).run();
@@ -394,34 +367,17 @@ export default async function (cq, ctx) {
             return;
         }
         await db.delete(gedDrops).where(eq(gedDrops.chatId, chatId)).run();
-        if (data === "gedign") {
+        if (data === "ged:ign") {
             await editText("Файл не добавлен: " + row.fileName, undefined);
             await answer("не добавлено");
             return;
         }
-        const r = await importGedcom(chatId, parseGedcom(row.content));
-        await editText("🧬 Гедком импортирован: персон " + r.persons + ", связей " + r.links
-            + (r.weddings ? ", свадеб " + r.weddings : ""), undefined);
-        await answer("🧬 Гедком импортирован");
-        console.log("ged import:", r.persons, "persons chat", chatId);
+        const r = await replaceWithGedcom(chatId, parseGedcom(row.content), data === "ged:bak");
+        await editText(r.head, undefined);
+        await answer(r.ok ? "♻️ Заменено" : "💥 замена отменена");
+        console.log("ged replace:", data, "chat", chatId);
         return;
     }
 
     await answer();
-}
-
-// разбить длинный список на куски < 4000 по границам строк (как splitText VK)
-function splitList(text) {
-    const MAX = 4000;
-    if (text.length <= MAX) return [text];
-    const parts = [];
-    let rest = text;
-    while (rest.length > MAX) {
-        let cut = rest.lastIndexOf("\n", MAX);
-        if (cut < MAX / 2) cut = MAX;
-        parts.push(rest.slice(0, cut));
-        rest = rest.slice(cut).replace(/^\n/, "");
-    }
-    if (rest) parts.push(rest);
-    return parts;
 }
