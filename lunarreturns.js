@@ -3508,7 +3508,7 @@ async function main() {
         console.error("нет токена: задайте VK_TOKEN (env или .env рядом с lunarreturns.js)");
         process.exit(1);
     }
-    initDb();
+    sq(); // открыть/создать базу (+ разовая конвертация db.json)
     await longPollInit();
     await initOwner();
     // догнать сообщения, накопившиеся за простой (как catchUp в pinguin)
