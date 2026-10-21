@@ -4,7 +4,8 @@
 # Сервис изолирован от пользователя-установщика:
 #   - DynamicUser — одноразовый системный пользователь без логина;
 #   - StateDirectory — свой каталог /var/lib/lunarreturns: там и скрипт
-#     (копия, ставится инсталлятором), и db.json (LR_DB);
+#     (копия, ставится инсталлятором), и база (lunarreturns.db; прежний
+#     db.json конвертируется скриптом разово при первом старте);
 #   - конфиг с токеном: /etc/lunarreturns/.env (VK_TOKEN=…), root:root 600;
 #   - каталог репо используется только на этапе установки.
 
@@ -17,7 +18,6 @@ Wants=network-online.target
 Type=simple
 DynamicUser=yes
 StateDirectory=lunarreturns
-Environment=LR_DB=/var/lib/lunarreturns/db.json
 EnvironmentFile=@CFG@/.env
 ExecStart=@NODE@ /var/lib/lunarreturns/lunarreturns.js
 WorkingDirectory=/var/lib/lunarreturns
