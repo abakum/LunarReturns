@@ -142,7 +142,7 @@ FK не объявлять (ТГ их выключает) — целостнос
 
 **ТГ (`tgcloud/`):**
 - `schema.js`: indi/fam/chil/edges + gedDrops/focusView; FK не объявлены;
-  events/links/fams помечены устаревшими (дроп — после перевода всех чатов).
+  устаревшие events/links/fams удалены до публикации бота (чистая схема).
 - `lib/bot.js` переписан полностью (те же виды/мутации, `recordByXref`,
   `replaceWithGedcom`/`sendTreeBackup`, `setIndiSex`/`toggleAdopted`).
 - Хендлеры переписаны: дроп → таблица `gedDrops` + те же 3 кнопки;
@@ -160,7 +160,7 @@ FK не объявлять (ТГ их выключает) — целостнос
 4. Синтаксис всех затронутых файлов валиден (`node --check`).
 
 **Осталось (вне среды):**
-- `npx tgcloud status` → `push` → `npx tgcloud migrate` — CLI платформы
-  недоступен из этой среды (npm-шный `tgcloud` — другой пакет).
+- `npx tgcloud status` → `push` (migrate не нужен: бот ещё не опубликован,
+  устаревшие events/links/fams удалены из schema.js — коммит 53ca664).
 - Деплой ВК: systemd-сервис; проверить, что ExecStart использует node ≥ 24.
 - Коммит всех правок одним коммитом.
