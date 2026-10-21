@@ -676,30 +676,39 @@ function gedStats(g) {
     return { persons, links, weddings };
 }
 
-// глубина предков персоны key (0 = родителей нет) — для скрытия цифр радиуса
-// без сведений (кнопок 2–5 дедов/прадедов, если их нет). В ТГ — focusDepth в lib/bot.js.
+// глубина родни персоны key (0 = ни родителей, ни потомков) — для скрытия
+// цифр радиуса без сведений: max(глубина предков, глубина потомков),
+// т.к. радиус теперь режет вниз тем же числом поколений, что и вверх.
+// В ТГ — focusDepth в lib/bot.js.
 function focusDepth(pairs, key) {
-    const parentsOf = new Map();
+    const kidsOf = new Map(), parentsOf = new Map();
     for (const [p, c] of pairs) {
+        if (!kidsOf.has(p)) kidsOf.set(p, []);
+        kidsOf.get(p).push(c);
         if (!parentsOf.has(c)) parentsOf.set(c, []);
         parentsOf.get(c).push(p);
     }
-    let frontier = [key], d = 0;
-    const seen = new Set([key]);
-    while (frontier.length) {
-        const next = [];
-        for (const k of frontier) for (const p of (parentsOf.get(k) || []))
-            if (!seen.has(p)) { seen.add(p); next.push(p); }
-        if (!next.length) break;
-        frontier = next;
-        d++;
-    }
-    return d;
+    const depth = adj => {
+        let frontier = [key], d = 0;
+        const seen = new Set([key]);
+        while (frontier.length) {
+            const next = [];
+            for (const k of frontier) for (const x of (adj.get(k) || []))
+                if (!seen.has(x)) { seen.add(x); next.push(x); }
+            if (!next.length) break;
+            frontier = next;
+            d++;
+        }
+        return d;
+    };
+    return Math.max(depth(parentsOf), depth(kidsOf));
 }
 
-// множество родни персоны key в радиусе radius: предки до radius поколений
-// (1=родители, 2=деды…) ∪ все их транзитивные потомки (сам key, сиблинги,
-// двоюродные и потомки всех); pairs — массивы [parent, child]
+// множество родни персоны key в радиусе radius — «ромб»: узел включён, если
+// есть путь от key с ≤ radius шагами «вверх» (к родителям) И ≤ radius шагами
+// «вниз» (к детям); пары родитель-ребёнок держатся вместе в пределах окна
+// (сиблинги — u1d1, племянники — u1d2 с радиуса 2, троюродные — с 4).
+// Супруги доклеиваются отдельно (focusWithSpouses). pairs — [[parent, child]]
 function focusKeys(pairs, key, radius) {
     const kidsOf = new Map(), parentsOf = new Map();
     for (const [p, c] of pairs) {
@@ -708,22 +717,28 @@ function focusKeys(pairs, key, radius) {
         if (!parentsOf.has(c)) parentsOf.set(c, []);
         parentsOf.get(c).push(p);
     }
-    let frontier = [key];
-    const seen = new Set([key]);
-    for (let gen = 0; gen < radius; gen++) {
-        const next = [];
-        for (const k of frontier) for (const p of parentsOf.get(k) || []) {
-            if (!seen.has(p)) { seen.add(p); next.push(p); }
-        }
-        frontier = next;
+    // обход состояний (узел, вверх, вниз); на узле — недоминируемые вектора
+    const best = new Map([[key, [[0, 0]]]]);
+    const dominated = (arr, u, d) => arr.some(s => s[0] <= u && s[1] <= d);
+    const queue = [[key, 0, 0]];
+    while (queue.length) {
+        const [k, u, d] = queue.pop();
+        const step = (adj, nu, nd) => {
+            if (nu > radius || nd > radius) return;
+            for (const x of (adj.get(k) || [])) {
+                let arr = best.get(x);
+                if (!arr) best.set(x, arr = []);
+                if (dominated(arr, nu, nd)) continue;
+                for (let i = arr.length - 1; i >= 0; i--)
+                    if (nu <= arr[i][0] && nd <= arr[i][1]) arr.splice(i, 1);
+                arr.push([nu, nd]);
+                queue.push([x, nu, nd]);
+            }
+        };
+        step(parentsOf, u + 1, d);
+        step(kidsOf, u, d + 1);
     }
-    const out = new Set(seen);
-    const stack = [...seen];
-    while (stack.length) {
-        const k = stack.pop();
-        for (const c of kidsOf.get(k) || []) if (!out.has(c)) { out.add(c); stack.push(c); }
-    }
-    return [...out];
+    return [...best.keys()];
 }
 
 // входит ли событие-пара «Имя1+Имя2 ДАТА» в фокус: оба имени среди персон множества

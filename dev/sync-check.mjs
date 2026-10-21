@@ -335,14 +335,36 @@ for (const r of [1, 2]) {
             { failed++; console.log('✗ focusListText byFull: первая строка не старейший\n  ' + full.split('\n')[0]); }
     }
 }
-// состав по радиусам: r1 — родители и их потомки (дедов нет), r2 — деды
-// (прадедов нет), r3 — прадеды; ярлык «двоюродный дед» возможен только с r3
+// состав по радиусам (ромб): r1 — родители и сиблинги (племянников нет:
+// u1d2), r2 — деды, тётя, двоюродный, племянник (но не внучатый u1d3/
+// двоюродный-племя u2d3), r3 — прадеды, дядьки, кузены-линия, внучатые
 const kinAt = (which, r) => which.focusKeys(kinPairs, sonKey, r);
-for (const r of [1, 2, 3]) cmp('фокус-множество радиус ' + r, kinAt(VK, r), kinAt(TG, r));
+for (const r of [1, 2, 3, 4, 5]) cmp('фокус-множество радиус ' + r, kinAt(VK, r), kinAt(TG, r));
 if (kinAt(VK, 1).includes(kinKeys['Дед'])) { failed++; console.log('✗ r1 содержит деда'); }
 if (kinAt(VK, 2).includes(kinKeys['Прадед'])) { failed++; console.log('✗ r2 содержит прадеда'); }
 if (!kinAt(VK, 2).includes(kinKeys['Дед'])) { failed++; console.log('✗ r2 без деда'); }
 if (!kinAt(VK, 3).includes(kinKeys['Прадед'])) { failed++; console.log('✗ r3 без прадеда'); }
+// ромб: вниз режется тем же радиусом, что и вверх
+if (kinAt(VK, 1).includes(kinKeys['Племянник'])) { failed++; console.log('✗ r1 содержит племянника (u1d2)'); }
+if (kinAt(VK, 2).includes(kinKeys['Внучатый'])) { failed++; console.log('✗ r2 содержит внучатого (u1d3)'); }
+if (kinAt(VK, 2).includes(kinKeys['ДвПлем'])) { failed++; console.log('✗ r2 содержит двоюродного племянника (u2d3)'); }
+if (kinAt(VK, 2).includes(kinKeys['Правнучатый'])) { failed++; console.log('✗ r2 содержит правнучатого (u1d4)'); }
+if (!kinAt(VK, 2).includes(kinKeys['Племянник'])) { failed++; console.log('✗ r2 без племянника (u1d2)'); }
+if (!kinAt(VK, 2).includes(kinKeys['Двоюродный'])) { failed++; console.log('✗ r2 без двоюродного (u2d2)'); }
+if (!kinAt(VK, 3).includes(kinKeys['Внучатый'])) { failed++; console.log('✗ r3 без внучатого (u1d3)'); }
+if (!kinAt(VK, 3).includes(kinKeys['ДвПлем'])) { failed++; console.log('✗ r3 без двоюродного племянника (u2d3)'); }
+if (!kinAt(VK, 3).includes(kinKeys['Дядька'])) { failed++; console.log('✗ r3 без двоюродного деда (u3d1)'); }
+if (kinAt(VK, 3).includes(kinKeys['Правнучатый'])) { failed++; console.log('✗ r3 содержит правнучатого (u1d4)'); }
+if (!kinAt(VK, 4).includes(kinKeys['Правнучатый'])) { failed++; console.log('✗ r4 без правнучатого (u1d4)'); }
+if (!kinAt(VK, 4).includes(kinKeys['Кузина'])) { failed++; console.log('✗ r4 без кузины (u4d2)'); }
+if (!kinAt(VK, 4).includes(kinKeys['Троюродный'])) { failed++; console.log('✗ r4 без троюродного (u4d3)'); }
+if (!kinAt(VK, 4).includes(kinKeys['ДвВнуч'])) { failed++; console.log('✗ r4 без двоюродного внучатого племянника (u2d4)'); }
+if (kinAt(VK, 3).includes(kinKeys['Брат Прадеда'])) { failed++; console.log('✗ r3 содержит брата прадеда (u4)'); }
+if (!kinAt(VK, 4).includes(kinKeys['Брат Прадеда'])) { failed++; console.log('✗ r4 без брата прадеда (u4d1)'); }
+// отражённый коб: потомки есть, родителей нет — цифра радиуса всё равно видна
+if (JSON.stringify(VK.focusDepth([['A 1900-01-01', 'B 1930-01-01'], ['B 1930-01-01', 'C 1960-01-01'],
+    ['C 1960-01-01', 'D 1985-01-01']], 'B 1930-01-01')) !== '2')
+    { failed++; console.log('✗ focusDepth: глубина по потомкам (max 1,2 = 2)'); }
 
 // ==================== 3. импорт → полный экспорт гедкома ====================
 // непустой чат до импорта: ЗАМЕНА должна стереть старое
