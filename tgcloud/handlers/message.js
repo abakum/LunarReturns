@@ -130,7 +130,7 @@ export default async function (message, ctx) {
                 const pairs = await linkPairs(chatId);
                 const keys = focusWithSpouses(
                     focusKeys(pairs, key, radius), await focusSpousePairs(chatId));
-                await sendGedPdf(chatId, keys, focusHead(key, radius, rec.dd));
+                await sendGedPdf(chatId, keys, focusHead(key, radius, rec.dd), key);
                 console.log("focus text:", key, "радиус", radius, "chat", chatId);
                 return;
             }

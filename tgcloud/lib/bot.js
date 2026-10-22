@@ -714,9 +714,9 @@ export async function focusSpousePairs(chatId) {
     return (await famList(chatId)).filter(f => f.parents.length === 2).map(f => f.parents);
 }
 
-// подпись радиуса: 1 родителей, 2 дедов, 3 прадедов, 4 прапрадедов…
-export const focusLabel = radius =>
-    radius === 1 ? "родителей" : radius === 2 ? "дедов" : "пра".repeat(radius - 3) + "прадедов";
+// подпись радиуса в тостах фокус-кнопок (цифры и 🧬): «диапазон» уровня —
+// как в колонке чарта у героя (rangeLevel)
+export const focusLabel = rangeLevel;
 
 // глубина родни персоны key (0 = ни родителей, ни потомков) — для скрытия
 // цифр радиуса без сведений: max(глубина предков, глубина потомков), т.к.
@@ -915,11 +915,13 @@ export async function gedcomText(chatId, keys) {
 // Чистая логика дословно продублирована в lunarreturns.js (dev/sync-check.mjs)
 
 import { InputFile } from 'sdk';
-import { CHART_MAX, chartPdf, chartFont, fileBaseOf } from './chart.js';
+import { CHART_MAX, chartPdf, chartFont, fileBaseOf, rangeLevel } from './chart.js';
 
 // диаграммные данные чата/фрагмента (как у gedcomText: те же INDI, свадьбы
-// «Имя+Имя» вне; семьи усекаются до персон фрагмента)
-export async function chartFor(chatId, keys, title) {
+// «Имя+Имя» вне; семьи усекаются до персон фрагмента). heroKey — pkey героя
+// (персона фокуса): ярлыки родства «Связь год» в колонке подписей; без героя
+// — просто «Год» (древо чата)
+export async function chartFor(chatId, keys, title, heroKey = null, range = null) {
     const hasKeys = Array.isArray(keys) && keys.length > 0;
     const persons = (await personRows(chatId)).filter(r => !hasKeys || keys.includes(pkey(r)));
     const keySet = new Set(persons.map(r => pkey(r)));
@@ -938,17 +940,46 @@ export async function chartFor(chatId, keys, title) {
     const ckey = k => k.slice(0, -11) + " " + keyY(k);
     const links = [...parentsOf].filter(([, ps]) => ps.length)
         .map(([c, ps]) => ({ child: ckey(c), parents: ps.map(ckey) }));
-    return { pdf: chartPdf(title, rows, links, chartFont()), persons: Math.min(persons.length, CHART_MAX) };
+    // ярлыки родства — как в 🔔-списке (focusListText): linkPairs +
+    // супруги fam-семей + пол; ключи ярлыков — «Имя год»; диапазон героя
+    // rel.range (цифра кейапа заголовка, 4⃣ … → 4) — из sendGedPdf
+    const hero = heroKey ? ckey(heroKey) : null;
+    const rel = hero ? {
+        hero,
+        range,
+        pairs: (await linkPairs(chatId)).map(([p, c]) => [ckey(p), ckey(c)]),
+        spouses: (await focusSpousePairs(chatId)).map(sp => sp.map(ckey)),
+        sex: Object.fromEntries(persons.map(r => [ckey(pkey(r)), r.sex || null])),
+    } : null;
+    // дети супругов вне фрагмента/радиуса: годы их рождения — вертикалью
+    // между супругами (дата рождения дъявляется из всех персон чата;
+    // заглушки без даты — пропускаются)
+    const bornOf = new Map((await personRows(chatId)).map(r => [pkey(r), r.d]));
+    const phantoms = [];
+    for (const f of await famList(chatId)) {
+        const ps = f.parents.filter(p => keySet.has(p));
+        if (ps.length !== 2) continue;
+        const yrs = [...new Set(f.children.filter(c => !keySet.has(c) && bornOf.has(c))
+            .map(c => Number(bornOf.get(c).slice(0, 4))))].sort((a, b) => a - b);
+        if (yrs.length) phantoms.push({ fam: ps.map(ckey), years: yrs });
+    }
+    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }), persons: Math.min(persons.length, CHART_MAX) };
 }
 
 // тап 🧬 / «/gedcom» / «/gedcomN»: <имя>.ged всегда, <имя>.pdf (диаграмма,
-// имя из заголовка fileBaseOf); неудача — фолбэк текстовым гедкомом (sendLong)
-export async function sendGedPdf(chatId, keys, head) {
+// имя из заголовка fileBaseOf); heroKey — pkey героя для колонки «Связь год»;
+// неудача — фолбэк текстовым гедкомом (sendLong)
+export async function sendGedPdf(chatId, keys, head, heroKey = null) {
     const g = await gedcomText(chatId, keys);
-    const base = fileBaseOf(head || "Гедком-древо");
+    // заголовок чарта без цифры уровня (кейкап оставлен только фокусу);
+    // цифра → range героя для chartFor
+    const head0 = head || "Гедком-древо";
+    const chartHead = head0.replace(/^\d\u20E3\s*/, "");
+    const rm = /^(\d)\u20E3/.exec(head0);
+    const base = fileBaseOf(head0);
     let pdf = null, persons = 0;
     try {
-        const res = await chartFor(chatId, keys, head || "Гедком-древо");
+        const res = await chartFor(chatId, keys, chartHead, heroKey, rm ? Number(rm[1]) : null);
         // chartPdf сам отсекает до 50 младших — файл всегда строится
         persons = res.persons;
         pdf = res.pdf;

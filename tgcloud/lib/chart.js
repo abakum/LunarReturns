@@ -14,8 +14,16 @@
 // в PDF как есть (FontFile2), из него парсятся только cmap/hmtx/head/OS2.
 
 import { FONT_B64 } from './font-cyr.js';
+import { kinLabel } from './kinship.js';
 
-export const CHART_MAX = 150;  // персон (PDF многостраничный, режется по высоте)
+export const CHART_MAX = 150;
+
+// «диапазон» радиуса: 1 родители-дети, 2 деды-внуки, 3 прадеды-правнуки,
+// 4 пра2деды-пра2внуки, 5 пра3деды-пра3внуки (один «пра» на половину:
+// 3 = прадеды-правнуки) — в чарте у героя и в тостах фокус-кнопок
+export const rangeLevel = L => L === 1 ? "родители-дети" : L === 2 ? "деды-внуки"
+    : L === 3 ? "прадеды-правнуки"
+    : "пра" + (L - 2) + "деды-пра" + (L - 2) + "внуки";  // персон (PDF многостраничный, режется по высоте)
 const KIND_W = 170;          // колонка подписей слева (минимум)
 const TITLE_H = 34;          // поле заголовка
 const ROW_H = 16;            // высота строки персоны
@@ -111,10 +119,19 @@ export function parseTtf(b) {
 }
 
 // rows — [{ name, birth: "ГГГГ-ММ-…", death: "…"/null, sex: "M"/"F"/null }];
-// links — [{ child: <ключ «Имя год»>, parents: [ключ, …] }]. Вычисляет всю
-// геометрию (без рендера) → модель с примитивами draws (rect/rrect/line/qarc/
-// dot/text) в порядке отрисовки — единая основа для PDF-эммитера
-export function chartModel(title, rows, links) {
+// links — [{ child: <ключ «Имя год»>, parents: [ключ, …] }]. rel — данные
+// родства к герою (не задан — колонка «Год» без ярлыков):
+//   { hero: <ключ «Имя год»>, pairs: [[родитель, ребёнок], …] } — в колонке
+//   «уровень год»: поколенческий диапазон уровня по крови к герою
+//   (1 родители-дети, 2 деды-внуки, 3 прадеды-правнуки, 4 пра2деды-пра2внуки,
+//   5 пра3деды-пра3внуки); у героя и вне крови — просто «Год»
+// rel.phantoms — дети супругов вне чарта (не попали в радиус): рисовать
+//   линию между супругами в годы их рождения — [{ fam: [супруг, супруг],
+//   years: [год…] }]
+// Вычисляет всю геометрию (без рендера) → модель с примитивами draws
+// (rect/rrect/line/qarc/dot/text) в порядке отрисовки — единая основа для
+// PDF-эммитера
+export function chartModel(title, rows, links, rel = null) {
     if (!rows.length) throw new Error("chart: персоны пусты");
     const year = d => Number(String(d).slice(0, 4));
     const keyOf = r => r.name + " " + year(r.birth);
@@ -155,17 +172,27 @@ export function chartModel(title, rows, links) {
     const people = [...rows].sort((a, b) => year(a.birth) - year(b.birth)
         || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
         .map(r => ({ r, key: keyOf(r), yr: year(r.birth), dy: r.death ? year(r.death) : null, row: 0 }));
-    people.forEach((p, i) => { p.row = i; });
+    // у героя в колонке — «диапазон» радиуса (уровень из кейкапа заголовка,
+    // rel.range — rangeLevel(L)); у остальных строк — прежние индивидуальные
+    // ярлыки родства (как в 🔔-списке); у героя и вне родни (без героя/
+    // диапазона) — подпись «Год»
+    const kin = rel && rel.hero
+        ? new Map(people.map(p =>
+            [p.key, kinLabel(rel.pairs || [], rel.spouses || [], k2 => (rel.sex || {})[k2] ?? null, rel.hero, p.key)]))
+        : null;
+    if (kin && rel.range) kin.set(rel.hero, rangeLevel(rel.range));
+    people.forEach((p, i) => {
+        p.row = i;
+        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + p.yr; })();
+    });
     const rowOf = new Map(people.map(p => [p.key, p]));
     const allYears = [
         ...people.map(p => p.yr),
         ...people.filter(p => p.dy !== null).map(p => p.dy),
         ...links.map(l => year(byKey.get(l.child).birth)),
     ];
-    const xMin = Math.floor(Math.min(...allYears) / 10) * 10;
-    const xMax = Math.max(Math.ceil(Math.max(...allYears) / 10) * 10, xMin + 10);
-    // колонка подписей: под самую длинную строку «Имя год», все — одной строкой
-    const KW = Math.max(KIND_W, Math.ceil(Math.max(...rows.map(r => textW(keyOf(r)))) + 12));
+    // колонка подписей «Связь год»: под самую длинную строку, все — одной строкой
+    const KW = Math.max(KIND_W, Math.ceil(Math.max(...people.map(p => textW(p.label))) + 12));
     const xS = x => KW + (x - xMin) / (xMax - xMin) * PLOT_W;
     let acc = 0;
     for (const p of people) { p.h = ROW_H; p.y0 = acc; acc += p.h; }
@@ -174,16 +201,35 @@ export function chartModel(title, rows, links) {
     const W = KW + PLOT_W + 16;
 
     // family-связи: цвет — из спектра без коллизий внутри года рождения её
-    // детей (близнецы разных пар не спутать)
+    // детей (близнецы разных пар не спутать); ключ семьи — каноничный
+    // (отсортированная пара ключей), чтобы ссылки одного семейства с разным
+    // порядком родителей не плодили разные цвета
     const famOf = new Map();        // fam → номер появления
     const famYears = new Map();     // fam → годы рождения её детей
-    const famStr = l => l.parents.map(p => rowOf.get(p)).map(q => q.r.name + " " + q.yr).join(" и ");
+    const famStr = l => [...l.parents].sort().join(" и ");
     for (const l of links) {
         const fam = famStr(l);
         const y = year(byKey.get(l.child).birth);
         if (!famOf.has(fam)) { famOf.set(fam, famOf.size); famYears.set(fam, new Set()); }
         famYears.get(fam).add(y);
     }
+    // фантомные рождения (rel.phantoms): те же fam-структуры + записи для
+    // рисования; годы обоим детям вне чарта — в диапазон оси X; у семьи без
+    // ссылок в чарте цвет берётся от её порядкового номера
+    const phantom = [];             // { fam, year, a, b } — a/b ключи супругов
+    if (rel && Array.isArray(rel.phantoms))
+        for (const ph of rel.phantoms) {
+            const ks = Array.isArray(ph.fam) && ph.fam.length === 2 ? ph.fam : null;
+            if (!ks || !rowOf.has(ks[0]) || !rowOf.has(ks[1])) continue;
+            const fam = [...ks].sort().join(" и ");
+            if (!famOf.has(fam)) { famOf.set(fam, famOf.size); famYears.set(fam, new Set()); }
+            for (const yr of ph.years || [])
+                if (Number.isFinite(yr)) {
+                    famYears.get(fam).add(yr);
+                    phantom.push({ fam, year: yr, a: ks[0], b: ks[1] });
+                    allYears.push(yr);
+                }
+        }
     const famColorIdx = new Map();
     const busy = new Map();         // год → занятые индексы FAM_COLORS
     for (const [fam] of famOf) {
@@ -201,27 +247,51 @@ export function chartModel(title, rows, links) {
     }
     const famColor = fam => FAM_COLORS[famColorIdx.get(fam)];
 
+    // минимальный год (после фантомных рождений — ось X должна их покрыть):
+    // между колонкой подписей и баром каждой персоны должно помещаться её имя
+    // (имя выровнено перед баром) — xMin уходит в прошлое, пока хватает места
+    // у самой стеснённой персоны; итерация до сходимости (span растёт вместе
+    // с xMin назад)
+    const xMinRaw = Math.floor(Math.min(...allYears) / 10) * 10;
+    const xMax = Math.max(Math.ceil(Math.max(...allYears) / 10) * 10, xMinRaw + 10);
+    let xMin = xMinRaw;
+    for (let it = 0; it < 8; it++) {
+        const span = xMax - xMin;
+        let cand = xMinRaw;
+        for (const p of people)
+            cand = Math.min(cand, p.yr - Math.ceil((textW(p.r.name) + 8) * span / PLOT_W));
+        if (cand >= xMin) break;
+        xMin = cand;
+    }
+
     const draws = [];
     // фон и заголовок
     draws.push({ k: "rect", x: 0, y: 0, w: W, h: H, fill: "#ffffff" });
     draws.push({ k: "text", x: 8, y: 22, s: title, size: 16, fill: "#111111", bold: true });
-    // сетка-декады и подписи оси X
-    for (let x = xMin; x <= xMax; x += 10) {
+    // сетка-декады и подписи оси X (от первой декады — ниже некруглого xMin — xMin может
+    // уйти в прошлое на некруглое число лет ради места под имена)
+    for (let x = Math.ceil(xMin / 10) * 10; x <= xMax; x += 10) {
         draws.push({ k: "line", x1: xS(x), y1: plotTop, x2: xS(x), y2: H - 26, stroke: "#eeeeee", w: 1 });
         draws.push({ k: "line", x1: xS(x), y1: H - 26, x2: xS(x), y2: H - 20, stroke: "#888888", w: 1 });
         draws.push({ k: "text", x: xS(x), y: H - 8, s: String(x), size: 10, fill: "#666666", anchor: "mid" });
     }
     draws.push({ k: "line", x1: KW, y1: H - 26, x2: KW + PLOT_W, y2: H - 26, stroke: "#888888", w: 1 });
-    // подписи «Имя год» + бары (серые: мужчины темнее, женщины светлее)
+    // подписи «Связь год» слева; имя — слева от бара (перед его началом),
+    // выноска — до имени, её хвост (тонкая линия) тянется к началу бара
     for (const p of people) {
         const cy = plotTop + p.y0 + p.h / 2;
         p.cy = cy;
-        draws.push({ k: "text", x: KW - 8, y: cy + 3.5, s: p.key, size: 10, fill: "#333333", anchor: "end" });
+        draws.push({ k: "text", x: KW - 8, y: cy + 3.5, s: p.label, size: 10, fill: "#333333", anchor: "end" });
         const end = p.dy ?? xMax;
         const x1 = xS(p.yr), x2 = xS(end);
         const bar = p.r.sex === "M" ? BAR_M : p.r.sex === "F" ? BAR_F : BAR_N;
-        // выноска: тонкая линия от имени к началу бара
-        draws.push({ k: "line", x1: KW - 6, y1: cy, x2: x1, y2: cy, stroke: "#bbbbbb", w: 1 });
+        // выноска («отступ»): тонкая линия от колонки подписей до имени;
+        // места от колонки до бара не хватает (поздний год рождения) — линии нет
+        const nw = textW(p.r.name);
+        const lnEnd = x1 - nw - 10;
+        if (lnEnd > KW - 6)
+            draws.push({ k: "line", x1: KW - 6, y1: cy, x2: lnEnd, y2: cy, stroke: "#bbbbbb", w: 1 });
+        draws.push({ k: "text", x: x1 - 6, y: cy + 3.5, s: p.r.name, size: 10, fill: "#111111", anchor: "end" });
         draws.push({ k: "rrect", x: x1, y: cy - BAR_H / 2, w: Math.max(2, x2 - x1), h: BAR_H, r: 2, fill: bar });
     }
     // дуги родитель→ребёнок (в год рождения ребёнка), точки на строках;
@@ -241,6 +311,16 @@ export function chartModel(title, rows, links) {
             yearCount.set(y, (yearCount.get(y) || 0) + 1);
         }
     }
+    // фантомные рождения занимают свои столбцы (близнецы-год: включённый и
+    // вырезанный ребёнок — на разных вертикалях); год, у этой семьи уже
+    // занятый включённым ребёнком, не дублируем — дуга уже нарисована
+    for (const ph of phantom) {
+        const kk = ph.fam + "\0" + ph.year;
+        if (famSeen.has(kk)) continue;
+        famSeen.add(kk);
+        slotOf.set(kk, yearCount.get(ph.year) || 0);
+        yearCount.set(ph.year, (yearCount.get(ph.year) || 0) + 1);
+    }
     for (const l of links) {
         const fam = famStr(l);
         const col = famColor(fam);
@@ -248,7 +328,7 @@ export function chartModel(title, rows, links) {
         const ps = l.parents.map(p => rowOf.get(p)).sort((a, b) => a.cy - b.cy);
         const ch0 = rowOf.get(l.child);
         const gap = Math.abs(ch0.cy - ps[ps.length - 1].cy);
-        const side = -(14 * slotOf.get(fam + "\0" + y) + 22 * gap / ROW_H);
+        const side = -(14 * slotOf.get(fam + "\0" + y) + 14 * gap / ROW_H);
         const x = xS(y);
         const chY = ch0.cy;
         // прямая между двумя родителями; к ребёнку — дуга, а если в этот год
@@ -266,6 +346,21 @@ export function chartModel(title, rows, links) {
         for (const p of ps)
             draws.push({ k: "dot", x, y: p.cy, r: 3.5, fill: col });
         draws.push({ k: "dot", x, y: chY, r: 3.5, fill: col });
+    }
+    // фантомные рождения: вертикаль между супругами в год рождения ребёнка
+    // (ребёнка в чарте нет), точки на строках супругов — как у связей;
+    // вниз линия переходит нижнюю точку на 8px — не спутать с прямой
+    // родитель→ребёнок (у неё точка на одной строке родителей)
+    for (const ph of phantom) {
+        const col = famColor(ph.fam);
+        const kk = ph.fam + "\0" + ph.year;
+        const x = xS(ph.year) - 14 * slotOf.get(kk);
+        const p1 = rowOf.get(ph.a), p2 = rowOf.get(ph.b);
+        const yTop = Math.min(p1.cy, p2.cy), yBot = Math.max(p1.cy, p2.cy) + 8;
+        if (p1.cy !== p2.cy)
+            draws.push({ k: "line", x1: x, y1: yTop, x2: x, y2: yBot, stroke: col, w: 1.5 });
+        draws.push({ k: "dot", x, y: p1.cy, r: 3.5, fill: col });
+        draws.push({ k: "dot", x, y: p2.cy, r: 3.5, fill: col });
     }
     return { title, W, H, KW, draws };
 }
@@ -287,9 +382,9 @@ export function fileBaseOf(head) {
 
 // диаграмма → PDF (строка latin1, байт на символ): страницы A4 landscape
 // режут единое полотно чарта на горизонтальные полосы (Form XObject + клип)
-export function chartPdf(title, rows, links, fontBytes) {
+export function chartPdf(title, rows, links, fontBytes, rel = null) {
     const f = parseTtf(fontBytes);
-    const m = chartModel(title, rows, links);
+    const m = chartModel(title, rows, links, rel);
     const n = v => String(Math.round(v * 1000) / 1000);
     const col = hex => [1, 3, 5].map(i => n(parseInt(hex.slice(i, i + 2), 16) / 255)).join(" ");
     const cmap = new Map(f.cmap);

@@ -247,6 +247,7 @@ const KIN_CASES = [
     [kinKeys['Дочь'], 'сестра'],
     [kinKeys['Тесть'], 'муж тёти'],    // муж тёти — не процитируемому
     [kinKeys['Прадед'], 'прадед'],     // глубина 3 — «пра»-приставка
+    [kinKeys['Прапрадед'], 'пра2дед'], // глубина 4 — «праN» вместо «прапра…»
     [kinKeys['Дядька'], 'двоюродный дед'],      // брат деда (a=3, b=1)
     [kinKeys['Тётка'], 'двоюродная бабушка'],   // сестра деда (a=3, b=1)
     [kinKeys['Брат Прадеда'], 'двоюродный прадед'], // брат прадеда (a=4, b=1)
@@ -571,6 +572,46 @@ for (const [t, rows, ln] of [
 ]) {
     cmp('chartModel «' + t + '»', VK.chartModel(t, rows, ln), TGC.chartModel(t, rows, ln));
     cmp('chartPdf «' + t + '» (байты)', VK.chartPdf(t, rows, ln, FONT), TGC.chartPdf(t, rows, ln, FONT));
+}
+// колонка «Связь год» к герою (ярлыки как в 🔔-списке); у героя с rel.range
+// («диапазон» радиуса из кейкапа) — 1 родители-дети, 2 деды-внуки, 4 пра2…
+const REL = {
+    hero: 'Пётр I 1672',
+    range: 4,
+    pairs: CHART_LINKS.flatMap(l => l.parents.map(p => [p, l.child])),
+    spouses: [['Евдокия 1669', 'Пётр I 1672']],
+    sex: Object.fromEntries(CHART_ROWS.map(r => [r.name + ' ' + Number(r.birth.slice(0, 4)), r.sex || null])),
+};
+cmp('chartModel «Пётр I: ярлыки родства»', VK.chartModel('s', CHART_ROWS, CHART_LINKS, REL),
+    TGC.chartModel('s', CHART_ROWS, CHART_LINKS, REL));
+cmp('chartPdf rel (байты)', VK.chartPdf('s', CHART_ROWS, CHART_LINKS, FONT, REL),
+    TGC.chartPdf('s', CHART_ROWS, CHART_LINKS, FONT, REL));
+// фантомные рождения: дети супругов вне чарта — вертикали между супругами
+const PH = { phantoms: [{ fam: ['Пётр I 1672', 'Екатерина I 1684'], years: [1708, 1712] },
+    { fam: ['Пётр I 1672', 'Екатерина I 1684'], years: [1700] },
+    { fam: ['Пётр I 1672', 'Евдокия 1669'], years: [1695] }] };
+cmp('chartModel фантомы', VK.chartModel('f', CHART_ROWS, CHART_LINKS, PH),
+    TGC.chartModel('f', CHART_ROWS, CHART_LINKS, PH));
+cmp('chartPdf фантомы (байты)', VK.chartPdf('f', CHART_ROWS, CHART_LINKS, FONT, PH),
+    TGC.chartPdf('f', CHART_ROWS, CHART_LINKS, FONT, PH));
+cmp('chartPdf rel+фантомы (байты)', VK.chartPdf('s', CHART_ROWS, CHART_LINKS, FONT, { ...REL, ...PH }),
+    TGC.chartPdf('s', CHART_ROWS, CHART_LINKS, FONT, { ...REL, ...PH }));
+{
+    const m = VK.chartModel('s', CHART_ROWS, CHART_LINKS, REL);
+    const col = m.draws.filter(d => d.k === 'text' && d.fill === '#333333' && d.anchor === 'end').map(d => d.s);
+    if (!col.some(s => /(жена|муж|мать|отец|сын|дочь|брат|сестра) \d{4}$/.test(s)))
+        { failed++; console.log('✗ chart.rel: нет ярлыков «Связь год»\n  ' + col.join(' | ')); }
+    if (col.some(s => s.includes('NaN')))
+        { failed++; console.log('✗ chart.rel: NaN в ярлыках\n  ' + col.join(' | ')); }
+    // диапазон в строке героя: остальные строки — прежние ярлыки
+    const heroCol = m.draws.filter(d => d.k === 'text' && d.fill === '#333333' && d.anchor === 'end')
+        .filter(d => /1672$/.test(d.s));
+    if (!heroCol.some(d => d.s.startsWith('пра2деды-пра2внуки')))
+        { failed++; console.log('✗ chart.rel: у героя нет «пра2деды-пра2внуки»\n  ' + col.join(' | ')); }
+    const noRel = VK.chartModel('s', CHART_ROWS, CHART_LINKS);
+    const colN = noRel.draws.filter(d => d.k === 'text' && d.fill === '#333333' && d.anchor === 'end').map(d => d.s);
+    if (!colN.every(s => /^\d{4}$/.test(s)))
+        { failed++; console.log('✗ chart.rel: без героя колонка не «Год»: ' + colN.filter(s => !/^\d{4}$/.test(s)).join(' | ')); }
 }
 // sanity PDF: заголовок/шрифт/страницы согласованы с моделью
 const pdf = VK.chartPdf('Пётр I: линии жизни', CHART_ROWS, CHART_LINKS, FONT);

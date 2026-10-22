@@ -319,10 +319,10 @@ export default async function (cq, ctx) {
         let byFull = bell && !on;
         if (data !== "focbell" && data !== "foctree")
             await db.update(focusView).set({ radius }).where(eq(focusView.id, row.id)).run();
-        await answer(data === "focbell" ? "список в радиусе" : (data === "foctree" ? "древо в радиусе" : "от " + focusLabel(radius)));
+        await answer(data === "focbell" ? "список " + focusLabel(radius) : (data === "foctree" ? "древо " + focusLabel(radius) : focusLabel(radius)));
         // 🧬 в радиусе: <имя>.ged + <имя>.pdf (родство к герою), правка не нужна
         if (data === "foctree") {
-            await sendGedPdf(chatId, keys, focusHead(row.pkey, radius, rec.dd));
+            await sendGedPdf(chatId, keys, focusHead(row.pkey, radius, rec.dd), row.pkey);
             return;
         }
         // цифра — только заголовок; тело (список/гедком) — по 🔔/🧬
