@@ -1,13 +1,13 @@
 import { api, db } from 'sdk';
 import { eq } from 'sdk/db';
 import { gedDrops, focusView } from '../schema.js';
-import { parseTrigger, parseGedcom, gedStats } from '../lib/parse.js';
+import { parseTrigger, parseGedcom, gedStats, parseTree } from '../lib/parse.js';
 import { jubileeText } from '../lib/text.js';
 import {
     HELP, startMarkup, chatAdmin, getSettings, todayText, eventMarkup, sendLong,
     addLink, setLinkCand, pairRecords, linkText, linkMarkup, recordOf, replaceWithGedcom,
     linkPairs, gedcomText, sendGedPdf, splitText, focusKeys, focusHead, focusMarkup,
-    focusWithSpouses, focusSpousePairs, focusDepth, upsertPerson,
+    focusWithSpouses, focusSpousePairs, focusDepth, upsertPerson, applyTree, treeReport,
 } from '../lib/bot.js';
 
 // заголовок «Имя ГГГГ-ММ-ДД» (+ кейкап радиуса у фокус-сообщений) в цитате
@@ -53,6 +53,54 @@ async function gedDrop(chatId, doc, fromId) {
     console.log("ged drop:", name, "chat", chatId);
 }
 
+// дроп .txt-документа с пачкой «плоское древо» (см. txtDrop ниже в коде)
+async function txtDrop(chatId, doc, fromId, replyTo) {
+    const name = doc.file_name || "пачка.ged.txt";
+    let content;
+    try {
+        const bytes = await api.getFileContent(doc.file_id);
+        content = new TextDecoder().decode(bytes);
+    } catch (e) {
+        console.error("txt download:", e.message);
+        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось скачать файл " + name });
+        return;
+    }
+    const tree = parseTree(content);
+    if (!tree.persons.length && !tree.errors.length) {
+        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось разобрать файл " + name + " (ждём пачку «плоское древо»)" });
+        return;
+    }
+    // в ответе на триггер — применить сразу, как пачку в ответе
+    const rh = replyHeadOf(replyTo);
+    if (rh) {
+        let parentKey = null;
+        const k = rh[1].trim() + " " + rh[2];
+        if (await recordOf(chatId, k)) parentKey = k;
+        const rep = await applyTree(chatId, tree, parentKey);
+        await sendLong(chatId, treeReport(rep));
+        console.log("txt tree:", rep.persons, "персон,", rep.links, "детей, чат", chatId);
+        return;
+    }
+    const vals = { fromId: fromId || 0, fileName: name, content, ts: Date.now() };
+    const old = await db.select().from(gedDrops).where(eq(gedDrops.chatId, chatId)).get();
+    if (old) await db.update(gedDrops).set(vals).where(eq(gedDrops.chatId, chatId)).run();
+    else await db.insert(gedDrops).values({ chatId, ...vals }).run();
+    await api.sendMessage({
+        chat_id: chatId,
+        text: "📄 Файл " + name + ": персон " + tree.persons.length
+            + ", пар " + tree.weddings.length + ", детей " + tree.children.length
+            + ". Добавить пачку к дереву чата?",
+        reply_markup: {
+            inline_keyboard: [[
+                { text: "Нет", callback_data: "ged:ign" },
+                { text: "Да", callback_data: "ged:rep" },
+                { text: "Да, с резервом", callback_data: "ged:bak" },
+            ]],
+        },
+    });
+    console.log("txt drop:", name, "chat", chatId);
+}
+
 // фокус-сообщение: «/» ответом на триггер, радиус 1 сразу; ключ персоны —
 // в focus_view по id сообщения с кнопками (callback_data короткий)
 async function sendFocus(chat, chatId, key, radius, dd) {
@@ -81,6 +129,13 @@ export default async function (message, ctx) {
     // команд/триггеров; сообщение может быть без текста, caption не разбираем)
     if (message.document && /\.ged$/i.test(message.document.file_name || "")) {
         await gedDrop(chatId, message.document, message.from?.id);
+        return;
+    }
+    // .ged.txt-документ (тексты бота) = пачка «плоское древо»: в ответе на триггер
+    // — сразу применяем (корни, а если пачка начинается с «+» — супруг, к цитате);
+    // просто дроп — те же 3 кнопки «Да/Нет/Да, с резервом», что у .ged
+    if (message.document && /\.ged\.txt$/i.test(message.document.file_name || "")) {
+        await txtDrop(chatId, message.document, message.from?.id, message.reply_to_message);
         return;
     }
 
@@ -157,6 +212,28 @@ export default async function (message, ctx) {
     }
 
     if (text.startsWith("/")) return;
+
+    // пачка «плоское древо»: строки с маркерами '-'/'=' (глубина), '+-'/+='
+    // (супруги) и строками свадьбы из одних дат — весь разбор одним сообщением;
+    // в ответе сводка добавленного + ошибки построчно
+    const lines0 = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines0.some(l => /^[-+=]/.test(l))) {
+        const tree = parseTree(text);
+        if (tree.persons.length || tree.errors.length) {
+            // в ответе на триггер — корни пачки становятся его детьми
+            const rh0 = replyHeadOf(message.reply_to_message);
+            let parentKey = null;
+            if (rh0) {
+                const k = rh0[1].trim() + " " + rh0[2];
+                if (await recordOf(chatId, k)) parentKey = k;
+            }
+            const rep = await applyTree(chatId, tree, parentKey);
+            const body = treeReport(rep);
+            await sendLong(chatId, body);
+            console.log("tree:", rep.persons, "персон,", rep.fams, "пар,", rep.links, "детей,", rep.errors.length, "ошибок, чат", chatId);
+            return;
+        }
+    }
 
     // ответ триггером на триггер пользователя = связь родитель→ребёнок:
     // заголовок «Имя ГГГГ-ММ-ДД» в цитируемом сообщении (у ответа бота связей нет)

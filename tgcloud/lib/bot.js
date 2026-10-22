@@ -11,7 +11,10 @@ export const HELP = "Отправьте «Имя ГГГГ-ММ-ДД [ЧЧ:ММ] 
     + "Можно с зоной: «… 12:30 (Пермь)» или «… 12:30 МСК+2», по одной строке на событие.\n"
     + "Ответ триггером на триггер — связь родитель→ребёнок (гедком-древо чата).\n"
     + ".ged-файл чатом — замена древа; /today — события сегодня (МСК), /gedcom — древо\n"
-    + "Кнопки под ответом: 👎 удалить, 👀 подробно.";
+    + "Кнопки под ответом: 👎 удалить, 👀 подробно.\n"
+    + "Пачкой одним сообщением: «-»/«=»×n Имя … — свой мужчина/женщина глубины n−1,\n"
+    + "«+-»/«+=»Имя … — новый муж/жена (без отступа), строка из одних дат — свадьба\n"
+    + "последней пары, дети — глубина пары+1; персона без даты тоже допустима.";
 
 // сколько живёт «Да/Нет»-вопрос на дроп .ged-файла (час)
 export const GED_TTL = 3600000;
@@ -121,6 +124,7 @@ const recOfIndi = r => {
         if (r.dsrcH !== null && r.dsrcH !== undefined) { o.dsrcH = r.dsrcH; o.dsrcM = r.dsrcM ?? 0; }
     }
     if (r.plac) o.plac = r.plac;
+    if (r.note) o.note = r.note;
     o.xref = r.xref;
     return o;
 };
@@ -147,6 +151,7 @@ export async function weddingRows(chatId) {
         if (seen.has(pkey(o))) continue;
         seen.add(pkey(o));
         if (f.marrPlac) o.plac = f.marrPlac;
+        if (f.note) o.note = f.note;
         if (f.divD) { o.dd = f.divD; if (f.divPlac) o.plac2 = f.divPlac; }
         o.fx = f.xref;
         out.push(o);
@@ -251,6 +256,7 @@ export async function upsertPerson(chatId, rec) {
         } else if (rec.dh !== undefined) { set.deatH = rec.dh; set.deatM = rec.dm ?? 0; }
         if (rec.sex !== undefined) set.sex = rec.sex || null;
         if (rec.plac !== undefined) set.plac = rec.plac || null;
+        if (rec.note !== undefined) set.note = rec.note || null;
         if (Object.keys(set).length)
             await db.update(indi).set(set)
                 .where(and(eq(indi.chatId, chatId), eq(indi.xref, existing.xref))).run();
@@ -263,14 +269,13 @@ export async function upsertPerson(chatId, rec) {
         srcH: rec.srcH ?? null, srcM: rec.srcH !== undefined ? (rec.srcM ?? 0) : null,
         deatD: rec.dd ?? null, deatH: rec.dh ?? null, deatM: rec.dh !== undefined ? (rec.dm ?? 0) : null,
         dsrcH: rec.dsrcH ?? null, dsrcM: rec.dsrcH !== undefined ? (rec.dsrcM ?? 0) : null,
-        sex: rec.sex ?? null, plac: rec.plac ?? null,
+        sex: rec.sex ?? null, plac: rec.plac ?? null, note: rec.note ?? null,
     }).run();
     return (await personRows(chatId)).find(r => r.xref === xref) || null;
 }
 
 // заглушка-половина свадьбы: персона без даты (одна на все свадьбы с именем)
-async function stubOf(chatId, name) {
-    const cur = (await indiRows(chatId)).find(r => r.name === name && r.birtD == null);
+async function stubOf(chatId, name) {    const cur = (await indiRows(chatId)).find(r => r.name === name && r.birtD == null);
     if (cur) return cur.xref;
     const xref = await nextIndiXref(chatId, "S");
     await db.insert(indi).values({ chatId, xref, name, birtD: null }).run();
@@ -289,6 +294,7 @@ async function upsertWedding(chatId, rec) {
         if ((hnn === a && wnn === b) || (hnn === b && wnn === a)) {
             const set = {};
             if (rec.plac !== undefined) set.marrPlac = rec.plac || null;
+            if (rec.note !== undefined) set.note = rec.note || null;
             if (rec.dd !== undefined) set.divD = rec.dd || null;
             if (rec.plac2 !== undefined) set.divPlac = rec.plac2 || null;
             if (Object.keys(set).length)
@@ -301,10 +307,153 @@ async function upsertWedding(chatId, rec) {
     const xref = await nextFamXref(chatId, "W");
     await db.insert(fam).values({
         chatId, xref, adhoc: true, husb: ha, wife: hb,
-        marrD: rec.d, marrPlac: rec.plac ?? null,
+        marrD: rec.d, marrPlac: rec.plac ?? null, note: rec.note ?? null,
         divD: rec.dd ?? null, divPlac: rec.plac2 ?? null,
     }).run();
     return weddingByFx(chatId, xref);
+}
+
+// ============================== ПЛОСКОЕ ДРЕВО ==============================
+// применить разбор parseTree: персоны (пол по маркеру, note), пары-свадьбы,
+// дети; повтор по имя+дата переиспользует персону; родитель должен быть старше
+// ребёнка как минимум на 12 лет (иначе связь не пишется, в отчёте ошибка).
+// parentKey — необязательный триггер из цитаты (пачка в ответе на триггер):
+// его корни (не дети внутри пачки и не половины пар) привязываются его детьми.
+// → { persons, fams, links, errors }
+export async function applyTree(chatId, tree, parentKey) {
+    const rep = { persons: 0, fams: 0, links: 0, errors: tree.errors.map(e => ({ ...e })) };
+    const sexN = i => (i !== null && i !== undefined && tree.persons[i] ? tree.persons[i].sex : null);
+    const nameN = i => (i !== null && i !== undefined && tree.persons[i] ? tree.persons[i].rec.n : "");
+    // xref половины пары: связь fam по паре или новая «W»-семья
+    const famForPair = async (mx, fx) => {
+        const rows = (await famRowsOf(chatId)).sort((a, b) => a.id - b.id);
+        for (const f of rows)
+            if (f.husb && f.wife && ((f.husb === mx && f.wife === fx) || (f.husb === fx && f.wife === mx)))
+                return f.xref;
+        const x = await nextFamXref(chatId, "W");
+        await db.insert(fam).values({ chatId, xref: x, adhoc: true, husb: mx || null, wife: fx || null }).run();
+        rep.fams++;
+        return x;
+    };
+    const xr = []; // индекс persons → xref
+    for (let i = 0; i < tree.persons.length; i++) {
+        const p = tree.persons[i], rec = p.rec;
+        let x;
+        if (rec.d === undefined && !rec.n.includes("+")) {
+            x = await stubOf(chatId, rec.n); // персона без события — заглушка
+            await db.update(indi).set({ sex: p.sex || null, note: p.note || null })
+                .where(and(eq(indi.chatId, chatId), eq(indi.xref, x))).run();
+        } else {
+            const r = await upsertPerson(chatId, Object.assign({ sex: p.sex, note: p.note }, rec));
+            x = r ? r.xref : null;
+        }
+        xr.push(x);
+        rep.persons++;
+    }
+    for (const w of tree.weddings) {
+        const mx = w.m !== null ? xr[w.m] : null, fx = w.f !== null ? xr[w.f] : null;
+        if (!mx && !fx) continue;
+        const fxx = await famForPair(mx, fx);
+        await db.update(fam).set({
+            marrD: w.rec.d, marrPlac: w.rec.plac ?? null, note: w.note || null,
+            divD: w.rec.dd ?? null, divPlac: w.rec.plac2 ?? null,
+        }).where(and(eq(fam.chatId, chatId), eq(fam.xref, fxx))).run();
+    }
+    for (const ch of tree.children) {
+        const cx = xr[ch.c];
+        if (!cx) continue;
+        const cd = tree.persons[ch.c].rec.d ?? null;
+        const ps = [];
+        for (const pi of ["m", "f"]) {
+            if (ch[pi] === null || !xr[ch[pi]]) continue;
+            const pd = tree.persons[ch[pi]].rec.d ?? null;
+            if (pd && cd && Number(cd.slice(0, 4)) - Number(pd.slice(0, 4)) < 12) {
+                rep.errors.push({ line: 0, msg: "родитель «" + nameN(ch[pi])
+                    + "» слишком молод для «" + nameN(ch.c) + "»" });
+                continue;
+            }
+            ps.push({ x: xr[ch[pi]], sex: sexN(ch[pi]) });
+        }
+        if (!ps.length) continue;
+        // муж — первым: famForPair хранит пару {husb, wife} по xref'ам
+        ps.sort((a, b) => (a.sex === "M" ? -1 : 1) - (b.sex === "M" ? -1 : 1));
+        let fxx;
+        if (ps.length === 2) fxx = await famForPair(ps[0].x, ps[1].x);
+        else {
+            // один родитель — своя adhoc-семья («L»), пол стороны по маркеру
+            const x = await nextFamXref(chatId, "L");
+            await db.insert(fam).values({ chatId, xref: x, adhoc: true,
+                husb: ps[0].sex === "M" ? ps[0].x : null,
+                wife: ps[0].sex !== "M" ? ps[0].x : null }).run();
+            fxx = x;
+            rep.fams++;
+        }
+        const has = await db.select().from(chil)
+            .where(and(eq(chil.chatId, chatId), eq(chil.fam, fxx), eq(chil.indi, cx))).all();
+        if (!has.length) {
+            await db.insert(chil).values({ chatId, fam: fxx, indi: cx }).run();
+            rep.links++;
+        }
+    }
+    // пачка в ответе на триггер: корни — дети цитируемой персоны
+    if (parentKey) {
+        const px = await xrefOfKey(chatId, parentKey);
+        if (px) {
+            const pro = await getIndi(chatId, px) || {};
+            const proSex = pro.sex || null;
+            // пачка начинается со строки супруга «+» — цитируемый берётся в пару;
+            // первая строка свадьбы (не привязавшаяся внутри пачки) даёт дату/место
+            const sp = tree.persons[0] && tree.persons[0].spouseLine ? 0 : null;
+            if (sp !== null && xr[sp]) {
+                const w0 = tree.weddings.find(w => w.m === null && w.f === null
+                    && (w.rec.d || w.rec.plac || w.rec.note));
+                const wd = w0 ? w0.rec : {};
+                const sxSex = tree.persons[sp].sex;
+                const bY = x => x ? Number(String(x).slice(0, 4)) : null;
+                let bad = null;
+                if (sxSex == null || proSex == null) bad = "пол супруга или цитаты неизвестен";
+                else if (sxSex === proSex) bad = "пол супруга совпадает с цитируемым";
+                else if (wd.d && bY(tree.persons[sp].rec.d) !== null && wd.d
+                    && wd.d.slice(0, 4) - bY(tree.persons[sp].rec.d) < 16) bad = "супруг слишком молод";
+                else if (wd.d && bY(pro.birtD) !== null && wd.d.slice(0, 4) - bY(pro.birtD) < 16) bad = "цитируемый слишком молод";
+                else if (wd.d && pro.deatD && pro.deatD < wd.d) bad = "цитируемый умер до свадьбы";
+                if (bad) rep.errors.push({ line: 0, msg: "«" + tree.persons[sp].rec.n + "» не женился на цитате: " + bad });
+                else {
+                    const hx = proSex === "M" ? px : xr[sp];
+                    const wx = proSex === "M" ? xr[sp] : px;
+                    const x2 = await nextFamXref(chatId, "W");
+                    await db.insert(fam).values({ chatId, xref: x2, adhoc: true, husb: hx, wife: wx,
+                        marrD: wd.d ?? null, marrPlac: wd.plac ?? null,
+                        note: (w0 && w0.note) || wd.note || null,
+                        divD: wd.dd ?? null, divPlac: wd.plac2 ?? null }).run();
+                    rep.fams++;
+                }
+            }
+            for (let i = 0; i < tree.persons.length; i++) {
+                if (i === sp) continue; // супруг уже разобран выше
+                if (tree.children.some(ch => ch.c === i)) continue;
+                if (tree.weddings.some(w => w.m === i || w.f === i)) continue;
+                const x = xr[i];
+                const cd = tree.persons[i].rec.d ?? null;
+                if (!x || !cd) {
+                    rep.errors.push({ line: 0, msg: "«" + nameN(i) + "» без даты — не привязан к цитате" });
+                    continue;
+                }
+                if (pro.birtD && Number(cd.slice(0, 4)) - Number(String(pro.birtD).slice(0, 4)) < 12) {
+                    rep.errors.push({ line: 0, msg: "родитель «" + (pro.name || "цитата")
+                        + "» слишком молод для «" + nameN(i) + "»" });
+                    continue;
+                }
+                const x2 = await nextFamXref(chatId, "L");
+                await db.insert(fam).values({ chatId, xref: x2, adhoc: true,
+                    husb: proSex === "F" ? null : px,
+                    wife: proSex === "F" ? px : null }).run();
+                await db.insert(chil).values({ chatId, fam: x2, indi: x }).run();
+                rep.links++;
+            }
+        }
+    }
+    return rep;
 }
 
 // добавить связь родитель→ребёнок; who — кто из двоих пришёл новым триггером.
@@ -837,6 +986,7 @@ export async function gedcomText(chatId, keys) {
         }
         const marr = f.marrD ? { d: f.marrD, ...(f.marrPlac ? { plac: f.marrPlac } : {}) } : null;
         const div = f.divD ? { d: f.divD, ...(f.divPlac ? { plac: f.divPlac } : {}) } : null;
+        const fnote = f.note || null;
         if (hasKeys) {
             const ps = pkeys.filter(p => keys.includes(p));
             const cs = children.filter(c => keys.includes(c));
@@ -852,7 +1002,8 @@ export async function gedcomText(chatId, keys) {
             for (const st of stubs) if (!m.stubs.some(x => x.xref === st.xref)) m.stubs.push(st);
             if (!m.marr) m.marr = marr;
             if (!m.div) m.div = div;
-        } else fams.push({ s, fx: [f.xref], pkeys, stubs, children, marr, div });
+            if (!m.fnote) m.fnote = fnote;
+        } else fams.push({ s, fx: [f.xref], pkeys, stubs, children, marr, div, fnote });
     }
     // заглушкам — X-номера; FAM — по порядку; HUSB/WIFE по полу (без — HUSB)
     let stubN = 0;
@@ -872,6 +1023,7 @@ export async function gedcomText(chatId, keys) {
             out.push("1 DEAT", "2 DATE " + gdate(r.dd));
             if (r.dsrcH !== undefined) out.push("2 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
         }
+        if (r.note) out.push("1 NOTE " + r.note);
         for (const f of fams) {
             if (f.children.includes(pkey(r))) {
                 out.push("1 FAMC @" + fidOf.get(f) + "@");
@@ -906,8 +1058,132 @@ export async function gedcomText(chatId, keys) {
             out.push("1 DIV", "2 DATE " + gdate(f.div.d));
             if (f.div.plac) out.push("2 PLAC " + f.div.plac);
         }
+        if (f.fnote) out.push("1 NOTE " + f.fnote);
     }
     out.push("0 TRLR");
+    return out.join("\n");
+}
+
+// ============================== ПЛОСКОЕ ДРЕВО: вывод ==============================
+// Список чата в формате пачки (ввод/вывод симметричны, как Romanov_family.txt):
+// '-'×n — свой мужчина глубины n−1; '='×n — своя женщина; '+-'/'+=' — новая
+// половина пары; строка одних дат — свадьба последней пары (вторая дата =
+// развод); дети — глубина пары+1; заглушки (без события) — именные строки.
+// Показ — тапом на колокольчик (🔔/🔕 списка событий чата).
+// Чистая логика дословно продублирована в lunarreturns.js (dev/sync-check.mjs).
+
+// fam в виде полу: hKey/wKey — xref реальных персон, hName/wName — имена
+// заглушек (супруг без записи), children — xref детей, marr/div/note.
+export async function chatFlatText(chatId) {
+    const rows = (await indiRows(chatId)).sort((a, b) => a.id - b.id);
+    const persons = rows.map(r => ({
+        key: r.xref, name: r.name, sex: r.sex || null,
+        d: r.birtD ?? undefined, dd: r.deatD ?? undefined,
+        h: r.birtH ?? undefined, m: r.birtM ?? undefined,
+        note: r.note ?? undefined, nameOnly: r.birtD == null,
+    }));
+    const sexOfP = new Map(persons.map(p => [p.key, p.sex]));
+    // семьи: {hKey,wKey,hName,wName,children,marr,div,note}; сходные родительские
+    // наборы — одна строка (кого схлопывать — та же логика, что в gedcomText)
+    const fams = [];
+    for (const f of (await famRowsOf(chatId)).sort((a, b) => a.id - b.id)) {
+        const F = { hKey: null, hName: null, wKey: null, wName: null, children: [], marr: null, div: null, note: f.note || null };
+        for (const x of [f.husb, f.wife]) {
+            if (!x) continue;
+            const r = await getIndi(chatId, x);
+            if (!r) continue;
+            // сторона по полу (как в гедкоме: без пола — мужская); занятая — на свободную
+            if (r.sex === "F" && F.wKey == null) F.wKey = x;
+            else if (F.hKey == null) F.hKey = x;
+            else if (F.wKey == null) F.wKey = x;
+        }
+        for (const r of (await db.select().from(chil).where(and(eq(chil.chatId, chatId), eq(chil.fam, f.xref))).all()).sort((a, b) => a.id - b.id)) {
+            const i = await getIndi(chatId, r.indi);
+            if (i) F.children.push(r.indi);
+        }
+        F.marr = f.marrD ? { d: f.marrD, ...(f.marrPlac ? { plac: f.marrPlac } : {}) } : null;
+        F.div = f.divD ? { d: f.divD, ...(f.divPlac ? { plac: f.divPlac } : {}) } : null;
+        const s = [F.hKey, F.wKey].filter(k => k != null).sort();
+        const m = fams.find(x => x.s.length === s.length && x.s.every((k, i) => k === s[i]));
+        if (m) {
+            for (const c of F.children) if (!m.children.includes(c)) m.children.push(c);
+            if (m.hKey == null && F.hKey != null) m.hKey = F.hKey;
+            if (m.wKey == null && F.wKey != null) m.wKey = F.wKey;
+            if (!m.marr) m.marr = F.marr;
+            if (!m.div) m.div = F.div;
+            if (!m.note) m.note = F.note;
+        } else fams.push({ s, ...F });
+    }
+    return flatTreeText(persons, fams);
+}
+
+// fam в виде полу: hName/wName — имена заглушек ...
+// fams of slot; чистая логика — дословно в обеих копиях
+export function flatTreeText(persons, fams) {
+    const byKey = new Map(persons.map(p => [p.key, p]));
+    const familyOf = new Map(); // ребёнок (xref) → его семья (первая по порядку)
+    for (const f of fams) for (const c of f.children) if (!familyOf.has(c)) familyOf.set(c, f);
+    const depth = new Map();
+    const depthOf = k => {
+        if (depth.has(k)) return depth.get(k);
+        depth.set(k, 0); // циклы — консервативный ноль
+        const f = familyOf.get(k);
+        let d = 0;
+        if (f) for (const p of [f.hKey, f.wKey])
+            if (p != null && p !== k && byKey.has(p)) d = Math.max(d, depthOf(p) + 1);
+        depth.set(k, d);
+        return d;
+    };
+    const pad = v => String(v).padStart(2, "0");
+    const tail = r => [
+        r.d,
+        r.h !== undefined && r.h !== null ? pad(r.h) + ":" + pad(r.m ?? 0) : null,
+        r.dd, r.note,
+    ].filter(Boolean).join(" ");
+    const out = [], printed = new Set(), famsDone = new Set();
+    // строка персоны: inline='+-'/'+=' (вторая половина пары), иначе маркеры
+    // '-'×(d+1)/'='×(d+1); заглушки — только имя
+    const lineOf = (r, male, d, inline) => {
+        const m = inline ? (male ? "+-" : "+=") : (male ? "-" : "=").repeat(d + 1);
+        out.push(m + r.name
+            + (r.nameOnly ? "" : (r.d != null || r.dd != null || r.note ? " " + tail(r) : "")));
+        if (typeof r.key === "string") printed.add(r.key);
+    };
+    const wedLine = f => {
+        if (!f.marr) return;
+        const bits = [f.marr.d];
+        if (f.div) bits.push(f.div.d);
+        if (f.marr.plac) bits.push("(" + f.marr.plac + ")");
+        if (f.note) bits.push(f.note);
+        out.push(bits.join(" "));
+    };
+    // тело семьи на глубине d: вторая половина ('+='/'+-'; уже напечатанная —
+    // именной заглушкой), свадьба, дети на глубине d+1
+    const famBody = (f, ownerKey, d) => {
+        if (famsDone.has(f)) return;
+        famsDone.add(f);
+        const maleOwner = f.hKey === ownerKey;
+        const other = maleOwner
+            ? (f.wKey != null ? byKey.get(f.wKey) : f.wName != null ? { name: f.wName, nameOnly: true } : null)
+            : (f.hKey != null ? byKey.get(f.hKey) : f.hName != null ? { name: f.hName, nameOnly: true } : null);
+        if (other) {
+            if (other.key != null && printed.has(other.key))
+                lineOf({ name: other.name, nameOnly: true }, other.sex !== "F", d, true);
+            else lineOf(other, other.sex !== "F", d, true);
+        }
+        if ((f.hKey != null || f.hName != null) && (f.wKey != null || f.wName != null)) wedLine(f);
+        for (const ck of f.children) {
+            const rk = byKey.get(ck);
+            if (rk) visit(rk, d + 1);
+        }
+    };
+    const visit = (r, d) => {
+        if (printed.has(r.key)) return;
+        printed.add(r.key);
+        lineOf(r, r.sex !== "F", d, false);
+        for (const f of fams) if (f.hKey === r.key || f.wKey === r.key) famBody(f, r.key, d);
+    };
+    for (const r of persons) visit(r, 0);
     return out.join("\n");
 }
 
@@ -1001,7 +1277,7 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null) {
     } catch (e) {
         console.error("sendDocument:", e.message);
     }
-    await sendLong(chatId, (head ? head + "\n" : "") + g);
+    await sendLong(chatId, (head ? head + "\n" : "") + g, undefined, head0 || "Гедком-древо");
 }
 
 export { focusKeys, focusHasPair, focusWithSpouses };
@@ -1030,7 +1306,7 @@ export async function importGedcom(chatId, g) {
             deatD: ind.deat && ind.deat.date ? ind.deat.date : null, deatH: null, deatM: null,
             dsrcH: ind.deat && ind.deat.time ? Number(ind.deat.time.slice(0, 2)) : null,
             dsrcM: ind.deat && ind.deat.time ? Number(ind.deat.time.slice(3, 5)) : null,
-            sex: ind.sex ?? null, plac: null,
+            sex: ind.sex ?? null, plac: null, note: ind.note ?? null,
         }).run();
         byX.set(ind.__xref, xref);
         persons++;
@@ -1043,6 +1319,7 @@ export async function importGedcom(chatId, g) {
             chatId, xref: f.__xref, adhoc: false, husb: h ?? null, wife: w ?? null,
             marrD: hasMarr ? f.marr.date : null,
             marrPlac: hasMarr && f.marr.plac ? f.marr.plac : null,
+            note: f.note ?? null,
             divD: f.div && f.div.date ? f.div.date : null,
             divPlac: f.div && f.div.plac ? f.div.plac : null,
         }).run(); // тот же FAM zweimal — не бывает в валидном гедкоме
@@ -1096,7 +1373,7 @@ export async function sendTreeBackup(chatId) {
         console.error("backup upload:", e.message);
     }
     try {
-        await sendLong(chatId, "🧬 Резерв прежнего дерева (текстом):\n" + g);
+        await sendLong(chatId, "🧬 Резерв прежнего дерева (текстом):\n" + g, undefined, "Резерв");
         return true;
     } catch (e) {
         console.error("backup text:", e.message);
@@ -1119,26 +1396,46 @@ export async function replaceWithGedcom(chatId, g, backup) {
 }
 
 // sendMessage с разбиением длинного текста (лимит TG 4096);
-// текст jubileeText — HTML со спойлерами, поэтому parse_mode всегда HTML
-export async function sendLong(chatId, text, replyMarkup) {
-    const MAX = 4000;
-    if (text.length <= MAX) {
+// текст jubileeText — HTML со спойлерами, поэтому parse_mode всегда HTML.
+// Если не влезает — ВЕСЬ текст одним .txt-файлом (имя name), разметка снята
+// (stripHtml), переносы сохранены; не выложился — сообщение об ошибке (без кусков)
+export async function sendLong(chatId, text, replyMarkup, name) {
+    const parts = splitText(text);
+    if (parts.length === 1) {
         await api.sendMessage({ chat_id: chatId, text, parse_mode: 'HTML', reply_markup: replyMarkup });
         return;
     }
-    const parts = [];
-    let rest = text;
-    while (rest.length > MAX) {
-        let cut = rest.lastIndexOf("\n", MAX);
-        if (cut < MAX / 2) cut = MAX;
-        parts.push(rest.slice(0, cut));
-        rest = rest.slice(cut).replace(/^\n/, "");
-    }
-    if (rest) parts.push(rest);
-    for (let i = 0; i < parts.length; i++) {
-        await api.sendMessage({
-            chat_id: chatId, text: parts[i], parse_mode: 'HTML',
-            reply_markup: i === parts.length - 1 ? replyMarkup : undefined,
+    const base = fileBaseOf(name || "Ответ") + ".ged.txt";
+    try {
+        const enc = new TextEncoder();
+        await api.sendDocument({
+            chat_id: chatId,
+            document: new InputFile(enc.encode(stripHtml(text)), base, { type: "text/plain" }),
+            reply_markup: replyMarkup,
         });
+        return;
+    } catch (e) {
+        console.error("tail document:", e.message);
+        await api.sendMessage({
+            chat_id: chatId, text: "💥 Не удалось выложить файл " + base });
     }
+}
+
+// снять разметку HTML/ТГ для .txt-файла (теги — прочь, сущности — в символы,
+// переносы строк сохраняются)
+export function stripHtml(t) {
+    return t.replace(/<[^>]+>/g, "")
+        .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&")
+        .replace(/ +/g, " ")
+        .split("\n").map(l => l.replace(/^ +| +$/g, "")).join("\n").trim();
+}
+
+// сводка применения пачки (✅-строка + ошибки построчно) — общий формат ответа
+export function treeReport(rep) {
+    let body = "✅ древо: добавлено " + rep.persons + " персон, " + rep.fams
+        + " пар, " + rep.links + " детей";
+    if (rep.errors.length)
+        body += "\n" + rep.errors.map(e => "💥 стр " + e.line + ": " + e.msg).join("\n");
+    return body;
 }

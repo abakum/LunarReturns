@@ -21,10 +21,14 @@ function explicitZoneMinutes(s) {
     return (base + (m[2] === "+" ? 1 : -1) * Number(m[3])) * 60;
 }
 
-// 1: имя; 2-4: дата рождения, 5-6: время, 7: зона в скобках, 8: зона без
-// скобок; 9-15: то же для смерти — необязательный второй хвост.
-const DATE_TAIL = "(\\d{4})[-./]?(\\d{2})[-./]?(\\d{2})(?:\\s+(\\d{1,2})(?:[:.\\u0433]?(\\d{2}))?)?\\s*(?:\\(\\s*([^)]+?)\\s*\\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\\s*[+-]\\s*\\d{1,2}))?";
-const TRIGGER_RE = new RegExp("^(.+?)\\s+" + DATE_TAIL + "(?:\\s+" + DATE_TAIL + ")?\\s*$", "iu");
+// 1: имя; 2-4: дата рождения (месяц/день могут отсутствовать: «1663» →
+// 1663-01-01, «1663-07» → 1663-07-01), 5-6: время, 7: зона в скобках, 8: зона
+// без скобок; 9-15: то же для смерти — необязательный второй хвост; 16: хвост
+// строки — примечание целиком (титулы не выделяем).
+const DATE_TAIL = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?(?:\\s+(\\d{1,2})(?:[:.\\u0433](\\d{2}))?)?\\s*(?:\\(\\s*([^)]+?)\\s*\\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\\s*[+-]\\s*\\d{1,2}))?";
+const TRIGGER_RE = new RegExp("^(.+?)\\s+" + DATE_TAIL + "(?:\\s+" + DATE_TAIL + ")?(?:\\s+(.+))?\\s*$", "iu");
+// строка свадьбы плоского древа — только даты: «дата [дата развода] [прим]»
+const WEDDING_RE = new RegExp("^" + DATE_TAIL + "(?:\\s+" + DATE_TAIL + ")?(?:\\s+(.+))?\\s*$", "iu");
 
 // ГГГГММДД[ ЧЧ:ММ][ зона] → дата/время в МСК; без времени и зоны — только d
 function dateTimeToMsk(y, mo, dd, hh, mm, givenTime, diffMin, hasZone) {
@@ -48,10 +52,14 @@ function dateTimeToMsk(y, mo, dd, hh, mm, givenTime, diffMin, hasZone) {
     return rec;
 }
 
-// разобрать одну группу «дата [время] [зона]» из групп m[gi..gi+6]
+// разобрать одну группу «дата [время] [зона]» из групп m[gi..gi+6]; месяц/день
+// могут отсутствовать («1663» → 1663-01-01, «1663-07» → 1663-07-01)
 function parseDateGroups(m, gi, what) {
-    const y = Number(m[gi]), mo = Number(m[gi + 1]), dd = Number(m[gi + 2]);
-    if (mo < 1 || mo > 12 || dd < 1 || dd > 31) return { error: "некорректная дата" + what + ": " + m[gi] + "-" + m[gi + 1] + "-" + m[gi + 2] };
+    const hasMo = m[gi + 1] !== undefined, hasDd = m[gi + 2] !== undefined;
+    const y = Number(m[gi]), mo = hasMo ? Number(m[gi + 1]) : 1, dd = hasDd ? Number(m[gi + 2]) : 1;
+    if (y < 1000 || y > 9999) return { error: "некорректный год" + what + ": " + m[gi] };
+    if (mo < 1 || mo > 12 || dd < 1 || dd > 31)
+        return { error: "некорректная дата" + what + ": " + m[gi] + (m[gi + 1] ?? "") + (m[gi + 2] ?? "") };
     const givenTime = m[gi + 3] !== undefined;
     let hh = 12, mm = 0;
     if (givenTime) {
@@ -59,11 +67,13 @@ function parseDateGroups(m, gi, what) {
         mm = m[gi + 4] !== undefined ? Number(m[gi + 4]) : 0;
         if (hh > 23 || mm > 59) return { error: "некорректное время" + what + ": " + m[gi + 3] + (m[gi + 4] || "") };
     }
-    const zone = (m[gi + 5] || m[gi + 6] || "").trim();
+    const zoneParens = m[gi + 5] !== undefined;
+    const zone = (zoneParens ? m[gi + 5] : m[gi + 6] || "").trim();
     const hasZone = !!zone;
     let diffMin = 3 * 60; // по умолчанию МСК
     let zoneLabel = "";
     let city = null;
+    let tailNote = "";
     if (hasZone) {
         const explicit = explicitZoneMinutes(zone);
         if (explicit !== null) {
@@ -75,6 +85,9 @@ function parseDateGroups(m, gi, what) {
             city = CITY_INDEX[zone.toLowerCase()];
             diffMin = cityDiffMin(city, y + "-" + String(mo).padStart(2, "0") + "-" + String(dd).padStart(2, "0"));
             zoneLabel = city;
+        } else if (zoneParens) {
+            // не место — примечание в скобках («(1663 год в источнике)»)
+            tailNote = zone;
         } else {
             return { error: "не знаю места «" + zone + "» — укажите город из списка приложения или сдвиг вида МСК+2 / UTC+5" };
         }
@@ -88,9 +101,11 @@ function parseDateGroups(m, gi, what) {
         : "";
     // исходное местное время — для гедкома (2 TIME); без введённого времени — нет
     const src = givenTime ? { srcH: hh, srcM: mm } : {};
-    return { rec: Object.assign(rec, src), note, city };
+    return { rec: Object.assign(rec, src), note, city, tailNote };
 }
 
+// 1: имя; 2-4: дата рождения, 5-6: время, 7-8: зона; 9-15: хвост смерти; 16:
+// хвост строки — примечание целиком.
 function parseTrigger(text) {
     const m = text.trim().match(TRIGGER_RE);
     if (!m) return null;
@@ -99,6 +114,7 @@ function parseTrigger(text) {
     if (b.error) return { n, error: b.error };
     const rec = Object.assign({ n }, b.rec);
     if (b.city) rec.plac = b.city; // место — только для гедком (PLAC)
+    let tailNote = (b.tailNote || ""); // скобки после даты рождения
     let note = b.note;
     if (m[9] !== undefined) { // хвост смерти — только для гедком (DEAT),
         // результат события (юбилеи) не меняет
@@ -108,8 +124,10 @@ function parseTrigger(text) {
         if (s.rec.h !== undefined) { rec.dh = s.rec.h; rec.dm = s.rec.m; }
         if (s.rec.srcH !== undefined) { rec.dsrcH = s.rec.srcH; rec.dsrcM = s.rec.srcM; }
         if (s.city) rec.plac2 = s.city; // место хвоста: развод для «Иван+Мария»
+        if (s.tailNote) tailNote = (tailNote ? tailNote + " " : "") + s.tailNote;
     }
-    return { rec, note };
+    if (m[16] || tailNote) tailNote = (tailNote + " " + (m[16] || "")).trim();
+    return { rec, note, tail: tailNote };
 }
 
 // ============================== ГЕДКОМ-ИМПОРТ ==============================
@@ -158,6 +176,9 @@ function parseGedcom(text) {
             else if (tag === "DEAT") cur.deat = cur.deat || {};
             else if (tag === "MARR") cur.marr = cur.marr || {};
             else if (tag === "DIV") cur.div = cur.div || {};
+            else if (tag === "NOTE") cur.note = val;
+            // TITL — тоже хвост персоны (хранится в note, выводится как хвост пачки)
+            else if (tag === "TITL" && cur.note == null) cur.note = val;
             else if (tag === "HUSB" || tag === "WIFE" || tag === "CHIL") {
                 const r = val.match(/@([^@]+)@/);
                 if (r) {
@@ -208,4 +229,130 @@ function gedStats(g) {
     return { persons, links, weddings };
 }
 
-export { parseTrigger, parseGedcom, gedStats };
+// ====================== ПЛОСКОЕ ДРЕВО (пакетный ввод) ======================
+// Одна строка — одна сущность:
+//   '-'×n «Имя дата [время] [зона] [дата смерти] прим» — свой мужчина
+//     глубины n-1; '='×n — своя женщина;
+//   '+-Имя …' / '+=Имя …' — новая половина пары (пришёл по браку, без отступа);
+//   'дата [дата развода] [прим]' (без имени) — свадьба последней пары;
+//   'Имя …' без даты — персона без события (не попадёт в юбилеи).
+// Дети пары — глубина пары + 1. Пара разыскивается от вершины открытых семей
+// ниже: чей год рождения позволяет возраст свадьбы (≥ 16 лет). Примечание —
+// весь хвост после дат, целиком.
+
+// одна строка древа без семантики пар: {k:'p'|'w'|'err', ...}
+function parseTreeLine(line) {
+    const mm = line.match(/^([-+=]+)\s*(.*)$/);
+    if (mm) {
+        const run = mm[1], rest = mm[2].trim();
+        if ((/^-+$/.test(run) || /^=+$/.test(run)) && rest) {
+            const sex = run[0] === "-" ? "M" : "F";
+            const p = parseTrigger(rest);
+            if (p && !p.error) return { k: "p", depth: run.length - 1, sex, rec: p.rec, note: p.tail || "" };
+            if (p && p.error) return { k: "err", msg: p.error };
+            return { k: "p", depth: run.length - 1, sex, rec: { n: rest }, note: "", nameOnly: true };
+        }
+        if ((run === "+-" || run === "+=") && rest) {
+            const sex = run === "+-" ? "M" : "F";
+            const p = parseTrigger(rest);
+            if (p && !p.error) return { k: "p", depth: null, sex, rec: p.rec, note: p.tail || "" };
+            if (p && p.error) return { k: "err", msg: p.error };
+            return { k: "p", depth: null, sex, rec: { n: rest }, note: "", nameOnly: true };
+        }
+        return { k: "err", msg: "непонятный маркер «" + run + "»" };
+    }
+    if (/^\d{4}/.test(line)) { // строка свадьбы — только даты (+примечание)
+        const wm = line.match(WEDDING_RE);
+        if (!wm) return { k: "err", msg: "не распознаны даты свадьбы" };
+        const b = parseDateGroups(wm, 1, " свадьбы");
+        if (b.error) return { k: "err", msg: b.error };
+        const rec = Object.assign({}, b.rec);
+        if (b.city) rec.plac = b.city;
+        const parts = []; // примечания: скобки у даты свадьбы, развода, хвост
+        if (b.tailNote) parts.push(b.tailNote);
+        if (wm[8] !== undefined) {
+            const s2 = parseDateGroups(wm, 8, " развода");
+            if (s2.error) return { k: "err", msg: s2.error };
+            rec.dd = s2.rec.d;
+            if (s2.city) rec.plac2 = s2.city;
+            if (s2.tailNote) parts.push(s2.tailNote);
+        }
+        if (wm[15]) parts.push(wm[15]);
+        return { k: "w", rec, note: parts.join(" ") };
+    }
+    return { k: "err", msg: "строка без маркера" };
+}
+
+// строки → семантика: { persons, weddings, children, errors }
+// persons[i]: {sex:'M'|'F', rec:{n,d,...}|{n}, note, nameOnly}
+// weddings[i]: {m: idx|null, f: idx|null, rec:{d,plac,dd,plac2}, note}
+// children[i]: {c: idx, m: idx|null, f: idx|null}
+function parseTree(text) {
+    const errors = [], persons = [], weddings = [], children = [];
+    const stack = [];   // открытые семьи: {depth, m, f} — индексы persons
+    let pending = null; // половина пары строки '+-'/'+=' — ждёт строку свадьбы
+    let pendingLine = 0, ln = 0;
+    for (const raw of String(text).split(/\r?\n/)) {
+        ln++;
+        const line = raw.trim();
+        if (!line || /^\s*#/.test(line)) continue; // пустые и комментарии — мимо
+        const it = parseTreeLine(line);
+        if (it.k === "err") { errors.push({ line: ln, msg: it.msg }); continue; }
+        if (it.k === "p") {
+            const idx = persons.push({ sex: it.sex, rec: it.rec, note: it.note, nameOnly: !!it.nameOnly,
+                spouseLine: it.depth === null }) - 1;
+            if (it.depth === null) { pending = idx; pendingLine = ln; continue; }
+            if (pending !== null) {
+                errors.push({ line: pendingLine, msg: "у «" + persons[pending].rec.n + "» нет строки свадьбы" });
+                pending = null;
+            }
+            const d = it.depth;
+            while (stack.length && stack[stack.length - 1].depth >= d) stack.pop();
+            const top = stack[stack.length - 1];
+            if (top && top.depth === d - 1)
+                children.push({ c: idx, m: top.m ?? null, f: top.f ?? null });
+            else if (d > 0)
+                errors.push({ line: ln, msg: "нет родителей на глубине " + (d - 1) });
+            stack.push({ depth: d, m: it.sex === "M" ? idx : null, f: it.sex === "F" ? idx : null });
+            continue;
+        }
+        // строка свадьбы: ищем семью от вершины стека; S — новая половина
+            const S = pending !== null ? pending : null;
+            pending = null;
+            const wIdx = weddings.push({ m: null, f: null, rec: it.rec, note: it.note }) - 1;
+            const wY = Number(String(it.rec.d).slice(0, 4));
+            let bound = false;
+            for (let j = stack.length - 1; j >= 0; j--) {
+                const u = stack[j];
+                const m = S !== null && persons[S].sex === "M" ? S : (u.m ?? null);
+                const f = S !== null && persons[S].sex === "F" ? S : (u.f ?? null);
+                if (m === null) continue; // муж нужен всегда (муж — первый)
+                const mp = persons[m].rec.d ?? null, fp = f !== null ? persons[f].rec.d ?? null : null;
+                if (mp !== null && wY - Number(String(mp).slice(0, 4)) < 16) continue;
+                if (fp !== null && wY - Number(String(fp).slice(0, 4)) < 16) continue;
+                // кандидат обязан быть жив на дату свадьбы (Павел 1693-01 род.
+                // и умер — свадьба 1712 не может быть его)
+                const md = persons[m].rec.dd ?? null, fd = f !== null ? persons[f].rec.dd ?? null : null;
+                if (md !== null && md < it.rec.d) continue;
+                if (fd !== null && fd < it.rec.d) continue;
+                stack.length = j + 1; // глубже — законченные поддеревья
+                if (u.m !== null && u.f !== null) {
+                    // обе половины заняты — повторный брак владельца: копия семьи наверх
+                    stack.push({ depth: u.depth,
+                        m: S !== null && persons[S].sex === "M" ? S : u.m,
+                        f: S !== null && persons[S].sex === "F" ? S : u.f });
+                } else if (S !== null) {
+                    if (persons[S].sex === "M") u.m = S; else u.f = S;
+                }
+                weddings[wIdx].m = m; weddings[wIdx].f = f;
+                bound = true;
+                break;
+            }
+            if (!bound) errors.push({ line: ln, msg: "свадьба без подходящей пары" });
+    }
+    if (pending !== null)
+        errors.push({ line: pendingLine, msg: "у «" + persons[pending].rec.n + "» нет строки свадьбы" });
+    return { persons, weddings, children, errors };
+}
+
+export { parseTrigger, parseGedcom, gedStats, parseTree, parseTreeLine };

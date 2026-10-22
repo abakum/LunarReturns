@@ -21,6 +21,7 @@ export const indi = table('indi', {
   dsrcH: integer('dsrc_h'), dsrcM: integer('dsrc_m'),
   sex: text('sex'),               // 'M'|'F'|null
   plac: text('plac'),             // город из скобок (BIRT PLAC)
+  note: text('note'),             // примечание (хвост строки целиком; 1 NOTE)
 }, (t) => ({
   uq: uniqueIndex('uq_indi_xref').on(t.chatId, t.xref),
 }));
@@ -35,6 +36,7 @@ export const fam = table('fam', {
   husb: text('husb'), wife: text('wife'),
   marrD: text('marr_d'), marrPlac: text('marr_plac'),
   divD: text('div_d'), divPlac: text('div_plac'),
+  note: text('note'),             // примечание строки свадьбы (1 NOTE у FAM)
 }, (t) => ({
   uq: uniqueIndex('uq_fam_xref').on(t.chatId, t.xref),
 }));

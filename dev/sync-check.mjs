@@ -54,6 +54,9 @@ const TRIGGERS = [
     'Иван 1960-05-10 06:30 (Пермь)',
     'Иван 1960-05-10 12:30 МСК+2',
     'Иван 1960-05-10 12:30 UTC-3',
+    'Иван 1960-05-10 04:30',
+    'Агафья 1663 1681-07-14',
+    'Пётр I 1672 1725 Император',
     'Иван+Мария 1983-06-04 (Пермь) 1990-01-01 (Казань)',
     'Иван 1960-05-10 06:30 2020-02-03 04:00',
     'Иван 1960-13-10',
@@ -90,6 +93,110 @@ if (unfB.birt.date !== '1624-01-01' || unfB.deat.date !== '1669-01-01' || unfM.b
     console.log('✗ неполные даты гедкома\n  I4: ' + unfB.birt.date + ' / ' + unfB.deat.date
         + ', I5: ' + unfM.birt.date);
 }
+
+// частичные даты и хвост-примечание триггеров («1663» → 1663-01-01,
+// «1693-01» → 1693-01-01; хвост после дат — примечание целиком)
+const TREE_TRIGGERS = [
+    'Агафья 1663 1681-07-14 Царица',
+    'Пётр 1672-05 1725-01-28 Первый (Пермь)',
+    'Иван 1663',
+    'Иван 1960-05-10 06:30 (Пермь) шутка',
+    'Иван 1960-05-10 2020-02-03 царь всея Руси',
+];
+for (const t of TREE_TRIGGERS) cmp('parseTrigger(tree) ' + JSON.stringify(t), VK.parseTrigger(t), TGP.parseTrigger(t));
+
+// ========================= 1б. плоское древо =========================
+// мини-древо: пара, свадьба, дети с семьями
+const TREE1 = `\
+-Алексей Михайлович 1629-03-19 1676-02-08 Царь (1645—1676)
++=Мария Ильинична 1624-07-11 1669-03-11 (1663 год в источнике)
+1648-01-16
+--Фёдор III 1661-06-09 1682-04-27
+--Софья Алексеевна 1657-09-27 1704-07-14
++=Наталья Кирилловна 1651-09-01 1694-02-04
+1671-09-09
+--Пётр I 1672-05-30 1725-01-28 Император Всероссийский`;
+// муж с двумя жёнами (правдоподобие ухватывает правду: Марфа — Фёдору)
+const TREE2 = `-Алексей Михайлович 1629-03-19 1676-02-08
++=Мария Ильинична 1624-07-11 1669-03-11
+1648-01-16
+--Фёдор III 1661-06-09 1682-04-27
++=Агафья 1663 1681-07-14
+1680-07-28
+---Илья 1681-07-11 1681-07-21
++=Марфа 1664-03-15
+1682-02-15
+==Феодосия 1682-06-14`;
+// ошибки: супруг без свадьбы, глубина без родителей, непонятный маркер,
+// свадьба без пары, строка без маркера
+const TREE3 = `\
+-Одинокий 1900-01-01
++=БезСвадьбы 1901-02-02
+-Сирота 1900-01-01
+---Глубоко 1900-01-01
++-+=
+1960-01-01
+1960-01-01 Имя без маркера`;
+const TREES = [['мини-древо', TREE1], ['две жены', TREE2], ['ошибки', TREE3]];
+for (const [t, txt] of TREES) {
+    cmp('parseTree «' + t + '»', VK.parseTree(txt), TGP.parseTree(txt));
+    cmp('parseTreeLine «' + t + '»',
+        txt.split(/\r?\n/).map(l => VK.parseTreeLine(l.trim())),
+        txt.split(/\r?\n/).map(l => TGP.parseTreeLine(l.trim())));
+}
+// применённое древо: персоны/пары/связи/гедком поровну
+const TREE_CH = 77;
+VK.clearChatTree(TREE_CH);
+await TG.clearChatTree(TREE_CH);
+for (const [t, txt] of TREES) {
+    const vkRep = VK.applyTree(TREE_CH, VK.parseTree(txt));
+    const tgRep = await TG.applyTree(TREE_CH, TGP.parseTree(txt));
+    // аккуратно: обе стороны получили одинаковое parseTree-значение
+    cmp('applyTree отчёт «' + t + '»', vkRep, tgRep);
+}
+cmp('applyTree personRows', VK.personRows(TREE_CH), await TG.personRows(TREE_CH));
+cmp('applyTree weddingRows', VK.weddingRows(TREE_CH), await TG.weddingRows(TREE_CH));
+cmp('applyTree famList', VK.famList(TREE_CH), await TG.famList(TREE_CH));
+cmp('applyTree gedcomText', VK.gedcomText(TREE_CH), await TG.gedcomText(TREE_CH));
+// повторное применение того же сообщения — стабильный пересбор (дубликаты съедены)
+const vkRep2 = VK.applyTree(TREE_CH, VK.parseTree(TREE1));
+const tgRep2 = await TG.applyTree(TREE_CH, TGP.parseTree(TREE1));
+cmp('applyTree повтор «мини-древо»', vkRep2, tgRep2);
+cmp('applyTree повтор gedcomText', VK.gedcomText(TREE_CH), await TG.gedcomText(TREE_CH));
+// плоское древо чата (формат пачки — тап на колокольчик): вывод идентичен
+cmp('applyTree chatFlatText', VK.chatFlatText(TREE_CH), await TG.chatFlatText(TREE_CH));
+cmp('applyTree повтор chatFlatText', VK.chatFlatText(TREE_CH), await TG.chatFlatText(TREE_CH));
+
+// пачка в ответе на триггер: parentKey — корни становятся детьми цитируемой персоны
+const TREE4 = '-Добавка 1902-03-01 1980-01-01\n=Дочка Добавка 1935-06-01 2001-06-01';
+cmp('parseTree «с цитатой»', VK.parseTree(TREE4), TGP.parseTree(TREE4));
+const vkRep3 = VK.applyTree(TREE_CH, VK.parseTree(TREE4), 'Пётр I 1672-05-30');
+const tgRep3 = await TG.applyTree(TREE_CH, TGP.parseTree(TREE4), 'Пётр I 1672-05-30');
+cmp('applyTree с цитатой', vkRep3, tgRep3);
+cmp('applyTree с цитатой famList', VK.famList(TREE_CH), await TG.famList(TREE_CH));
+cmp('applyTree с цитатой gedcomText', VK.gedcomText(TREE_CH), await TG.gedcomText(TREE_CH));
+cmp('applyTree с цитатой chatFlatText', VK.chatFlatText(TREE_CH), await TG.chatFlatText(TREE_CH));
+
+// пачка в ответе на триггер начинается с супруга «+» — цитируемый берётся в пару
+const TREE5 = '+=Вторая Жена Петра 1680-01-01 1733-01-01\n1700-06-01';
+cmp('parseTree «супруг цитаты»', VK.parseTree(TREE5), TGP.parseTree(TREE5));
+const vkRep4 = VK.applyTree(TREE_CH, VK.parseTree(TREE5), 'Пётр I 1672-05-30');
+const tgRep4 = await TG.applyTree(TREE_CH, TGP.parseTree(TREE5), 'Пётр I 1672-05-30');
+cmp('applyTree супруг цитаты', vkRep4, tgRep4);
+cmp('applyTree супруг цитаты famList', VK.famList(TREE_CH), await TG.famList(TREE_CH));
+cmp('applyTree супруг цитаты gedcomText', VK.gedcomText(TREE_CH), await TG.gedcomText(TREE_CH));
+cmp('applyTree супруг цитаты chatFlatText', VK.chatFlatText(TREE_CH), await TG.chatFlatText(TREE_CH));
+// одноимённый пол: супруг того же пола, что цитируемый — ошибка
+const TREE6 = '+-Некто Мужского Рода 1700-06-01';
+const vkRep5 = VK.applyTree(TREE_CH, VK.parseTree(TREE6), 'Пётр I 1672-05-30');
+const tgRep5 = await TG.applyTree(TREE_CH, TGP.parseTree(TREE6), 'Пётр I 1672-05-30');
+cmp('applyTree супруг того же пола', vkRep5.errors, tgRep5.errors);
+
+// сводка пачки — общий формат ответа (обе копии)
+cmp('treeReport пачка', VK.treeReport(Object.assign(vkRep3, { errors: [{ line: 2, msg: 'свадьба без подходящей пары' }] })),
+    TG.treeReport(Object.assign({}, tgRep3, { errors: [{ line: 2, msg: 'свадьба без подходящей пары' }] })));
+// stripHtml — снятие разметки для .txt-хвоста (только ТГ; ВК присылает без HTML)
+cmp('stripHtml', TG.stripHtml('<b>Иван</b> &lt;гр&gt; 20&nbsp;июня'), 'Иван <гр> 20 июня');
 
 // ==================== 6. jubileeText: шапка с датой смерти/развода ====================
 const { jubileeText: tgJubilee } = await import(path.join(ROOT, 'tgcloud', 'lib', 'text.js'));
@@ -647,4 +754,4 @@ for (const [what, ln, rows] of ASSERTS) {
 }
 
 if (failed) { console.log('\n✗ расхождений: ' + failed); process.exit(1); }
-console.log('✓ ВК и ТГ синхронны (' + TRIGGERS.length + ' триггеров, гедком-импорт/экспорт, связи/семьи/каскад, chartPdf)');
+console.log('✓ ВК и ТГ синхронны (' + (TRIGGERS.length + TREE_TRIGGERS.length) + ' триггеров, гедком-импорт/экспорт, плоское древо, связи/семьи/каскад, chartPdf)');

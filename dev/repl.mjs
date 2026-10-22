@@ -175,7 +175,7 @@ rl.on('SIGINT', () => { console.log(); rl.close(); });
 
 const role = PRIVATE ? 'личка' : (ADMIN ? 'админ группы' : 'участник группы');
 console.log(`tgdev: chat=${CHAT} (${role}), db=${path.relative(ROOT, dbAbs)}${fresh ? ' (fresh)' : ''}`);
-console.log('Ввод: текст | /N M [uID] — кнопка (можно от другого участника) | >N текст — ответ на сообщение N (бота или твой) | !ged путь — дроп .ged-файла | !dump — база | Ctrl-C — выход\n');
+console.log('Ввод: текст | /N M [uID] — кнопка (можно от другого участника) | >N текст — ответ на сообщение N (бота или твой) | !ged путь — дроп .ged-файла | !txt путь [>N] — дроп пачки (можно ответом на N) | !dump — база | Ctrl-C — выход\n');
 
 const handle = async raw => {
     const input = String(raw || '').replace(/\\n/g, '\n').trim();
@@ -201,6 +201,37 @@ const handle = async raw => {
         messages.push(m);
         console.log(`[${m.n}] ты:`);
         console.log('    📎 ' + fileName);
+        try { await messageHandler(msg, { update: { update_id: ++updSeq } }); }
+        catch (e) { console.log('ERROR:', e.message); }
+        return;
+    }
+    const tm = input.match(/^!txt\s+(\S+)(?:\s+>(\d+))?$/);
+    if (tm) {
+        // дроп .txt-пачки; `!txt путь >N` — дроп ответом на сообщение N
+        // (триггер из цитаты → умная связка)
+        let content;
+        try { content = fs.readFileSync(path.resolve(tm[1]), 'utf8'); }
+        catch (e) { console.log('ERROR: ' + e.message); return; }
+        const fileName = path.basename(tm[1]);
+        // бот раздаёт файлы с двойным расширением .ged.txt; если локальный
+        // файл уже с ним — имя сохраняем, иначе добавляем
+        const docName = /\.ged\.txt$/i.test(fileName) ? fileName : fileName + '.ged.txt';
+        const fid = 'dev-' + fileName;
+        globalThis.__tgdev.files = globalThis.__tgdev.files || {};
+        globalThis.__tgdev.files[fid] = new TextEncoder().encode(content);
+        const src = tm[2] ? messages.find(x => x.n === Number(tm[2])) : null;
+        if (tm[2] && !src) { console.log(`ERROR: нет сообщения ${tm[2]}`); return; }
+        const msg = {
+            chat: { id: CHAT, type: CHAT_TYPE },
+            from: { id: 1, first_name: 'dev' },
+            document: { file_id: fid, file_name: docName },
+            ...(src ? { reply_to_message: { ...src.updateMsg, message_id: src.n, text: src.text, entities: src.entities || [], reply_markup: src.markup } } : {}),
+        };
+        const m = { n: ++counter, text: '📎 ' + docName, entities: [], markup: undefined, flat: [], user: true,
+            updateMsg: { chat: { id: CHAT, type: CHAT_TYPE }, from: { id: 1 } } };
+        messages.push(m);
+        console.log(`[${m.n}] ты:`);
+        console.log('    📎 ' + docName + (src ? ` (ответ на [${src.n}])` : ''));
         try { await messageHandler(msg, { update: { update_id: ++updSeq } }); }
         catch (e) { console.log('ERROR:', e.message); }
         return;

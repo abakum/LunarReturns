@@ -1,16 +1,18 @@
-import { api, db } from 'sdk';
+import { api, db, InputFile } from 'sdk';
 import { and, eq } from 'sdk/db';
 import { settings, gedDrops, focusView } from '../schema.js';
 import { jubileeText } from '../lib/text.js';
-import { parseGedcom } from '../lib/parse.js';
+import { parseGedcom, parseTree } from '../lib/parse.js';
+import { fileBaseOf } from '../lib/chart.js';
 import { REL_DEFS, religiousYear } from '../lib/religion.js';
 import {
-    HELP, GED_TTL, relMarkup, upcomingText, getSettings, startMarkup, chatAdmin, eventMarkup,
+    HELP, GED_TTL, relMarkup, chatFlatText, getSettings, startMarkup, chatAdmin, eventMarkup,
     recordOf, recordByXref, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong,
     deleteEventCascade, replaceWithGedcom, clearChatTree, deleteLink, setIndiSex, toggleAdopted,
-    linkById, linkPairs, xrefOfKey, personRows, weddingRows,
+    linkById, linkPairs, xrefOfKey, personRows, weddingRows, sendTreeBackup,
     focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText,
     focusWithSpouses, focusSpousePairs, focusListText, focusDepth, sendGedPdf,
+    applyTree, treeReport,
 } from '../lib/bot.js';
 
 export default async function (cq, ctx) {
@@ -29,6 +31,23 @@ export default async function (cq, ctx) {
                 console.error("editMessageText:", e.message, "— отправляю сообщением");
                 return api.sendMessage({ chat_id: chatId, text, reply_markup: markup }).catch(() => {});
             });
+
+    // большой текст — ВЕСЬ текст одним .ged.txt-файлом; не выложился — ошибка
+    const tailDoc = async (text, nameBase) => {
+        const base = fileBaseOf(nameBase || "Продолжение") + ".ged.txt";
+        try {
+            await api.sendDocument({
+                chat_id: chatId,
+                document: new InputFile(new TextEncoder().encode(text), base,
+                    { type: "text/plain" }),
+            });
+            return;
+        } catch (e) {
+            console.error("tail document:", e.message);
+            await api.sendMessage({ chat_id: chatId,
+                text: "💥 Не удалось выложить файл " + base });
+        }
+    };
 
     if (data.startsWith("rel:")) {
         const key = data.slice(4);
@@ -61,37 +80,35 @@ export default async function (cq, ctx) {
     const isHelp = cq.message?.text === HELP;
 
     if (data === "bell") {
-        // как религиозные дни: первый клик показывает список, не меняя подписку
-        // (сортировка по подписке: 🔔 вкл — ММ-ДД, 🔕 выкл — ГГГГММДД);
-        // клик по уже показанному списку переключает подписку и пересортирует
+        // список — плоским древом чата (формат пачки, ввод/вывод симметричны);
+        // первый клик показывает древо, повторный переключает подписку 🔔/🔕
         const s = await getSettings(chatId);
         const on = s.bell !== false;
-        const md = await upcomingText(chatId, false);
-        const full = await upcomingText(chatId, true);
+        const flat = await chatFlatText(chatId);
         const cur = cq.message?.text;
-        const shown = cur !== undefined
-            && ((md && (cur === md || md.startsWith(cur))) || (full && (cur === full || full.startsWith(cur))));
+        const shown = cur !== undefined && flat && (cur === flat || cur.startsWith(flat));
         if (shown) {
             s.bell = !on;
             const row = await db.select().from(settings).where(eq(settings.chatId, chatId)).get();
             if (row) await db.update(settings).set({ bell: s.bell }).where(eq(settings.chatId, chatId)).run();
             else await db.insert(settings).values({ chatId, bell: s.bell }).run();
         }
-        const list = await upcomingText(chatId, s.bell === false);
-        if (!list) {
+        if (!flat) {
             if (!isHelp) await editText("Событий нет", cq.message.reply_markup);
             await answer("Событий нет");
             return;
         }
         await answer(shown ? (s.bell !== false ? "подписка включена" : "подписка отключена") : "список событий");
-        // как в VK: список в этом же сообщении, клавиатура с новой подпиской
+        // как в VK: список в этом же сообщении, клавиатура с новой подпиской;
+        // не влезает — весь текст одним файлом <имя>.ged.txt
         const markup = await startMarkup(cq.message.chat, await chatAdmin(cq.message.chat, cq.from?.id),
             chatId, await getSettings(chatId));
-        const parts = splitText(list);
-        await editText(parts[0], markup);
-        for (let i = 1; i < parts.length; i++) {
-            await api.sendMessage({ chat_id: chatId, text: parts[i] });
+        if (flat.length > 4000) {
+            await editText("📄 Полное древо — файлом " + fileBaseOf("Древо чата") + ".ged.txt", markup);
+            await tailDoc(flat, "Древо чата");
+            return;
         }
+        await editText(flat, markup);
         return;
     }
 
@@ -147,16 +164,21 @@ export default async function (cq, ctx) {
             head = "Удалить все события чата?";
         }
         await answer(fv ? "Удалить родню в радиусе?" : "Удалить все события чата?");
-        // как в VK: подтверждение с показом списка событий; длинный — кусками
-        // (начало с кнопками правкой исходного, хвост досылкой — как фокус)
-        const parts = splitText(head + "\n" + list);
-        await editText(parts[0], {
+        // как в VK: подтверждение с показом списка событий; длинный — весь
+        // список одним файлом <имя>.ged.txt (правка исходного — короткая пометка)
+        const full = head + "\n" + list;
+        const delKb = {
             inline_keyboard: [[
                 { text: fv ? "🗑 удалить родню" : "🗑 удалить всё", callback_data: "del:yes" },
                 { text: "❌ отмена", callback_data: "del:no" },
             ]]
-        });
-        for (let i = 1; i < parts.length; i++) await api.sendMessage({ chat_id: chatId, text: parts[i] });
+        };
+        if (full.length > 4000) {
+            await editText("📄 Полный список — файлом " + fileBaseOf("События") + ".ged.txt", delKb);
+            await tailDoc(full, "События");
+            return;
+        }
+        await editText(full, delKb);
         return;
     }
 
@@ -347,9 +369,14 @@ export default async function (cq, ctx) {
             }
             body = list;
         }
-        const parts = splitText(focusHead(row.pkey, radius, rec.dd) + (body ? "\n" + body : ""));
-        await editText(parts[0], focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth));
-        for (let i = 1; i < parts.length; i++) await api.sendMessage({ chat_id: chatId, text: parts[i] });
+        const full = focusHead(row.pkey, radius, rec.dd) + (body ? "\n" + body : "");
+        const fKb = focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth);
+        if (full.length > 4000) {
+            await editText("📄 Полный список — файлом " + fileBaseOf("Родня") + ".ged.txt", fKb);
+            await tailDoc(full, "Родня");
+            return;
+        }
+        await editText(full, fKb);
         return;
     }
 
@@ -370,6 +397,15 @@ export default async function (cq, ctx) {
         if (data === "ged:ign") {
             await editText("Файл не добавлен: " + row.fileName, undefined);
             await answer("не добавлено");
+            return;
+        }
+        // .ged.txt-пачка: без замены — дерево ДОБАВЛЯЕТСЯ (с резервом сначала файлом)
+        if (/\.ged\.txt$/i.test(row.fileName)) {
+            if (data === "ged:bak") await sendTreeBackup(chatId);
+            const rep = await applyTree(chatId, parseTree(row.content), null);
+            await editText(treeReport(rep), undefined);
+            await answer("пачка добавлена");
+            console.log("txt apply:", rep.persons, "персон,", rep.links, "детей, chat", chatId);
             return;
         }
         const r = await replaceWithGedcom(chatId, parseGedcom(row.content), data === "ged:bak");
