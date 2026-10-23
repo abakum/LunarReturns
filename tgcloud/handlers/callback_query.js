@@ -38,7 +38,8 @@ export default async function (cq, ctx) {
         try {
             await api.sendDocument({
                 chat_id: chatId,
-                document: new InputFile(new TextEncoder().encode(text), base,
+                // BOM — чтобы Windows-редакторы открывали как UTF-8
+            document: new InputFile(new TextEncoder().encode("\uFEFF" + text), base,
                     { type: "text/plain" }),
             });
             return;
