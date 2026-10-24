@@ -2113,8 +2113,12 @@ function gedcomText(peerId, keys) {
 // именные строки.
 // Показ — тапом на 🔔/🔕 колокольчика.
 // Чистая логика дословно продублирована в tgcloud/lib/bot.js (dev/sync-check.mjs).
-function chatFlatText(peerId) {
-    const rows = qa("SELECT * FROM indi WHERE chat=? ORDER BY rowid", peerId);
+function chatFlatText(peerId, keys = null) {
+    // keys (опционально) — фокус-радиус: пачка только этого подмножества
+    // («Имя ГГГГ-ММ-ДД»); семьи фильтруются по касанию персон карт ключей
+    const hasKeys = Array.isArray(keys) && keys.length > 0;
+    const rows = qa("SELECT * FROM indi WHERE chat=? ORDER BY rowid", peerId)
+        .filter(r => !hasKeys || keys.includes(r.name + " " + (r.birt_d ?? "")));
     const persons = rows.map(r => ({
         key: r.xref, name: r.name, sex: r.sex || null,
         d: r.birt_d ?? undefined, dd: r.deat_d ?? undefined,
@@ -2149,6 +2153,10 @@ function chatFlatText(peerId) {
             if (!m.note) m.note = F.note;
         } else fams.push({ s, ...F });
     }
+    const kMap = new Map(persons.map(p => [p.key, p.name + " " + (p.d ?? "")]));
+    if (hasKeys) // радиус: семьи, что касается персон ключей (супруга или дети)
+        return flatTreeText(persons, fams.filter(f =>
+            [f.hKey, f.wKey, ...f.children].some(k => k != null && keys.includes(kMap.get(k) || ""))));
     return flatTreeText(persons, fams);
 }
 
@@ -2844,7 +2852,9 @@ async function vkUploadDoc(peerId, title, content) {
 // тап 🧬 / «/gedcom» / «/gedcomN»: <имя>.ged всегда, <имя>.pdf (диаграмма,
 // имя из заголовка fileBaseOf); heroKey — pkey героя для колонки «Связь год»;
 // неудача — фолбэк текстовым гедкомом
-async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = null) {
+// origin (тап 🧬 на «/»-сообщении) — правка исходного сообщения с вложениями
+// (текст и назначение не меняются, как у «-+=»); без origin — отдельным сообщением
+async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = null, origin = null, kb = null) {
     const g = gedcomText(peerId, keys);
     // заголовок чарта без цифры уровня (кейкап оставлен только фокусу);
     // цифра → range героя для chartFor
@@ -2861,6 +2871,18 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
     try {
         const atts = [await vkUploadDoc(peerId, base + ".ged", g)];
         if (pdf) atts.push(await vkUploadDoc(peerId, base + ".pdf", Buffer.from(pdf, "latin1")));
+        if (origin) {
+            try {
+                await vkApi("messages.edit", {
+                    peer_id: origin.peer_id, conversation_message_id: origin.conversation_message_id,
+                    attachment: atts.join(","), keyboard: kb
+                });
+                console.log("ged artifacts edited into origin:", base + ".ged", "peer", peerId);
+                return;
+            } catch (e) {
+                console.error("editOriginAtts:", e.message, "— отношу файлом");
+            }
+        }
         await messagesSend(peerId, head, msgId, convMsgId, null, atts.join(","));
         console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : ""), "peer", peerId);
         return;
@@ -2891,12 +2913,6 @@ function toggleRel(peerId, key) {
     return !cur;
 }
 
-function setBell(peerId, on) {
-    if (q1("SELECT chat FROM settings WHERE chat=?", peerId))
-        qr("UPDATE settings SET bell=? WHERE chat=?", on ? 1 : 0, peerId);
-    else
-        qr("INSERT INTO settings(chat,bell) VALUES(?,?)", peerId, on ? 1 : 0);
-}
 // клавиатура: по 4 кнопки в ряд, последняя — ❌ (закрыть, красная);
 // состояние — 🔔 (вкл) / 🔕 (выкл);
 // подпись колокольчика — подписка: 🔔 вкл (список по ММ-ДД) / 🔕 выкл (по ГГГГММДД)
@@ -2910,29 +2926,29 @@ function relKeyboard(peerId) {
     return JSON.stringify({
         inline: true,
         buttons: [
-            [mk("🗑", { c: "del" }, "secondary"), mk(s.bell !== false ? "🔔" : "🔕", { c: "bell" }, "secondary"), mk("🧬", { c: "tree" }, "secondary"), btn("orth")],
+            [mk("🗑", { c: "del" }, "secondary"), mk("🔔", { c: "bell" }, "secondary"), mk("🧬", { c: "tree" }, "secondary"), mk("-+=", { c: "flat" }, "secondary"), btn("orth")],
             [btn("islam"), btn("bud"), btn("cath"), btn("jud")],
             [mk("❌", { c: "close" }, "secondary")]
         ]
     });
 }
 
-// клавиатура владельца в групповом чате
-function ownerKeyboard(bellOn = true) {
+// клавиатура владельца в групповом чате (колокольчик всегда 🔔)
+function ownerKeyboard() {
     const mk = (label, payload) => ({
         action: { type: "callback", label, payload: JSON.stringify(payload) },
         color: "secondary"
     });
-    return JSON.stringify({ inline: true, buttons: [[mk("🗑", { c: "del" }), mk(bellOn ? "🔔" : "🔕", { c: "bell" }), mk("🧬", { c: "tree" }), mk("❌", { c: "close" })]] });
+    return JSON.stringify({ inline: true, buttons: [[mk("🗑", { c: "del" }), mk("🔔", { c: "bell" }), mk("🧬", { c: "tree" }), mk("-+=", { c: "flat" }), mk("❌", { c: "close" })]] });
 }
 
-// клавиатура обычного участника группового чата
-function bellKeyboard(bellOn = true) {
+// клавиатура обычного участника группового чата (колокольчик всегда 🔔)
+function bellKeyboard() {
     const mk = (label, payload) => ({
         action: { type: "callback", label, payload: JSON.stringify(payload) },
         color: "secondary"
     });
-    return JSON.stringify({ inline: true, buttons: [[mk(bellOn ? "🔔" : "🔕", { c: "bell" }), mk("🧬", { c: "tree" }), mk("❌", { c: "close" })]] });
+    return JSON.stringify({ inline: true, buttons: [[mk("🔔", { c: "bell" }), mk("🧬", { c: "tree" }), mk("-+=", { c: "flat" }), mk("❌", { c: "close" })]] });
 }
 
 const snackbar = text => JSON.stringify({ type: "show_snackbar", text });
@@ -3264,20 +3280,21 @@ async function longPollStep() {
     }
 }
 
-const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Ответ триггером на триггер — связь родитель→ребёнок. Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата.";
+const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Ответ триггером на триггер — связь родитель→ребёнок. Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата.\nКнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf), «-+=» — пачка древа (.ged.txt); если не влезает — файлом в ответ.";
 
-// большой ответ — одним файлом <имя>.ged.txt (весь текст);
-// не выложился — сообщение об ошибке (без кусков)
-async function sendTailDoc(peerId, text, nameBase) {
-    const base = fileBaseOf(nameBase || "Продолжение");
+// большой ответ — одним файлом: «.ged.txt» (пачка древа) либо «.txt» (список
+// событий); не выложился — сообщение об ошибке (без кусков). Файл — ответом
+// (reply) на то же сообщение, к которому кнопки, а не отдельным
+async function sendTailDoc(peerId, text, nameBase, ext = ".ged.txt", convMsgId = 0) {
+    const name = fileBaseOf(nameBase || "Продолжение") + ext;
     try {
         // BOM — чтобы Windows-браузер распознал UTF-8 (иначе кракозябры)
-        await messagesSend(peerId, "📄 Полный текст — файлом " + base + ".ged.txt", 0, 0, null,
-            await vkUploadDoc(peerId, base + ".ged.txt", "\uFEFF" + text));
+        await messagesSend(peerId, "📄 " + name, 0, convMsgId, null,
+            await vkUploadDoc(peerId, name, "\uFEFF" + text));
         return;
     } catch (e) {
         console.error("tail doc:", e.message);
-        await messagesSend(peerId, "💥 Не удалось выложить файл " + base + ".ged.txt");
+        await messagesSend(peerId, "💥 Не удалось выложить файл " + name);
     }
 }
 
@@ -3390,34 +3407,45 @@ async function focusKeyboard(peerId, userId, key, radius, depth) {
         action: { type: "callback", label, payload: JSON.stringify(payload) },
         color: "secondary"
     });
-    const bell = mk(bellOnOf(getSettings(peerId)) ? "🔔" : "🔕", { c: "foc:bell", k: key, r: radius });
+    const bell = mk("🔔", { c: "foc:bell", k: key, r: radius });
     const tree = mk("🧬", { c: "foc:tree", k: key, r: radius });
+    const flat = mk("-+=", { c: "foc:flat", k: key, r: radius });
     const digits = [1, 2, 3, 4, 5]
         .filter(n => n !== radius && n <= (depth === undefined ? 5 : depth))
         .map(n => mk(String(n) + "\u20E3", { c: "foc", k: key, r: n }));
     const tail = [...digits, mk("❌", { c: "close" })];
     const base = (peerId < 2000000000 || await isChatAdmin(peerId, userId))
-        ? [mk("🗑", { c: "del", k: key, r: radius }), bell, tree]
-        : [bell, tree];
+        ? [mk("🗑", { c: "del", k: key, r: radius }), bell, tree, flat]
+        : [bell, tree, flat];
     // VK: максимум 5 кнопок в ряду — цифры отдельным рядом
     return JSON.stringify({ inline: true, buttons: [base, tail] });
 }
 
 // список событий по множеству фокуса с ярлыками родства (kinLabel):
 // «Имя Д [Д(смерти)] [ЧЧ:ММ] родство»; items — записи {n, d, h, m, dd};
-// (items, keys, key, pairs, spousePairs, sexOf, byFullDate) — сортировка
-// по ММ-ДД или (byFullDate) по полной дате
-function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false) {
+// params — (items, keys, key, pairs, spousePairs, sexOf, byFullDate, mmddToday);
+// byFullDate=false — круговой порядок «от сегодня» (как religiousYear),
+// true — все по полной дате ГГГГ-ММ-ДД (подтверждение удаления)
+function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "") {
     const set = new Set(keys);
-    const sortKey = r => (byFullDate ? r.d : r.d.slice(5)) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
-    return items
-        .filter(r => set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys)))
-        .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0))
+    const map = rs => rs
         .map(r => r.n + " " + r.d
             + (r.dd ? " " + r.dd : "")
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "")
             + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d); return l ? " " + l : ""; })())
         .join("\n");
+    const sortKey = r => r.d + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
+    if (byFullDate) return map(items
+        .filter(r => set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys)))
+        .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0)));
+    // круговой порядок по ММ-ДД от сегодняшнего MM-DD (как religiousYear)
+    const cum = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]; // невисокосный год
+    const dayIdx = d => cum[Number(d.slice(5, 7)) - 1] + Number(d.slice(8)) - 1;
+    const nowIdx = mmddToday ? cum[Number(mmddToday.slice(0, 2)) - 1] + Number(mmddToday.slice(3)) - 1 : 0;
+    const bellKey = r => String((dayIdx(r.d) - nowIdx + 365) % 365).padStart(3, "0") + " " + sortKey(r);
+    return map(items
+        .filter(r => set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys)))
+        .sort((a, b) => (bellKey(a) < bellKey(b) ? -1 : bellKey(a) > bellKey(b) ? 1 : 0)));
 }
 
 // супруги персон чата: fam с двумя датированными родителями — пары точные
@@ -3435,8 +3463,11 @@ function focusText(peerId, key, radius, bell, dd, byFull = false) {
     const keys = focusWithSpouses(focusKeys(pairs, key, radius), spPairs);
     const items = [...personRows(peerId), ...weddingRows(peerId)];
     const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
+    // круговой порядок «от сегодня» (МСК) — ось сортировки списка; MM-DD
+    const { mo, d: dToday } = mskNowParts();
+    const mmdd = String(mo).padStart(2, "0") + "-" + String(dToday).padStart(2, "0");
     const body = bell
-        ? (focusListText(items, keys, key, pairs, spPairs, k => sexMap.get(k) ?? null, byFull)
+        ? (focusListText(items, keys, key, pairs, spPairs, k => sexMap.get(k) ?? null, byFull, mmdd)
             || "(в радиусе нет событий)")
         : gedcomText(peerId, keys);
     return focusHead(key, radius, dd) + "\n" + body;
@@ -3631,26 +3662,31 @@ function unpay(p) {
     return String(p);
 }
 
-// «Имя ГГГГ-ММ-ДД[ ГГГГ-ММ-ДД смерти][ ЧЧ:ММ]» в исходных датах; сортировка по
-// ММ-ДД (не ломая год; список 🔔) или по полной дате (🔕/удаление); "" — записей нет
-function upcomingEvents(peerId, byFullDate = false) {
-    const key = r => (byFullDate ? r.d : r.d.slice(5)) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
-    return [...personRows(peerId), ...weddingRows(peerId)]
-        .sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0))
+// «Имя ГГГГ-ММ-ДД[ ГГГГ-ММ-ДД смерти][ ЧЧ:ММ]»; "" — событий нет.
+// byFullDate=false — круговой порядок «от сегодня» (как religiousYear):
+// ММ-ДД сегодня первым, события прошлой части года — в конце;
+// true — все события по полной дате ГГГГ-ММ-ДД (подтверждение удаления)
+function upcomingEvents(peerId, byFullDate = false, mmddNow = "") {
+    const map = rs => rs
         .map(r => r.n + " " + r.d
             + (r.dd !== undefined ? " " + r.dd : "")
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : ""))
         .join("\n");
+    let rows = [...personRows(peerId), ...weddingRows(peerId)];
+    const key = r => r.d + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
+    if (byFullDate) return map(rows.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0)));
+    // круговой порядок по ММ-ДД от сегодняшнего MM-DD
+    const cum = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]; // невисокосный год
+    const dayIdx = d => cum[Number(d.slice(5, 7)) - 1] + Number(d.slice(8)) - 1;
+    const nowIdx = mmddNow ? cum[Number(mmddNow.slice(0, 2)) - 1] + Number(mmddNow.slice(3)) - 1 : 0;
+    const sortKey = r => String((dayIdx(r.d) - nowIdx + 365) % 365).padStart(3, "0") + " " + key(r);
+    return map(rows.sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0)));
 }
-
-// подписка списка колокольчика: false/undefined = включена (ММ-ДД), false → выключена
-const bellOnOf = s => !s || s.bell !== false;
 
 // клавиатура «/»-ответа по чату и роли пользователя
 async function peerKeyboard(peerId, userId) {
-    const bellOn = bellOnOf(getSettings(peerId));
     if (peerId < 2000000000) return relKeyboard(peerId);
-    return (await isChatAdmin(peerId, userId)) ? ownerKeyboard(bellOn) : bellKeyboard(bellOn);
+    return (await isChatAdmin(peerId, userId)) ? ownerKeyboard() : bellKeyboard();
 }
 
 // текст сообщения по cmid беседы; null если недоступен
@@ -3690,11 +3726,27 @@ async function editOrigin(o, text, kb) {
     }
 }
 
+// правка исходного сообщения с вложением-файлом (текст не меняется):
+// большой список/пачка уезжает документом в то же сообщение
+async function editOriginDoc(o, name, content, kb) {
+    try {
+        const att = await vkUploadDoc(o.peer_id, name, content);
+        await vkApi("messages.edit", {
+            peer_id: o.peer_id, conversation_message_id: o.conversation_message_id,
+            attachment: att, keyboard: kb
+        });
+    } catch (e) {
+        console.error("editOriginDoc:", e.message, "— отношу файлом");
+        const ext = /\.ged\.txt$/.test(name) ? ".ged.txt" : (/\.txt$/.test(name) ? ".txt" : "");
+        await sendTailDoc(o.peer_id, content.replace(/^\uFEFF/, ""), name.replace(/(\.ged)?\.txt$/, ""), ext, o.conversation_message_id);
+    }
+}
+
 async function handleEvent(o) {
     const p = unpay(o.payload);
     const peerId = o.peer_id;
     // кнопки фокус-сообщения: радиус родни 1–5, 🔔/🧬 в радиусе
-    if (p && typeof p === "object" && (p.c === "foc" || p.c === "foc:bell" || p.c === "foc:tree")) {
+    if (p && typeof p === "object" && (p.c === "foc" || p.c === "foc:bell" || p.c === "foc:tree" || p.c === "foc:flat")) {
         const key = String(p.k || "");
         const depth = focusDepth(linkPairs(peerId), key);
         // радиус не глубже имеющихся предков (старые сообщения могут нести снятые кнопки)
@@ -3704,44 +3756,48 @@ async function handleEvent(o) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "персона не найдена");
             return;
         }
+        await answerEvent(o.event_id || o.id, o.user_id, peerId,
+            p.c === "foc" ? focusLabel(radius)
+                : (p.c === "foc:bell" ? "список " : (p.c === "foc:flat" ? "пачка " : "древо ")) + focusLabel(radius));
         // 🧬 в радиусе: <имя>.ged + <имя>.pdf (диаграмма — родство к герою),
         // правка сообщения не нужна — файлы отдельным сообщением
         if (p.c === "foc:tree") {
             const keys = focusWithSpouses(focusKeys(linkPairs(peerId), key, radius), focusSpousePairs(peerId));
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "древо " + focusLabel(radius));
-            await sendGedArtifacts(peerId, keys, focusHead(key, radius, rec.dd), undefined, undefined, key);
+            await sendGedArtifacts(peerId, keys, focusHead(key, radius, rec.dd), 0, o.conversation_message_id, key,
+                o, await focusKeyboard(peerId, o.user_id, key, radius, depth));
+            return;
+        }
+        // «-+=» в радиусе: пачка радиуса (.ged.txt) — инлайн или файлом reply
+        if (p.c === "foc:flat") {
+            const keys = focusWithSpouses(focusKeys(linkPairs(peerId), key, radius), focusSpousePairs(peerId));
+            const pack = chatFlatText(peerId, keys);
+            if (!pack) { await answerEvent(o.event_id || o.id, o.user_id, peerId, "радиус пуст"); return; }
+            const kb = await focusKeyboard(peerId, o.user_id, key, radius, depth);
+            const txt = focusHead(key, radius, rec.dd) + "\n" + pack;
+            if (txt.length < 4000) { await editOrigin(o, txt, kb); return; }
+            // заголовок не ломаем (в нём триггер), текст не трогаем; пачка —
+            // вложением в это же сообщение
+            await editOriginDoc(o, fileBaseOf(focusHead(key, radius, rec.dd)) + ".ged.txt", "\uFEFF" + pack, kb);
             return;
         }
         const bell = p.c === "foc:bell";
-        const s = getSettings(peerId);
-        // сортировка списка — по подписке (🔔 вкл — ММ-ДД, 🔕 выкл — ГГГГММДД);
-        // клик по уже показанному списку переключает подписку
-        let on = s.bell !== false;
-        let byFull = bell && !on;
-        await answerEvent(o.event_id || o.id, o.user_id, peerId,
-            p.c === "foc" ? focusLabel(radius)
-                : (bell ? "список " + focusLabel(radius) : "древо " + focusLabel(radius)));
+        // список всегда по ММ-ДД (сортировка подписки касается только дампа)
+        const byFull = false;
         // цифра — только заголовок; тело (список/гедком) — по 🔔/🧬
         let txt;
         if (p.c === "foc") txt = focusHead(key, radius, rec.dd);
-        else {
-            txt = focusText(peerId, key, radius, bell, rec.dd, byFull);
-            if (bell) {
-                const cur = await cmidText(peerId, o.conversation_message_id);
-                // «уже показан» — показанное длиннее заголовка (сообщение-заголовок
-                // само по себе префикс рендера списка)
-                if (cur !== null && cur !== focusHead(key, radius, rec.dd) && txt.startsWith(cur)) {
-                    setBell(peerId, !on);
-                    on = !on;
-                    byFull = !on;
-                    txt = focusText(peerId, key, radius, bell, rec.dd, byFull);
-                }
-            }
-        }
+        else txt = focusText(peerId, key, radius, bell, rec.dd, byFull);
         const kb = await focusKeyboard(peerId, o.user_id, key, radius, depth);
         if (txt.length < 4000) { await editOrigin(o, txt, kb); return; }
-        await editOrigin(o, "📄 Полный список — файлом " + fileBaseOf("Родня") + ".ged.txt", kb);
-        await sendTailDoc(peerId, txt, "Родня");
+        // список начинается с сегодня — что не влезает в сообщение,
+        // просто отрезаем (целые строки, после заголовка)
+        const head = focusHead(key, radius, rec.dd);
+        let tail = "";
+        for (const l of txt.slice(head.length + 1).split("\n")) {
+            if (head.length + 1 + tail.length + l.length > 4000) break;
+            tail += (tail ? "\n" : "") + l;
+        }
+        await editOrigin(o, head + "\n" + tail, kb);
         return;
     }
     // кнопки сообщения-связи: пол нового лица, свадьба, усыновление, удаление
@@ -3797,7 +3853,7 @@ async function handleEvent(o) {
     const fd = p && typeof p === "object" && (p.c === "del" || p.c === "del:yes") && p.k
         ? { k: String(p.k), r: Math.min(5, Math.max(1, Number(p.r) || 1)) } : null;
     console.log("event:", payload, "peer", peerId);
-    if (!["del", "del:yes", "del:no", "bell", "tree", "close", "ged:rep", "ged:bak", "ged:ign"].includes(payload) && !payload.startsWith("rel:")) {
+    if (!["del", "del:yes", "del:no", "bell", "flat", "tree", "close", "ged:rep", "ged:bak", "ged:ign"].includes(payload) && !payload.startsWith("rel:")) {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "неизвестная кнопка");
         return;
     }
@@ -3837,7 +3893,13 @@ async function handleEvent(o) {
             await editOrigin(o, "Файл не добавлен: " + pend.name, JSON.stringify({ inline: true, buttons: [] }));
             return;
         }
-        const r = await replaceWithGedcom(peerId, parseGedcom(pend.text), payload === "ged:bak");
+        const g = parseGedcom(pend.text);
+        if (!g) {
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "не разобрать");
+            await editOrigin(o, "Файл не добавлен: " + pend.name + " (ждём GEDCOM в UTF-8)", JSON.stringify({ inline: true, buttons: [] }));
+            return;
+        }
+        const r = await replaceWithGedcom(peerId, g, payload === "ged:bak");
         await answerEvent(o.event_id || o.id, o.user_id, peerId, r.ok ? "дерево заменено" : "замена отменена");
         await editOrigin(o, r.head, JSON.stringify({ inline: true, buttons: [] }));
         console.log("ged replace:", r.head, "peer", peerId);
@@ -3858,7 +3920,7 @@ async function handleEvent(o) {
             const spPairs = focusSpousePairs(peerId);
             const keys = focusWithSpouses(focusKeys(pairs, fd.k, fd.r), spPairs);
             const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
-            list = focusListText([...personRows(peerId), ...weddingRows(peerId)], keys, fd.k, pairs, spPairs, k => sexMap.get(k) ?? null);
+            list = focusListText([...personRows(peerId), ...weddingRows(peerId)], keys, fd.k, pairs, spPairs, k => sexMap.get(k) ?? null, true);
             if (!list) {
                 await answerEvent(o.event_id || o.id, o.user_id, peerId, "в радиусе нет событий");
                 return;
@@ -3880,10 +3942,12 @@ async function handleEvent(o) {
                 { action: { type: "callback", label: "❌", payload: JSON.stringify({ c: "del:no" }) }, color: "secondary" }
             ]]
         });
-        // длинный список — правка исходного на короткую пометку, список — одним файлом
+        // длинный список — в сообщении остаётся заголовок, список — одним
+        // .txt-файлом ответом на это сообщение
         if ((head + "\n" + list).length >= 4000) {
-            await editOrigin(o, "📄 Полный список — файлом " + fileBaseOf("События") + ".ged.txt", kb);
-            await sendTailDoc(peerId, head + "\n" + list, "События");
+            const head0 = (head + "\n" + list).split("\n")[0];
+            await editOrigin(o, head0, kb);
+            await sendTailDoc(peerId, head + "\n" + list, head0, ".txt", o.conversation_message_id);
             return;
         }
         await editOrigin(o, head + "\n" + list, kb);
@@ -3923,25 +3987,38 @@ async function handleEvent(o) {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "отмена удаления");
         await editOrigin(o, HELP, await peerKeyboard(peerId, o.user_id));
     } else if (payload === "bell") {
-        // список — плоским древом чата (формат пачки, ввод/вывод симметричны);
-        // первый клик показывает древо, повторный переключает подписку 🔔/🔕
-        const s = getSettings(peerId);
-        const on = s.bell !== false;
-        const flat = chatFlatText(peerId);
-        const cur = await cmidText(peerId, o.conversation_message_id);
-        const shown = cur !== null && flat && (cur === flat || cur.startsWith(flat));
-        if (shown) setBell(peerId, !on);
-        if (!flat) {
+        // список событий (не плоское древо): всегда рендер по ММ-ДД,
+        // без подписного переключения тапом; список начинается с сегодня —
+        // что не влезает в сообщение, просто отрезаем (целые строки)
+        // «от сегодня» (МСК) — MM-DD
+        const { mo, d: dToday } = mskNowParts();
+        const list = upcomingEvents(peerId, false,
+            String(mo).padStart(2, "0") + "-" + String(dToday).padStart(2, "0"));
+        if (!list) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "событий нет");
             return;
         }
         // снекбар останавливает «вращение» на кнопке
-        await answerEvent(o.event_id || o.id, o.user_id, peerId,
-            shown ? (bellOnOf(getSettings(peerId)) ? "подписка включена" : "подписка отключена") : "список событий");
+        await answerEvent(o.event_id || o.id, o.user_id, peerId, "список событий");
+        let shownList = "";
+        for (const l of list.split("\n")) {
+            if (shownList.length + 1 + l.length > 4000) break;
+            shownList += (shownList ? "\n" : "") + l;
+        }
+        await editOrigin(o, shownList || "Событий нет", await peerKeyboard(peerId, o.user_id));
+    } else if (payload === "flat") {
+        // «-+=» — плоская пачка древа чата (.ged.txt, импортируется пачкой);
+        // не влезает — файлом ответом на это сообщение
+        const flat = chatFlatText(peerId);
+        if (!flat) {
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "древо пусто");
+            return;
+        }
+        await answerEvent(o.event_id || o.id, o.user_id, peerId, "пачка древа чата");
         if (flat.length >= 4000) {
+            // текст и кнопки не трогаем; вся пачка — вложением в это сообщение
             const kb0 = await peerKeyboard(peerId, o.user_id);
-            await editOrigin(o, "📄 Полное древо — файлом " + fileBaseOf("Древо чата") + ".ged.txt", kb0);
-            await sendTailDoc(peerId, flat, "Древо чата");
+            await editOriginDoc(o, fileBaseOf("Древо чата") + ".ged.txt", "\uFEFF" + flat, kb0);
             return;
         }
         await editOrigin(o, flat, await peerKeyboard(peerId, o.user_id));
@@ -3951,7 +4028,8 @@ async function handleEvent(o) {
             return;
         }
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "гедком-древо чата");
-        await sendGedArtifacts(peerId, undefined, "🧬 Гедком-древо чата");
+        await sendGedArtifacts(peerId, undefined, "🧬 Гедком-древо чата", 0, o.conversation_message_id, null,
+            o, await peerKeyboard(peerId, o.user_id));
     } else if (payload.startsWith("rel:")) {
         const key = payload.slice(4);
         if (!REL_DEFS[key]) return;

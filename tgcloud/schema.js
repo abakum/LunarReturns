@@ -73,7 +73,7 @@ export const settings = table('settings', {
   bud: integer('bud', { mode: 'boolean' }).default(false),
   cath: integer('cath', { mode: 'boolean' }).default(false),
   jud: integer('jud', { mode: 'boolean' }).default(false),
-  bell: integer('bell', { mode: 'boolean' }).default(true), // подписка списка 🔔: вкл — ММ-ДД, выкл — ГГГГ-ММ-ДД
+  bell: integer('bell', { mode: 'boolean' }).default(true), // подписка 🔔 (история; подписки больше нет, дамп всегда)
 });
 
 // дропнутый в чат .ged-файл: ждёт «Да/Нет» на вопрос об импорте

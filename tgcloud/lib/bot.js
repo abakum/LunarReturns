@@ -12,6 +12,8 @@ export const HELP = "Отправьте «Имя ГГГГ-ММ-ДД [ЧЧ:ММ] 
     + "Ответ триггером на триггер — связь родитель→ребёнок (гедком-древо чата).\n"
     + ".ged-файл чатом — замена древа; /today — события сегодня (МСК), /gedcom — древо\n"
     + "Кнопки под ответом: 👎 удалить, 👀 подробно.\n"
+    + "Кнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf),\n"
+    + "«-+=» — пачка древа (.ged.txt); если не влезает — файлом в ответ.\n"
     + "Пачкой одним сообщением: «-»/«=»×n Имя … — свой мужчина/женщина глубины n−1,\n"
     + "«+»×n дата или «+» без даты (n−1 — глубина владельца) — свадьба,\n"
     + "вторая половина идёт строкой ниже без маркера; строки дат без «+»\n"
@@ -28,14 +30,14 @@ export async function getSettings(chatId) {
 }
 
 // inline-клавиатура настроек (личка): 🗑 (удалить всё) + колокольчик (список) + религии (🔔/🔕) + ❌
-// раскладка как в VK relKeyboard: [🗑, bell, orth, islam] / [bud, cath, jud, ❌];
-// подпись колокольчика — подписка: 🔔 вкл (список по ММ-ДД) / 🔕 выкл (по ГГГГММДД)
+// раскладка как в VK relKeyboard: [🗑, 🔔, orth, islam] / [bud, cath, jud, ❌];
+// колокольчик всегда 🔔 (подписки больше нет — список всегда «от сегодня»)
 export function relMarkup(chatId, s) {
     const btn = (text, data) => ({ text, callback_data: data });
     const rel = key => btn(REL_DEFS[key].icon + (s[key] ? "🔔" : "🔕"), "rel:" + key);
     return {
         inline_keyboard: [
-            [btn("🗑", "del"), btn(s.bell !== false ? "🔔" : "🔕", "bell"), btn("🧬", "tree"), rel("orth")],
+            [btn("🗑", "del"), btn("🔔", "bell"), btn("🧬", "tree"), btn("-+=", "flat"), rel("orth")],
             [rel("islam"), rel("bud"), rel("cath"), rel("jud")],
             [btn("❌", "close")]
         ]
@@ -43,23 +45,25 @@ export function relMarkup(chatId, s) {
 }
 
 // клавиатура админа группы: 🗑 (удалить всё), колокольчик (список), 🧬 (гедком), ❌
-export function ownerMarkup(bellOn = true) {
+export function ownerMarkup(_bellOn) {
     return {
         inline_keyboard: [[
             { text: "🗑", callback_data: "del" },
-            { text: bellOn ? "🔔" : "🔕", callback_data: "bell" },
+            { text: "🔔", callback_data: "bell" },
             { text: "🧬", callback_data: "tree" },
+            { text: "-+=", callback_data: "flat" },
             { text: "❌", callback_data: "close" },
         ]]
     };
 }
 
 // клавиатура участника группы: колокольчик (список), 🧬 (гедком), ❌
-export function bellMarkup(bellOn = true) {
+export function bellMarkup(_bellOn) {
     return {
         inline_keyboard: [[
-            { text: bellOn ? "🔔" : "🔕", callback_data: "bell" },
+            { text: "🔔", callback_data: "bell" },
             { text: "🧬", callback_data: "tree" },
+            { text: "-+=", callback_data: "flat" },
             { text: "❌", callback_data: "close" },
         ]]
     };
@@ -759,18 +763,30 @@ export async function todayText(chatId) {
 }
 
 // «Имя ГГГГ-ММ-ДД[ ГГГГ-ММ-ДД смерти][ ЧЧ:ММ]»; "" — событий нет.
-// byFullDate=false — по возрастанию ММ-ДД (список 🔔), true — по полной дате
-// ГГГГ-ММ-ДД (подтверждение удаления)
-export async function upcomingText(chatId, byFullDate = false) {
-    const rows = [...await personRows(chatId), ...await weddingRows(chatId)];
-    const key = r => (byFullDate ? r.d : r.d.slice(5))
-        + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
-    return rows
-        .sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0))
+// byFullDate=false — круговой порядок «от сегодня» (как religiousYear):
+// ММ-ДД сегодня первым, события прошлой части года — в конце;
+// true — все события по полной дате ГГГГ-ММ-ДД (подтверждение удаления)
+export async function upcomingText(chatId, byFullDate = false, mmddNow = "") {
+    let rows = [...await personRows(chatId), ...await weddingRows(chatId)];
+    const map = rs => rs
         .map(r => r.n + " " + r.d
             + (r.dd !== undefined ? " " + r.dd : "")
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : ""))
         .join("\n");
+    const key = r => r.d + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
+    if (byFullDate) return map(rows.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0)));
+    // круговой порядок по ММ-ДД от сегодняшнего MM-DD
+    const cum = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]; // невисокосный год
+    const dayIdx = d => cum[Number(d.slice(5, 7)) - 1] + Number(d.slice(8)) - 1;
+    const nowIdx = mmddNow ? cum[Number(mmddNow.slice(0, 2)) - 1] + Number(mmddNow.slice(3)) - 1 : 0;
+    const sortKey = r => String((dayIdx(r.d) - nowIdx + 365) % 365).padStart(3, "0") + " " + key(r);
+    return map(rows.sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0)));
+}
+
+// сегодняшний MM-DD по МСК — отсечка «от сегодня» для списков колокольчика
+export function mmddToday() {
+    const [, mo, d] = mskToday();
+    return String(mo).padStart(2, "0") + "-" + String(d).padStart(2, "0");
 }
 
 // кнопки под ответом бота на триггер: 👎 — удалить событие (как реакция VK),
@@ -798,11 +814,10 @@ export async function chatAdmin(chat, userId) {
 }
 
 // клавиатура /start: личка — полная, админ группы — ownerMarkup, участник — bellMarkup
-// (паритет VK: relKeyboard/ownerKeyboard/bellMarkup); подпись колокольчика — подписка
+// (паритет VK: relKeyboard/ownerKeyboard/bellMarkup); колокольчик всегда 🔔
 export function startMarkup(chat, isAdmin, chatId, s) {
-    const bellOn = s.bell !== false;
     if (chat.type === 'private') return relMarkup(chatId, s);
-    return isAdmin ? ownerMarkup(bellOn) : bellMarkup(bellOn);
+    return isAdmin ? ownerMarkup() : bellMarkup();
 }
 
 // ============================== фокус-родня (чистая логика) ==============================
@@ -908,35 +923,45 @@ export const focusHead = (key, radius, dd) =>
 
 // список событий по множеству фокуса с ярлыками родства: строки
 // «Имя Д [Д(смерти)] [ЧЧ:ММ] родство»; items — записи {n, d, h, m, dd};
-// params — (items, keys, key, pairs, spousePairs, sexOf, byFullDate);
-// сортировка по ММ-ДД или (byFullDate) по полной дате
-export function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false) {
+// params — (items, keys, key, pairs, spousePairs, sexOf, byFullDate, mmddToday);
+// byFullDate=false — «от сегодня»: ММ-ДД ≥ mmddToday, true — все по полной дате
+export function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "") {
     const set = new Set(keys);
-    const sortKey = r => (byFullDate ? r.d : r.d.slice(5)) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
-    return items
-        .filter(r => set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys)))
-        .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0))
+    const map = rs => rs
         .map(r => r.n + " " + r.d
             + (r.dd ? " " + r.dd : "")
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "")
             + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d); return l ? " " + l : ""; })())
         .join("\n");
+    const sortKey = r => r.d + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
+    if (byFullDate) return map(items
+        .filter(r => set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys)))
+        .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0)));
+    // круговой порядок по ММ-ДД от сегодняшнего MM-DD (как religiousYear)
+    const cum = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]; // невисокосный год
+    const dayIdx = d => cum[Number(d.slice(5, 7)) - 1] + Number(d.slice(8)) - 1;
+    const nowIdx = mmddToday ? cum[Number(mmddToday.slice(0, 2)) - 1] + Number(mmddToday.slice(3)) - 1 : 0;
+    const bellKey = r => String((dayIdx(r.d) - nowIdx + 365) % 365).padStart(3, "0") + " " + sortKey(r);
+    return map(items
+        .filter(r => set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys)))
+        .sort((a, b) => (bellKey(a) < bellKey(b) ? -1 : bellKey(a) > bellKey(b) ? 1 : 0)));
 }
 
 // клавиатура фокус-сообщения: как /start по роли, но без кнопок религий,
 // 🔔/🧬 действуют в радиусе, а в ряд с ❌ добавлены неактивные цифры радиуса
 // (активная скрыта; цифра r выводится, если есть предки глубины r — depth
 // = focusDepth; grace при старом вызове без depth — все цифры);
-// подпись колокольчика — подписка: 🔔 вкл (список по ММ-ДД) / 🔕 выкл (по ГГГГММДД)
+// колокольчик всегда 🔔 (подписки нет — список всегда «от сегодня»)
 export function focusMarkup(chat, chatId, s, radius, depth) {
     const btn = (text, data) => ({ text, callback_data: data });
-    const bell = btn(s.bell !== false ? "🔔" : "🔕", "focbell");
+    const bell = btn("🔔", "focbell");
     const tree = btn("🧬", "foctree");
+    const flat = btn("-+=", "focflat");
     const digits = [1, 2, 3, 4, 5]
         .filter(n => n !== radius && n <= (depth === undefined ? 5 : depth))
         .map(n => btn(String(n) + "\u20E3", "foc" + n));
     const tail = [...digits, btn("❌", "close")];
-    return { inline_keyboard: [[btn("🗑", "del"), bell, tree], tail] };
+    return { inline_keyboard: [[btn("🗑", "del"), bell, tree, flat], tail] };
 }
 
 // разбить длинный текст на куски < 4000 по границам строк (как splitText VK)
@@ -1081,8 +1106,12 @@ export async function gedcomText(chatId, keys) {
 
 // fam в виде полу: hKey/wKey — xref реальных персон, hName/wName — имена
 // заглушек (супруг без записи), children — xref детей, marr/div/note.
-export async function chatFlatText(chatId) {
-    const rows = (await indiRows(chatId)).sort((a, b) => a.id - b.id);
+export async function chatFlatText(chatId, keys = null) {
+    // keys (опционально) — фокус-радиус: пачка только этого подмножества
+    // (сродни gedcomText); семьи фильтруются по касанию персон/детей
+    const hasKeys = Array.isArray(keys) && keys.length > 0;
+    const rows = (await indiRows(chatId)).sort((a, b) => a.id - b.id)
+        .filter(r => !hasKeys || keys.includes((r.name || "") + " " + (r.birtD ?? "")));
     const persons = rows.map(r => ({
         key: r.xref, name: r.name, sex: r.sex || null,
         d: r.birtD ?? undefined, dd: r.deatD ?? undefined,
@@ -1121,6 +1150,11 @@ export async function chatFlatText(chatId) {
             if (!m.note) m.note = F.note;
         } else fams.push({ s, ...F });
     }
+    const kMap = new Map(persons.map(p => [p.key, p.name + " " + (p.d ?? "")]));
+    if (hasKeys) // радиус: семьи, что касается персон ключей (супруга или дети)
+        return flatTreeText(persons, fams.filter(f =>
+            [f.hKey, f.wKey, ...f.children].some(k => k != null
+                && keys.includes(kMap.get(k) || ""))));
     return flatTreeText(persons, fams);
 }
 
@@ -1257,7 +1291,7 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
 // тап 🧬 / «/gedcom» / «/gedcomN»: <имя>.ged всегда, <имя>.pdf (диаграмма,
 // имя из заголовка fileBaseOf); heroKey — pkey героя для колонки «Связь год»;
 // неудача — фолбэк текстовым гедкомом (sendLong)
-export async function sendGedPdf(chatId, keys, head, heroKey = null) {
+export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0) {
     const g = await gedcomText(chatId, keys);
     // заголовок чарта без цифры уровня (кейкап оставлен только фокусу);
     // цифра → range героя для chartFor
@@ -1274,15 +1308,18 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null) {
     } catch (e) { console.error("chart:", e.message); }
     try {
         const enc = new TextEncoder();
+        // оба файла — ответом (reply) на сообщение с кнопками/командой
         await api.sendDocument({
             chat_id: chatId,
             document: new InputFile(enc.encode(g), base + ".ged", { type: "text/plain" }),
             caption: head,
+            ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
         });
         if (pdf) await api.sendDocument({
             chat_id: chatId,
             document: new InputFile(Uint8Array.from(pdf, c => c.charCodeAt(0)), base + ".pdf", { type: "application/pdf" }),
             caption: "🧬 Диаграмма древа: " + persons + " персон",
+            ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
         });
         console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : ""), "chat", chatId);
         return;

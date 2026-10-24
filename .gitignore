@@ -7,3 +7,4 @@ db.json
 .tgcloud/
 node_modules/
 dev/db.json
+dev/vk-db.db*

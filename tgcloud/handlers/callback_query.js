@@ -10,7 +10,7 @@ import {
     recordOf, recordByXref, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong,
     deleteEventCascade, replaceWithGedcom, clearChatTree, deleteLink, setIndiSex, toggleAdopted,
     linkById, linkPairs, xrefOfKey, personRows, weddingRows, sendTreeBackup,
-    focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText,
+    upcomingText, mmddToday, focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText,
     focusWithSpouses, focusSpousePairs, focusListText, focusDepth, sendGedPdf,
     applyTree, treeReport,
 } from '../lib/bot.js';
@@ -32,15 +32,18 @@ export default async function (cq, ctx) {
                 return api.sendMessage({ chat_id: chatId, text, reply_markup: markup }).catch(() => {});
             });
 
-    // большой текст — ВЕСЬ текст одним .ged.txt-файлом; не выложился — ошибка
-    const tailDoc = async (text, nameBase) => {
-        const base = fileBaseOf(nameBase || "Продолжение") + ".ged.txt";
+    // большой текст — ВЕСЬ текст одним файлом: «.ged.txt» (пачка древа) либо
+    // «.txt» (список событий); не выложился — ошибка. Файл — ответом на то же
+    // сообщение (к которому кнопки), а не отдельным
+    const tailDoc = async (text, nameBase, ext = ".ged.txt") => {
+        const base = fileBaseOf(nameBase || "Продолжение") + ext;
         try {
             await api.sendDocument({
                 chat_id: chatId,
                 // BOM — чтобы Windows-редакторы открывали как UTF-8
-            document: new InputFile(new TextEncoder().encode("\uFEFF" + text), base,
+                document: new InputFile(new TextEncoder().encode("\uFEFF" + text), base,
                     { type: "text/plain" }),
+                reply_parameters: { message_id: cq.message.message_id, allow_sending_without_reply: true },
             });
             return;
         } catch (e) {
@@ -81,32 +84,41 @@ export default async function (cq, ctx) {
     const isHelp = cq.message?.text === HELP;
 
     if (data === "bell") {
-        // список — плоским древом чата (формат пачки, ввод/вывод симметричны);
-        // первый клик показывает древо, повторный переключает подписку 🔔/🔕
-        const s = await getSettings(chatId);
-        const on = s.bell !== false;
-        const flat = await chatFlatText(chatId);
-        const cur = cq.message?.text;
-        const shown = cur !== undefined && flat && (cur === flat || cur.startsWith(flat));
-        if (shown) {
-            s.bell = !on;
-            const row = await db.select().from(settings).where(eq(settings.chatId, chatId)).get();
-            if (row) await db.update(settings).set({ bell: s.bell }).where(eq(settings.chatId, chatId)).run();
-            else await db.insert(settings).values({ chatId, bell: s.bell }).run();
-        }
-        if (!flat) {
+        // список событий (.txt): всегда рендер по ММ-ДД, без подписного
+        // переключения тапом; список начинается с сегодня — что не влезает
+        // в сообщение, просто отрезаем
+        // список событий: круговой порядок «от сегодня» (как religiousYear)
+        const list = await upcomingText(chatId, false, mmddToday());
+        if (!list) {
             if (!isHelp) await editText("Событий нет", cq.message.reply_markup);
             await answer("Событий нет");
             return;
         }
-        await answer(shown ? (s.bell !== false ? "подписка включена" : "подписка отключена") : "список событий");
-        // как в VK: список в этом же сообщении, клавиатура с новой подпиской;
-        // не влезает — весь текст одним файлом <имя>.ged.txt
+        await answer("список событий");
+        // список в этом же сообщении, клавиатура с той же подпиской
+        const markup = await startMarkup(cq.message.chat, await chatAdmin(cq.message.chat, cq.from?.id),
+            chatId, await getSettings(chatId));
+        // целые строки, суммарно не превышающие лимит сообщения
+        let shownList = "";
+        for (const l of list.split("\n")) {
+            if (shownList.length + 1 + l.length > 4000) break;
+            shownList += (shownList ? "\n" : "") + l;
+        }
+        await editText(shownList || "Событий нет", markup);
+        return;
+    }
+
+    if (data === "flat") {
+        // «-+=» — плоская пачка древа чата (.ged.txt, импортируется пачкой);
+        // не влезает — файлом ответом на это сообщение
+        const flat = await chatFlatText(chatId);
+        if (!flat) { await answer("древо пусто"); return; }
+        await answer("пачка древа чата");
         const markup = await startMarkup(cq.message.chat, await chatAdmin(cq.message.chat, cq.from?.id),
             chatId, await getSettings(chatId));
         if (flat.length > 4000) {
-            await editText("📄 Полное древо — файлом " + fileBaseOf("Древо чата") + ".ged.txt", markup);
-            await tailDoc(flat, "Древо чата");
+            // текст и кнопки сообщения не трогаем; полный список — файлом ответом
+            await tailDoc(flat, "Древо чата", ".ged.txt");
             return;
         }
         await editText(flat, markup);
@@ -142,8 +154,8 @@ export default async function (cq, ctx) {
     };
 
     if (data === "del") {
-        // список подтверждения — по полной дате ГГГГ-ММ-ДД (🔔 — по ММ-ДД без года);
-        // 🗑 на фокус-сообщении — только родня в радиусе (список тот же, что у 🔔)
+        // список подтверждения — по полной дате ГГГГ-ММ-ДД;
+        // 🗑 на фокус-сообщении — только родня в радиусе (по полной дате)
         const fv = await fvOf();
         let head, list;
         if (fv) {
@@ -151,7 +163,7 @@ export default async function (cq, ctx) {
             if (!rec) { await answer("персона не найдена"); return; }
             const [radius, keys, depth] = await radiusOf(fv.pkey, fv.radius);
             const list0 = focusListText(await items(), keys, fv.pkey,
-                await linkPairs(chatId), await focusSpousePairs(chatId), await sexOf());
+                await linkPairs(chatId), await focusSpousePairs(chatId), await sexOf(), true);
             if (!list0) { await answer("в радиусе нет событий"); return; }
             list = list0;
             head = focusHead(fv.pkey, radius, rec.dd) + "\nУдалить родню в радиусе?";
@@ -175,8 +187,10 @@ export default async function (cq, ctx) {
             ]]
         };
         if (full.length > 4000) {
-            await editText("📄 Полный список — файлом " + fileBaseOf("События") + ".ged.txt", delKb);
-            await tailDoc(full, "События");
+            // список — .txt (не древо); в сообщении остаётся заголовок, файл —
+            // ответом на это же сообщение
+            await editText(full.split("\n")[0], delKb);
+            await tailDoc(full, full.split("\n")[0], ".txt");
             return;
         }
         await editText(full, delKb);
@@ -275,7 +289,7 @@ export default async function (cq, ctx) {
             return;
         }
         await answer("гедком-древо чата");
-        await sendGedPdf(chatId, undefined, "🧬 Гедком-древо чата");
+        await sendGedPdf(chatId, undefined, "🧬 Гедком-древо чата", null, cq.message.message_id);
         return;
     }
 
@@ -327,54 +341,62 @@ export default async function (cq, ctx) {
         return;
     }
 
-    // фокус-сообщение: радиус родни 1–5, 🔔/🧬 в радиусе
-    if (/^foc[1-5]$/.test(data) || data === "focbell" || data === "foctree") {
+    // фокус-сообщение: радиус родни 1–5, 🔔/«-+=»/🧬 в радиусе
+    if (/^foc[1-5]$/.test(data) || data === "focbell" || data === "foctree" || data === "focflat") {
         const row = await fvOf();
         if (!row) { await answer("сообщение устарело — ответьте «/» на триггер заново"); return; }
         const rec = await recordOf(chatId, row.pkey);
         if (!rec) { await answer("персона не найдена"); return; }
-        const [radius, keys, depth] = await radiusOf(row.pkey, row.radius);
+        // foc[1-5] — целевой радиус из кнопки (row.radius мог быть другим):
+        // обновляем focus_view и пересчитываем ключи под НОВЫЙ радиус
+        const wantR = /^foc[1-5]$/.test(data) ? Number(data.slice(3)) : row.radius;
+        const [radius, keys, depth] = await radiusOf(row.pkey, wantR);
         const bell = data === "focbell";
-        // сортировка списка — по подписке (🔔 вкл — ММ-ДД, 🔕 выкл — ГГГГММДД);
-        // клик по уже показанному списку переключает подписку
-        const s = await getSettings(chatId);
-        const on = s.bell !== false;
-        let byFull = bell && !on;
+        // список всегда по ММ-ДД (сортировка подписки касается только дампа)
+        const byFull = false;
         if (data !== "focbell" && data !== "foctree")
             await db.update(focusView).set({ radius }).where(eq(focusView.id, row.id)).run();
-        await answer(data === "focbell" ? "список " + focusLabel(radius) : (data === "foctree" ? "древо " + focusLabel(radius) : focusLabel(radius)));
+        await answer(data === "focbell" ? "список " + focusLabel(radius)
+            : (data === "foctree" ? "древо " + focusLabel(radius)
+                : (data === "focflat" ? "пачка " : "") + focusLabel(radius)));
         // 🧬 в радиусе: <имя>.ged + <имя>.pdf (родство к герою), правка не нужна
         if (data === "foctree") {
-            await sendGedPdf(chatId, keys, focusHead(row.pkey, radius, rec.dd), row.pkey);
+            await sendGedPdf(chatId, keys, focusHead(row.pkey, radius, rec.dd), row.pkey, cq.message.message_id);
             return;
         }
-        // цифра — только заголовок; тело (список/гедком) — по 🔔/🧬
+        const head = focusHead(row.pkey, radius, rec.dd);
+        // «-+=» в радиусе: пачка радиуса (.ged.txt) — инлайн или файлом
+        if (data === "focflat") {
+            const pack = await chatFlatText(chatId, keys);
+            if (!pack) { await answer("радиус пуст"); return; }
+            const fKb0 = focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth);
+            if (pack.length > 4000) {
+                await editText(head, fKb0);
+                await tailDoc(pack, head, ".ged.txt");
+                return;
+            }
+            await editText(head + "\n" + pack, fKb0);
+            return;
+        }
+        // цифра — только заголовок; тело (список) — по 🔔
         let body = null;
         if (bell) {
             const pairs = await linkPairs(chatId);
             const spPairs = await focusSpousePairs(chatId);
-            const render = async bf => focusListText(await items(), keys, row.pkey, pairs, spPairs, await sexOf(), bf)
+            body = focusListText(await items(), keys, row.pkey, pairs, spPairs, await sexOf(), byFull, mmddToday())
                 || "(в радиусе нет событий)";
-            let list = await render(byFull);
-            const cur = cq.message?.text || "";
-            const head = focusHead(row.pkey, radius, rec.dd);
-            // «уже показан» — показанное длиннее заголовка (сообщение-заголовок
-            // само по себе префикс рендера списка)
-            if (cur && cur !== head && (head + "\n" + list).startsWith(cur)) {
-                s.bell = !on;
-                const srow = await db.select().from(settings).where(eq(settings.chatId, chatId)).get();
-                if (srow) await db.update(settings).set({ bell: s.bell }).where(eq(settings.chatId, chatId)).run();
-                else await db.insert(settings).values({ chatId, bell: s.bell }).run();
-                byFull = s.bell === false;
-                list = await render(byFull);
-            }
-            body = list;
         }
-        const full = focusHead(row.pkey, radius, rec.dd) + (body ? "\n" + body : "");
+        const full = head + (body ? "\n" + body : "");
         const fKb = focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth);
         if (full.length > 4000) {
-            await editText("📄 Полный список — файлом " + fileBaseOf("Родня") + ".ged.txt", fKb);
-            await tailDoc(full, "Родня");
+            // список начинается с сегодня — что не влезает в сообщение,
+            // просто отрезаем (целые строки)
+            let tail = "";
+            for (const l of body.split("\n")) {
+                if (head.length + 1 + tail.length + l.length > 4000) break;
+                tail += (tail ? "\n" : "") + l;
+            }
+            await editText(head + "\n" + tail, fKb);
             return;
         }
         await editText(full, fKb);

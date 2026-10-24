@@ -185,7 +185,7 @@ export default async function (message, ctx) {
                 const pairs = await linkPairs(chatId);
                 const keys = focusWithSpouses(
                     focusKeys(pairs, key, radius), await focusSpousePairs(chatId));
-                await sendGedPdf(chatId, keys, focusHead(key, radius, rec.dd), key);
+                await sendGedPdf(chatId, keys, focusHead(key, radius, rec.dd), key, message.message_id);
                 console.log("focus text:", key, "радиус", radius, "chat", chatId);
                 return;
             }
@@ -194,7 +194,7 @@ export default async function (message, ctx) {
             await api.sendMessage({ chat_id: chatId, text: "связей пока нет — ответьте триггером на триггер" });
             return;
         }
-        await sendGedPdf(chatId, undefined, "🧬 Гедком-древо чата");
+        await sendGedPdf(chatId, undefined, "🧬 Гедком-древо чата", null, message.message_id);
         return;
     }
 

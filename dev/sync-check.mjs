@@ -441,6 +441,19 @@ for (const r of [1, 2]) {
         const full = VK.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null, true);
         if (!full.startsWith('Дед 1930-01-01')) // старейший (1930) — первым
             { failed++; console.log('✗ focusListText byFull: первая строка не старейший\n  ' + full.split('\n')[0]); }
+        // «от сегодня» — круговой порядок (как religiousYear): с MM-ДД отсечки
+        // далее по году с обёрткой (прошедшая часть года — в конец);
+        // при отсечке 12-01 первым идёт Тесть (12-12), затем Дед (01-01)
+        cmp('focusListText «от сегодня»',
+            VK.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null, false, '12-01'),
+            TG.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null, false, '12-01'));
+        const future = VK.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null, false, '12-01');
+        if (!future.startsWith('Тесть 1931-12-12 муж тёти\nДед 1930-01-01'))
+            { failed++; console.log('✗ focusListText от сегодня: не Тесть→Дед\n  ' + future.split('\n').slice(0,2).join('\n')); }
+        // без отсечки — прежнее поведение (весь год)
+        const all = VK.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null);
+        if (!all.startsWith('Дед 1930-01-01') || !/^Отец\+Мать 1979-01-01 1990-01-01$/m.test(all))
+            { failed++; console.log('✗ focusListText без отсечки должен показывать весь год'); }
     }
 }
 // состав по радиусам (ромб): r1 — родители и сиблинги (племянников нет:
