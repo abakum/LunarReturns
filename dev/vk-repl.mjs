@@ -84,6 +84,9 @@ let fileN = 0;
 let snackN = 0;
 
 const srv = http.createServer((req, res) => {
+    // без keep-alive: undici переиспользует сокет после /file/-загрузки,
+    // и следующий запрос ловит ECONNRESET (артефакт локального сервера)
+    res.setHeader('Connection', 'close');
     const json = j => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(j)); };
     if (req.url.startsWith('/file/')) {
         const i = Number(req.url.slice(6));
@@ -173,7 +176,7 @@ const rl = readline.createInterface({ input: process.stdin });
 let msgId = 0, myCmid = 0; // свои сообщения: msgId/convMsgId растут независимо
 const pending = { text: '' }; // «\n» — продолжение строки, как в ТГ-репле
 
-function fail(e) { console.log('ERROR:', e.message || e); if (process.env.LR_DEBUG) console.log(e.stack); }
+function fail(e) { console.log('ERROR:', e.message || e); if (process.env.LR_DEBUG) { if (e.stack) console.log(e.stack); if (e.cause) console.log('cause:', e.cause); } }
 
 async function handleMessageText(text, replyMsg = null) {
     const cmid = ++myCmid;

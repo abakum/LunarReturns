@@ -35,7 +35,7 @@ const MOCK_DST = path.join(ROOT, 'node_modules', 'sdk');
 fs.cpSync(MOCK_SRC, MOCK_DST, { recursive: true });
 
 // ---- сброс БД по --fresh ----
-const DB_FILE = process.env.LR_DEV_DB || path.join('dev', 'db.json');
+const DB_FILE = process.env.LR_DEV_DB || path.join('dev', 'tg-db.json'); // как в моке sdk
 const dbAbs = path.isAbsolute(DB_FILE) ? DB_FILE : path.join(ROOT, DB_FILE);
 if (fresh && fs.existsSync(dbAbs)) fs.unlinkSync(dbAbs);
 

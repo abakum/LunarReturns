@@ -5,8 +5,8 @@ import { parseTrigger, parseGedcom, gedStats, parseTree } from '../lib/parse.js'
 import { jubileeText } from '../lib/text.js';
 import {
     HELP, startMarkup, chatAdmin, getSettings, todayText, eventMarkup, sendLong,
-    addLink, setLinkCand, pairRecords, linkText, linkMarkup, recordOf, replaceWithGedcom,
-    linkPairs, gedcomText, sendGedPdf, splitText, focusKeys, focusHead, focusMarkup,
+    linkText, linkMarkup, recordOf, replaceWithGedcom,
+    linkPairs, linksAll, personRows, gedcomText, sendGedPdf, splitText, focusKeys, focusHead, focusMarkup,
     focusWithSpouses, focusSpousePairs, focusDepth, upsertPerson, applyTree, cutAndGraft, treeReport,
 } from '../lib/bot.js';
 
@@ -17,6 +17,15 @@ const replyHeadOf = reply => reply && reply.from && !reply.from.is_bot
     ? String(reply.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
 const anchorOf = reply => reply
     ? String(reply.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+
+// клавиатура дропа: «Да, с резервом» — только при непустом дереве чата
+const dropKb = hasTree => ({
+    inline_keyboard: [[
+        { text: "Нет", callback_data: "ged:ign" },
+        { text: "Да", callback_data: "ged:rep" },
+        ...(hasTree ? [{ text: "Да, с резервом", callback_data: "ged:bak" }] : []),
+    ]]
+});
 
 // дроп .ged-документа: скачать, разобрать, запомнить в ged_drops (последний
 // дроп выигрывает); «Да» — ЗАМЕНА дерева (с резервом — прежнее дерево файлом
@@ -42,17 +51,12 @@ async function gedDrop(chatId, doc, fromId) {
     const old = await db.select().from(gedDrops).where(eq(gedDrops.chatId, chatId)).get();
     if (old) await db.update(gedDrops).set(vals).where(eq(gedDrops.chatId, chatId)).run();
     else await db.insert(gedDrops).values({ chatId, ...vals }).run();
+    // «Да, с резервом» — только при непустом дереве чата (резервовать нечего)
     await api.sendMessage({
         chat_id: chatId,
         text: "🧬 Файл " + name + ": персон " + s.persons + ", связей " + s.links
             + ", свадеб " + s.weddings + ". Заменить события чата деревом?",
-        reply_markup: {
-            inline_keyboard: [[
-                { text: "Нет", callback_data: "ged:ign" },
-                { text: "Да", callback_data: "ged:rep" },
-                { text: "Да, с резервом", callback_data: "ged:bak" },
-            ]],
-        },
+        reply_markup: dropKb((await personRows(chatId)).length > 0),
     });
     console.log("ged drop:", name, "chat", chatId);
 }
@@ -94,24 +98,23 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
         text: "📄 Файл " + name + ": персон " + tree.persons.length
             + ", пар " + tree.weddings.length + ", детей " + tree.children.length
             + ". Добавить пачку к дереву чата?",
-        reply_markup: {
-            inline_keyboard: [[
-                { text: "Нет", callback_data: "ged:ign" },
-                { text: "Да", callback_data: "ged:rep" },
-                { text: "Да, с резервом", callback_data: "ged:bak" },
-            ]],
-        },
+        // «Да, с резервом» — только при непустом дереве чата
+        reply_markup: dropKb((await personRows(chatId)).length > 0),
     });
     console.log("txt drop:", name, "chat", chatId);
 }
 
 // фокус-сообщение: «/» ответом на триггер, радиус 1 сразу; ключ персоны —
-// в focus_view по id сообщения с кнопками (callback_data короткий)
-async function sendFocus(chat, chatId, key, radius, dd) {
+// в focus_view по id сообщения с кнопками (callback_data короткий);
+// само сообщение — реплаем на «/» (как в VK sendFocus)
+async function sendFocus(chat, chatId, key, radius, dd, replyTo = 0) {
     // тело (список/гедком) — после тапа по кнопке; цифры радиуса — по глубине предков
     const markup = focusMarkup(chat, chatId, await getSettings(chatId), radius,
         focusDepth(await linkPairs(chatId), key));
-    const first = await api.sendMessage({ chat_id: chatId, text: focusHead(key, radius, dd), reply_markup: markup });
+    const first = await api.sendMessage({
+        chat_id: chatId, text: focusHead(key, radius, dd), reply_markup: markup,
+        ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
+    });
     if (first && first.message_id) {
         // чистка устаревших строк чата (старше 7 суток) + запись текущей
         const weekAgo = Date.now() - 7 * 24 * 3600000;
@@ -155,7 +158,7 @@ export default async function (message, ctx) {
             const key = rh[1].trim() + " " + rh[2];
             const rec = await recordOf(chatId, key);
             if (rec) {
-                await sendFocus(message.chat, chatId, key, 1, rec.dd);
+                await sendFocus(message.chat, chatId, key, 1, rec.dd, message.message_id);
                 return;
             }
         }
@@ -195,10 +198,40 @@ export default async function (message, ctx) {
             }
         }
         if (!(await linkPairs(chatId)).length) {
-            await api.sendMessage({ chat_id: chatId, text: "связей пока нет — ответьте триггером на триггер" });
+            await api.sendMessage({ chat_id: chatId, text: "связей пока нет" });
             return;
         }
         await sendGedPdf(chatId, undefined, "🧬 Гедком-древо чата", null, message.message_id);
+        return;
+    }
+
+    // «/links» / «связи» (как в VK): заново выложить сообщения-связи с их
+    // кнопками (листинг одноразовый, пропало — восстановить); в ответе на
+    // триггер — только связи цитируемого персонажа
+    if (/^\/links(?:@\S+)?$/i.test(text) || text.toLowerCase() === "связи") {
+        const replyTo = { message_id: message.message_id, allow_sending_without_reply: true };
+        if (!(await linkPairs(chatId)).length) {
+            await api.sendMessage({ chat_id: chatId, text: "связей пока нет",
+                reply_parameters: replyTo });
+            return;
+        }
+        const lrh = replyHeadOf(message.reply_to_message);
+        const lkey = lrh ? lrh[1].trim() + " " + lrh[2] : null;
+        const links = (await linksAll(chatId)).filter(l => !lkey || l.p === lkey || l.c === lkey);
+        if (!links.length) {
+            await api.sendMessage({ chat_id: chatId, text: "у этой персоны связей нет",
+                reply_parameters: replyTo });
+            return;
+        }
+        for (const l of links) {
+            await api.sendMessage({
+                chat_id: chatId,
+                text: await linkText(chatId, l) + "\n" + await gedcomText(chatId, [l.p, l.c]),
+                reply_markup: await linkMarkup(chatId, l),
+                reply_parameters: replyTo,
+            });
+        }
+        console.log("links re-listed:", links.length, "chat", chatId);
         return;
     }
 
@@ -243,9 +276,8 @@ export default async function (message, ctx) {
         }
     }
 
-    // ответ триггером на триггер пользователя = связь родитель→ребёнок:
-    // заголовок «Имя ГГГГ-ММ-ДД» в цитируемом сообщении (у ответа бота связей нет)
-    const replyHead = replyHeadOf(message.reply_to_message);
+    // поштучного ввода детей больше нет: ребёнок/ветвь добавляется пачкой
+    // «плоское древо» в ответе на героя (cutAndGraft выше)
 
     const lines = text.split(/\s*\n+\s*/).filter(Boolean);
     for (const line of lines) {
@@ -256,33 +288,6 @@ export default async function (message, ctx) {
             continue;
         }
         const rec = await upsertPerson(chatId, parsed.rec);
-        if (replyHead) {
-            const otherKey = replyHead[1].trim() + " " + replyHead[2];
-            const newKey = rec.n + " " + rec.d;
-            if (rec.n.includes("+")) {
-                // пара «Имя+Имя» — свадьба, ребёнком быть не может
-                await sendLong(chatId, jubileeText(rec, parsed.note)
-                    + "\n🔗 связь не добавлена: пара «" + rec.n + "» не может быть ребёнком");
-                continue;
-            }
-            if (rec.d === replyHead[2]) {
-                // близнецы: даты рождения совпали — связь не добавляем
-                await sendLong(chatId, jubileeText(rec, parsed.note)
-                    + "\n🔗 связь не добавлена: даты рождения совпадают (близнецы?)");
-                continue;
-            }
-            // по-простому: ответ на триггер — связь «цитируемый = родитель,
-            // отвечающий = ребёнок» (без свопов по датам)
-            const { link, dup } = await addLink(chatId, otherKey, newKey, 'c');
-            if (link && !dup) setLinkCand(link, await pairRecords(chatId, link)); // свадьбы «Иван+Мария»
-            if (link) {
-                const txt = (dup ? await linkText(chatId, link) + "\n🔗 связь уже записана" : await linkText(chatId, link))
-                    + "\n" + await gedcomText(chatId, [link.p, link.c]);
-                await sendLong(chatId, txt, dup ? eventMarkup(rec.xref) : await linkMarkup(chatId, link));
-                console.log("link:", link.p, "→", link.c, "chat", chatId, dup ? "(повтор)" : "");
-            }
-            continue;
-        }
         await sendLong(chatId, jubileeText(rec, parsed.note), eventMarkup(rec.xref));
         console.log("record:", rec.n, rec.d, "xref", rec.xref, "chat", chatId);
     }

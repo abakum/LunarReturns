@@ -185,18 +185,20 @@ export default async function (cq, ctx) {
 
     if (data === "del:yes") {
         // глобальное удаление: дерево чата (персоны/свадьбы/связи/семьи) целиком,
-        // настройки остаются
+        // настройки остаются; как в VK: HELP и клавиатура возвращаются
         const n = (await items()).length;
         await clearChatTree(chatId);
-        await editText("🗑 Удалено событий: " + n, undefined);
+        await editText("Удалено событий: " + n + "\n" + HELP,
+            await startMarkup(cq.message.chat, await chatAdmin(cq.message.chat, cq.from?.id),
+                chatId, await getSettings(chatId)));
         await answer("🗑 События чата удалены");
         return;
     }
 
     if (data === "del:no") {
-        // вернуть клавиатуру по чату/роли: религии — только в личке
+        // вернуть справку и клавиатуру по чату/роли: религии — только в личке
         const isAdmin = await chatAdmin(cq.message.chat, cq.from?.id);
-        await editMarkup(startMarkup(cq.message.chat, isAdmin, chatId, await getSettings(chatId)));
+        await editText(HELP, startMarkup(cq.message.chat, isAdmin, chatId, await getSettings(chatId)));
         await answer("Отменено");
         return;
     }
@@ -420,7 +422,7 @@ export default async function (cq, ctx) {
         }
         const r = await replaceWithGedcom(chatId, parseGedcom(row.content), data === "ged:bak");
         await editText(r.head, undefined);
-        await answer(r.ok ? "♻️ Заменено" : "💥 замена отменена");
+        await answer(r.ok ? "✅ древо добавлено" : "💥 замена отменена");
         console.log("ged replace:", data, "chat", chatId);
         return;
     }

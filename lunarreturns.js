@@ -3473,7 +3473,7 @@ async function longPollStep() {
     }
 }
 
-const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Ответ триггером на триггер — связь родитель→ребёнок. Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата; /links (в ответ на триггер) — связи персоны.\nКнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf), «-+=» — пачка ВЕТВИ: герой первой строкой, потомки — вся глубина.\nПачка в ответе на цитату — ЗАМЕНА ветви цитируемого (срезана и привита); просто сообщением/файлом — добавление к древу.";
+const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Пачкой древа в ответе на героя — замена его ветви (срезана и привита). Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата; /links (в ответ на триггер) — связи персоны.\nКнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf), «-+=» — пачка ВЕТВИ: герой первой строкой, потомки — вся глубина.\nПачка в ответе на цитату — ЗАМЕНА ветви цитируемого (срезана и привита); просто сообщением/файлом — добавление к древу.";
 
 // большой ответ — одним файлом: «.ged.txt» (пачка древа) либо «.txt» (список
 // событий); не выложился — сообщение об ошибке (без кусков). Файл — ответом
@@ -3522,13 +3522,15 @@ async function handleGedDrop(peerId, doc, msgId, convMsgId, fromId) {
     }
     const s = gedStats(g);
     gedPending.set(peerId, { name, text, fromId, ts: Date.now() });
+    // «Да, с резервом» — только при непустом дереве чата (есть персона с датой)
+    const hasTree = !!q1("SELECT xref FROM indi WHERE chat=? AND birt_d IS NOT NULL LIMIT 1", peerId);
     const btn = (label, c) => ({
         action: { type: "callback", label, payload: JSON.stringify({ c }) }, color: "secondary"
     });
     const kb = JSON.stringify({ inline: true, buttons: [[
         btn("Нет", "ged:ign"),
         btn("Да", "ged:rep"),
-        btn("Да, с резервом", "ged:bak"),
+        ...(hasTree ? [btn("Да, с резервом", "ged:bak")] : []),
     ]] });
     await messagesSend(peerId, "🧬 Файл " + name + ": персон " + s.persons + ", связей " + s.links
         + ", свадеб " + s.weddings + ". Заменить события чата деревом?", msgId, convMsgId, kb);
@@ -3567,13 +3569,15 @@ async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
         return;
     }
     gedPending.set(peerId, { name, text, fromId, ts: Date.now() });
+    // «Да, с резервом» — только при непустом дереве чата (есть персона с датой)
+    const hasTree = !!q1("SELECT xref FROM indi WHERE chat=? AND birt_d IS NOT NULL LIMIT 1", peerId);
     const btn = (label, c) => ({
         action: { type: "callback", label, payload: JSON.stringify({ c }) }, color: "secondary"
     });
     const kb = JSON.stringify({ inline: true, buttons: [[
         btn("Нет", "ged:ign"),
         btn("Да", "ged:rep"),
-        btn("Да, с резервом", "ged:bak"),
+        ...(hasTree ? [btn("Да, с резервом", "ged:bak")] : []),
     ]] });
     await messagesSend(peerId, "📄 Файл " + name + ": персон " + tree.persons.length
         + ", пар " + tree.weddings.length + ", детей " + tree.children.length
@@ -3699,9 +3703,9 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         return;
     }
     const t = text.trim().toLowerCase();
-    if (t === "/gedcom" || t === "гедком" || /^\/gedcom[1-5]/.test(t) || /^гедком[1-5]$/.test(t)) {
-        const gm = t.match(/^(?:\/gedcom|гедком)([1-5])?(?:@\S+)?$/);
-        const radius = Number(gm && gm[1]) || 1;
+    const gm = t.match(/^\/gedcom([1-5])?(?:@\S+)?$/);
+    if (gm) {
+        const radius = Number(gm[1]) || 1;
         // ответом на триггер — только текст родни выбранного радиуса, без кнопок
         // (заголовок фокуса «2⃣ Имя ГГГГ-ММ-ДД» — префикс кейкапа снимаем)
         const grh = replyMsg && replyMsg.from_id > 0
@@ -3718,27 +3722,31 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
                 return;
             }
         }
-        if (!linkPairs(peerId).length) { await messagesSend(peerId, "связей пока нет — ответьте триггером на триггер", msgId, convMsgId); return; }
+        if (!linkPairs(peerId).length) { await messagesSend(peerId, "связей пока нет", msgId, convMsgId); return; }
         await sendGedArtifacts(peerId, undefined, "🧬 Гедком-древо чата", msgId, convMsgId);
         return;
     }
     // «/links» (в ТГ — кнопка 🔗 под событием): заново выложить сообщения-связи
     // персоны с кнопками (листинг связи одноразовый, пропало — восстановить)
     if (t === "/links" || t === "связи") {
-        if (!linkPairs(peerId).length) { await messagesSend(peerId, "связей пока нет — ответьте триггером на триггер", msgId, convMsgId); return; }
+        const rows = qa("SELECT * FROM links WHERE chat=?", peerId).map(linkRowOf);
+        if (!rows.length) { await messagesSend(peerId, "связей пока нет", msgId, convMsgId); return; }
         const lrh = replyMsg && replyMsg.from_id > 0
             ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
         const lkey = lrh ? lrh[1].trim() + " " + lrh[2] : null;
-        const links = linkPairs(peerId).filter(l => !lkey || l.p === lkey || l.c === lkey);
+        const links = rows.filter(l => !lkey || l.p === lkey || l.c === lkey);
         if (!links.length) { await messagesSend(peerId, "у этой персоны связей нет", msgId, convMsgId); return; }
-        for (const l of links)
-            await messagesSend(peerId, linkText(peerId, l) + "\n" + gedcomText(peerId, [l.p, l.c]),
+        for (const l of links) {
+            const res = await messagesSend(peerId, linkText(peerId, l) + "\n" + gedcomText(peerId, [l.p, l.c]),
                 msgId, convMsgId, linkKeyboard(peerId, l));
+            // cmid сообщения-связи — чтобы 👎 удалил именно связь
+            const sent = res && typeof res === "object" ? res : {};
+            setLinkCmid(l, sent.conversation_message_id || sent.message_id || 0);
+        }
         console.log("links re-listed:", links.length, "peer", peerId);
         return;
     }
-    // ответ триггером на триггер пользователя = связь: заголовок «Имя ГГГГ-ММ-ДД»
-    // в цитируемом сообщении (у ответа бота связей нет)
+    // цитата для пачки «плоское древо»: ветвь цитируемого срезана, пачка привита
     const replyHead = replyMsg && replyMsg.from_id > 0
         ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
     // сообщение-гедком → замена древа (до разбора триггеров); не пустой чат —
@@ -3775,7 +3783,8 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             return;
         }
     }
-    // триггеров может быть несколько — по одному на строку
+    // поштучного ввода детей больше нет: ребёнок/ветвь добавляется пачкой
+    // «плоское древо» в ответе на героя (cutAndGraft выше)
     const lines = String(text).split(/\s*\n+\s*/).filter(Boolean);
     for (const line of lines) {
         const parsed = parseTrigger(line);
@@ -3785,40 +3794,6 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             continue;
         }
         upsertPerson(peerId, parsed.rec);
-        // ответ триггером на триггер — связь родитель→ребёнок
-        if (replyHead) {
-            const otherKey = replyHead[1].trim() + " " + replyHead[2];
-            const newKey = pkey(parsed.rec);
-            if (parsed.rec.n.includes("+")) {
-                // пара «Имя+Имя» — свадьба, ребёнком быть не может
-                await messagesSend(peerId, jubileeText(parsed.rec, parsed.note)
-                    + "\n🔗 связь не добавлена: пара «" + parsed.rec.n + "» не может быть ребёнком", msgId, convMsgId);
-                continue;
-            }
-            if (parsed.rec.d === replyHead[2]) {
-                // близнецы: даты рождения совпали — связь не добавляем
-                await messagesSend(peerId, jubileeText(parsed.rec, parsed.note)
-                    + "\n🔗 связь не добавлена: даты рождения совпадают (близнецы?)", msgId, convMsgId);
-                continue;
-            }
-            // по-простому: ответ на триггер — связь «цитируемый = родитель,
-            // отвечающий = ребёнок» (без свопов по датам); fam-addLink создаст
-            const { link, dup } = addLink(peerId, otherKey, newKey, "c");
-            if (link && !dup) setLinkCand(link, pairRecords(peerId, link)); // свадьбы «Иван+Мария»
-            if (link) {
-                const txt = (dup ? linkText(peerId, link) + "\n🔗 связь уже записана" : linkText(peerId, link))
-                    + "\n" + gedcomText(peerId, [link.p, link.c]);
-                const res = await messagesSend(peerId, txt,
-                    msgId, convMsgId, dup ? undefined : linkKeyboard(peerId, link));
-                if (!dup) {
-                    // cmid ответа — чтобы 👎 удалил именно связь
-                    const sent = res && typeof res === "object" ? res : {};
-                    setLinkCmid(link, sent.conversation_message_id || sent.message_id || 0);
-                }
-                console.log("link:", link.p, "→", link.c, "peer", peerId, dup ? "(повтор)" : "");
-            }
-            continue;
-        }
         await messagesSend(peerId, jubileeText(parsed.rec, parsed.note), msgId, convMsgId);
         console.log("record:", parsed.rec.n, parsed.rec.d, "peer", peerId);
     }
@@ -3849,14 +3824,14 @@ async function sendTreeBackup(peerId) {
 
 // замена дерева чата гедкомом; backup=true — сначала выложить прежнее
 // дерево файлом (не смогли — замена отменяется, старые данные целы).
-// Возвращает {ok, head} для ответа в чат
+// Возвращает {ok, head} для ответа в чат; древо всегда очищается и заливается
 async function replaceWithGedcom(peerId, g, backup) {
     if (backup && !(await sendTreeBackup(peerId)))
         return { ok: false, head: "💥 Не удалось выложить резерв — замена отменена, прежнее дерево цело" };
     const r = importGedcom(peerId, g);
     return {
         ok: true,
-        head: "♻️ Заменено: персон " + r.persons + ", связей " + r.links
+        head: "✅ Добавлено: персон " + r.persons + ", связей " + r.links
             + (r.weddings ? ", свадеб " + r.weddings : ""),
     };
 }
@@ -3945,6 +3920,7 @@ async function editOriginDoc(o, name, content, kb) {
             peer_id: o.peer_id, conversation_message_id: o.conversation_message_id,
             attachment: att, keyboard: kb
         });
+        console.log("editOriginDoc: вложение", att, "в сообщение д№" + o.conversation_message_id, "peer", o.peer_id);
     } catch (e) {
         console.error("editOriginDoc:", e.message, "— отношу файлом");
         const ext = /\.ged\.txt$/.test(name) ? ".ged.txt" : (/\.txt$/.test(name) ? ".txt" : "");
@@ -4107,7 +4083,7 @@ async function handleEvent(o) {
             return;
         }
         const r = await replaceWithGedcom(peerId, g, payload === "ged:bak");
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, r.ok ? "дерево заменено" : "замена отменена");
+        await answerEvent(o.event_id || o.id, o.user_id, peerId, r.ok ? "древо добавлено" : "замена отменена");
         await editOrigin(o, r.head, JSON.stringify({ inline: true, buttons: [] }));
         console.log("ged replace:", r.head, "peer", peerId);
         return;
@@ -4129,12 +4105,12 @@ async function handleEvent(o) {
                 { action: { type: "callback", label: "❌", payload: JSON.stringify({ c: "del:no" }) }, color: "secondary" }
             ]]
         });
-        // длинный список — в сообщении остаётся заголовок, список — одним
-        // .txt-файлом ответом на это сообщение
+        // длинный список — в сообщении остаётся заголовок, весь список — одним
+        // .txt-вложением в это же сообщение (как «-+=» и .ged/.pdf)
         if ((head + "\n" + list).length >= 4000) {
             const head0 = (head + "\n" + list).split("\n")[0];
             await editOrigin(o, head0, kb);
-            await sendTailDoc(peerId, head + "\n" + list, head0, ".txt", o.conversation_message_id);
+            await editOriginDoc(o, fileBaseOf(head0) + ".txt", "\uFEFF" + head + "\n" + list, kb);
             return;
         }
         await editOrigin(o, head + "\n" + list, kb);
