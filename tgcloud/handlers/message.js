@@ -7,11 +7,15 @@ import {
     HELP, startMarkup, chatAdmin, getSettings, todayText, eventMarkup, sendLong,
     addLink, setLinkCand, pairRecords, linkText, linkMarkup, recordOf, replaceWithGedcom,
     linkPairs, gedcomText, sendGedPdf, splitText, focusKeys, focusHead, focusMarkup,
-    focusWithSpouses, focusSpousePairs, focusDepth, upsertPerson, applyTree, treeReport,
+    focusWithSpouses, focusSpousePairs, focusDepth, upsertPerson, applyTree, cutAndGraft, treeReport,
 } from '../lib/bot.js';
 
-// заголовок «Имя ГГГГ-ММ-ДД» (+ кейкап радиуса у фокус-сообщений) в цитате
+// заголовок «Имя ГГГГ-ММ-ДД» (+ кейкап радиуса у фокус-сообщений) в цитате;
+// для пачки в ответе цитатой может быть и сообщение бота (фокус-пачка) —
+// отдельный якорь бот-цитат не отвергает
 const replyHeadOf = reply => reply && reply.from && !reply.from.is_bot
+    ? String(reply.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+const anchorOf = reply => reply
     ? String(reply.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
 
 // дроп .ged-документа: скачать, разобрать, запомнить в ged_drops (последний
@@ -70,15 +74,15 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
         await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось разобрать файл " + name + " (ждём пачку «плоское древо»)" });
         return;
     }
-    // в ответе на триггер — применить сразу, как пачку в ответе
-    const rh = replyHeadOf(replyTo);
+    // в ответе на триггер/фокус — ветвь цитируемого: срезана, пачка привита
+    const rh = anchorOf(replyTo);
     if (rh) {
-        let parentKey = null;
+        let anchor = null;
         const k = rh[1].trim() + " " + rh[2];
-        if (await recordOf(chatId, k)) parentKey = k;
-        const rep = await applyTree(chatId, tree, parentKey);
+        if (await recordOf(chatId, k)) anchor = k;
+        const rep = anchor ? await cutAndGraft(chatId, anchor, tree) : await applyTree(chatId, tree);
         await sendLong(chatId, treeReport(rep));
-        console.log("txt tree:", rep.persons, "персон,", rep.links, "детей, чат", chatId);
+        console.log("txt tree:", rep.cut !== undefined ? "срезано " + rep.cut + ", " : "", rep.persons, "персон,", rep.links, "детей, чат", chatId);
         return;
     }
     const vals = { fromId: fromId || 0, fileName: name, content, ts: Date.now() };
@@ -131,8 +135,8 @@ export default async function (message, ctx) {
         await gedDrop(chatId, message.document, message.from?.id);
         return;
     }
-    // .ged.txt-документ (тексты бота) = пачка «плоское древо»: в ответе на триггер
-    // — сразу применяем (корни, а если пачка начинается с «+» — супруг, к цитате);
+    // .ged.txt-документ (тексты бота) = пачка «плоское древо»: в ответе на
+    // триггер — сразу применяем (ветвь цитируемого срезана, пачка привита);
     // просто дроп — те же 3 кнопки «Да/Нет/Да, с резервом», что у .ged
     if (message.document && /\.ged\.txt$/i.test(message.document.file_name || "")) {
         await txtDrop(chatId, message.document, message.from?.id, message.reply_to_message);
@@ -215,22 +219,26 @@ export default async function (message, ctx) {
 
     // пачка «плоское древо»: строки с маркерами '-'/'=' (глубина), «+дата»/«+»
     // (свадьбы) и безмарковыми именами вторых половин — весь разбор одним
-    // сообщением; в ответе сводка добавленного + ошибки построчно
+    // сообщением; в ответе сводка + ошибки построчно. В ответе на триггер —
+    // резка-прививка: ветвь цитируемого срезана, пачка (герой = цитируемый,
+    // ветвь целиком) привита; мимо цитаты — добавление merge'ем
     const lines0 = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
     if (lines0.some(l => /^[-+=]/.test(l))) {
         const tree = parseTree(text);
         if (tree.persons.length || tree.errors.length) {
-            // в ответе на триггер — корни пачки становятся его детьми
-            const rh0 = replyHeadOf(message.reply_to_message);
-            let parentKey = null;
+            // цитата — и триггер пользователя, и фокус-пачка бота (yитированная
+            // ветвь); anchorOf также снимает кейкап радиуса
+            const rh0 = anchorOf(message.reply_to_message);
+            let anchor = null;
             if (rh0) {
                 const k = rh0[1].trim() + " " + rh0[2];
-                if (await recordOf(chatId, k)) parentKey = k;
+                if (await recordOf(chatId, k)) anchor = k;
             }
-            const rep = await applyTree(chatId, tree, parentKey);
+            const rep = anchor ? await cutAndGraft(chatId, anchor, tree) : await applyTree(chatId, tree);
             const body = treeReport(rep);
             await sendLong(chatId, body);
-            console.log("tree:", rep.persons, "персон,", rep.fams, "пар,", rep.links, "детей,", rep.errors.length, "ошибок, чат", chatId);
+            console.log("tree:", rep.cut !== undefined ? "срезано " + rep.cut + ", " : "", rep.persons, "персон,", rep.fams, "пар,",
+                rep.links, "детей,", rep.errors.length, "ошибок, чат", chatId);
             return;
         }
     }

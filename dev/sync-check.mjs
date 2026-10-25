@@ -171,26 +171,45 @@ cmp('applyTree повтор gedcomText', VK.gedcomText(TREE_CH), await TG.gedcom
 cmp('applyTree chatFlatText', VK.chatFlatText(TREE_CH), await TG.chatFlatText(TREE_CH));
 cmp('applyTree повтор chatFlatText', VK.chatFlatText(TREE_CH), await TG.chatFlatText(TREE_CH));
 
-// пачка в ответе на триггер: parentKey — корни становятся детьми цитируемой персоны
-const TREE4 = '-Добавка 1902-03-01 1980-01-01\n=Дочка Добавка 1935-06-01 2001-06-01';
-cmp('parseTree «с цитатой»', VK.parseTree(TREE4), TGP.parseTree(TREE4));
-const vkRep3 = VK.applyTree(TREE_CH, VK.parseTree(TREE4), 'Пётр I 1672-05-30');
-const tgRep3 = await TG.applyTree(TREE_CH, TGP.parseTree(TREE4), 'Пётр I 1672-05-30');
-cmp('applyTree с цитатой', vkRep3, tgRep3);
-cmp('applyTree с цитатой famList', VK.famList(TREE_CH), await TG.famList(TREE_CH));
-cmp('applyTree с цитатой gedcomText', VK.gedcomText(TREE_CH), await TG.gedcomText(TREE_CH));
-cmp('applyTree с цитатой chatFlatText', VK.chatFlatText(TREE_CH), await TG.chatFlatText(TREE_CH));
-
-// пачка в ответе на триггер начинается со строки свадьбы «+» — цитируемый
-// берётся в пару (пол супруга не задаётся: выводится цитируемым)
-const TREE5 = '+1700-06-01\nВторая Жена Петра 1680-01-01 1733-01-01';
-cmp('parseTree «супруг цитаты»', VK.parseTree(TREE5), TGP.parseTree(TREE5));
-const vkRep4 = VK.applyTree(TREE_CH, VK.parseTree(TREE5), 'Пётр I 1672-05-30');
-const tgRep4 = await TG.applyTree(TREE_CH, TGP.parseTree(TREE5), 'Пётр I 1672-05-30');
-cmp('applyTree супруг цитаты', vkRep4, tgRep4);
-cmp('applyTree супруг цитаты famList', VK.famList(TREE_CH), await TG.famList(TREE_CH));
-cmp('applyTree супруг цитаты gedcomText', VK.gedcomText(TREE_CH), await TG.gedcomText(TREE_CH));
-cmp('applyTree супруг цитаты chatFlatText', VK.chatFlatText(TREE_CH), await TG.chatFlatText(TREE_CH));
+// ===================== 4б. ветвь героя: резка-прививка =====================
+// «-+=» на фокусе — пачка ветви: поддерево потомков на всю глубину, герой
+// корневой строкой; вывод обеих копий — дословно (чистая subsetBranch)
+const vkBranch = VK.branchFlatText(TREE_CH, 'Фёдор III 1661-06-09');
+const tgBranch = await TG.branchFlatText(TREE_CH, 'Фёдор III 1661-06-09');
+cmp('branchFlatText «Фёдор III»', vkBranch, tgBranch);
+if (!vkBranch || !vkBranch.startsWith('-Фёдор III 1661-06-09 1682-04-27')) {
+    failed++;
+    console.log('✗ пачка ветви не начинается с корневой строки героя\n  ' + vkBranch);
+}
+// пачка в ответе на цитату = резка-прививка (cutAndGraft): ветвь цитируемого
+// срезана молча, поля героя (в т.ч. имя) обновлены первой строкой пачки,
+// новая ветвь прививается; у героя — свои браки с половинами, потомки глубже
+const BRANCH_EDIT = `\
+-Пётр Фёдорович 1661-06-09 1682-04-27
++1680-07-28
+Агафья Анна 1663 1681-07-14 Царица
+--Илья 1681-07-11 1681-07-25
+++1682-02-15
+Марфа Апраксина 1664-06-04`;
+cmp('parseTree «ветвь»', VK.parseTree(BRANCH_EDIT), TGP.parseTree(BRANCH_EDIT));
+cmp('rootOf «ветвь»', VK.rootOf(VK.parseTree(BRANCH_EDIT)), TG.rootOf(TGP.parseTree(BRANCH_EDIT)));
+const vkRep3 = VK.cutAndGraft(TREE_CH, 'Фёдор III 1661-06-09', VK.parseTree(BRANCH_EDIT));
+const tgRep3 = await TG.cutAndGraft(TREE_CH, 'Фёдор III 1661-06-09', TGP.parseTree(BRANCH_EDIT));
+cmp('cutAndGraft отчёт', vkRep3, tgRep3);
+if (vkRep3.cut !== 3 || vkRep3.famsCut !== 2)
+    { failed++; console.log('✗ резка не сработала: cut=' + vkRep3.cut + ' famsCut=' + vkRep3.famsCut); }
+cmp('cutAndGraft personRows', VK.personRows(TREE_CH), await TG.personRows(TREE_CH));
+cmp('cutAndGraft edges', [...VK.linkPairs(TREE_CH)].sort(), (await TG.linksAll(TREE_CH)).map(l => [l.p, l.c]).sort());
+cmp('cutAndGraft weddingRows', VK.weddingRows(TREE_CH), await TG.weddingRows(TREE_CH));
+cmp('cutAndGraft famList', VK.famList(TREE_CH), await TG.famList(TREE_CH));
+cmp('cutAndGraft gedcomText', VK.gedcomText(TREE_CH), await TG.gedcomText(TREE_CH));
+cmp('cutAndGraft chatFlatText', VK.chatFlatText(TREE_CH), await TG.chatFlatText(TREE_CH));
+// гедком-резерв живёт: срезанные записи доступны старым файлом (сам резерв
+// выкладывается транспортом, не логикой)
+// якорь не найден — пачка применяется без среза (добавление merge'ем)
+const vkRepM = VK.cutAndGraft(TREE_CH, 'Нет-Такого-Человека 1690-01-01', VK.parseTree(TREE1));
+const tgRepM = await TG.cutAndGraft(TREE_CH, 'Нет-Такого-Человека 1690-01-01', TGP.parseTree(TREE1));
+cmp('cutAndGraft без якоря', vkRepM, tgRepM);
 
 // сводка пачки — общий формат ответа (обе копии)
 cmp('treeReport пачка', VK.treeReport(Object.assign(vkRep3, { errors: [{ line: 2, msg: 'свадьба без подходящей пары' }] })),
@@ -245,6 +264,14 @@ VK.upsertPerson(FOCUS_CH, { n: 'Отец+Мать', d: '1979-01-01' });
 await TG.upsertPerson(FOCUS_CH, { n: 'Отец+Мать', d: '1979-01-01' });
 VK.upsertPerson(FOCUS_CH, { n: 'Дед+Чужая', d: '1954-01-01' });
 await TG.upsertPerson(FOCUS_CH, { n: 'Дед+Чужая', d: '1954-01-01' });
+// повторный триггер свадьбы правит дату (пара — якорь, не дата):
+// «Отец+Мать 1979-01-01» → «Отец+Мать 1985-05-05 (Курск)»
+VK.upsertPerson(FOCUS_CH, { n: 'Отец+Мать', d: '1985-05-05', plac: 'Курск' });
+await TG.upsertPerson(FOCUS_CH, { n: 'Отец+Мать', d: '1985-05-05', plac: 'Курск' });
+const vkWed = VK.weddingRows(FOCUS_CH).find(r => r.n === 'Отец+Мать');
+cmp('upsertWedding правка даты', vkWed, (await TG.weddingRows(FOCUS_CH)).find(r => r.n === 'Отец+Мать'));
+if (!vkWed || vkWed.d !== '1985-05-05' || vkWed.plac !== 'Курск')
+    { failed++; console.log('✗ повторный триггер свадьбы не правит дату\n  ' + JSON.stringify(vkWed)); }
 const son = 'Сын 1980-06-06';
 for (const r of [1, 2, 3, 5]) {
     const vkK = VK.focusKeys(focusPairs, son, r);

@@ -1430,15 +1430,18 @@ function weddingByFx(peerId, fx) {
 }
 function upsertWedding(peerId, rec) {
     const [a, b] = rec.n.split("+");
-    for (const r of qa("SELECT xref FROM fam WHERE chat=? AND marr_d=?", peerId, rec.d)) {
-        const nm = famNames(peerId, r.xref);
-        if ((nm.hn === a && nm.wn === b) || (nm.hn === b && nm.wn === a)) {
-            const s = [], v = [];
+    // повторный триггер «Имя1+Имя2 Д» правит наскоро: пара — якорь (без даты),
+    // так что дата свадьбы тоже правится; новая пара — новая fam-заглушка
+    for (const r of qa("SELECT xref,husb,wife FROM fam WHERE chat=? ORDER BY rowid", peerId)) {
+        const hn = (r.husb ? indiOf(peerId, r.husb) : null) || {};
+        const wn = (r.wife ? indiOf(peerId, r.wife) : null) || {};
+        if ((hn.name === a && wn.name === b) || (hn.name === b && wn.name === a)) {
+            const s = ["marr_d=?"], v = [rec.d];
             if (rec.plac !== undefined) { s.push("marr_plac=?"); v.push(rec.plac || null); }
             if (rec.note !== undefined) { s.push("note=?"); v.push(rec.note || null); }
             if (rec.dd !== undefined) { s.push("div_d=?"); v.push(rec.dd || null); }
             if (rec.plac2 !== undefined) { s.push("div_plac=?"); v.push(rec.plac2 || null); }
-            if (s.length) qr("UPDATE fam SET " + s.join(",") + " WHERE chat=? AND xref=?", ...v, peerId, r.xref);
+            qr("UPDATE fam SET " + s.join(",") + " WHERE chat=? AND xref=?", ...v, peerId, r.xref);
             return weddingByFx(peerId, r.xref);
         }
     }
@@ -1453,8 +1456,10 @@ function upsertWedding(peerId, rec) {
 // применить разбор parseTree: персоны (пол по маркеру, note), пары-свадьбы,
 // дети; повтор по имя+дата переиспользует персону; родитель должен быть старше
 // ребёнка как минимум на 12 лет (иначе связь не пишется, в отчёте ошибка).
+// Пачка самодостаточна: корень (герой ветви) — первая персона, не ребёнок
+// внутри пачки и не половина пары; его дети привязываются его семьями.
 // → { persons, fams, links, errors } (ТГ-копия — tgcloud/lib/bot.js: applyTree)
-function applyTree(peerId, tree, parentKey) {
+function applyTree(peerId, tree) {
     const rep = { persons: 0, fams: 0, links: 0, errors: tree.errors.map(e => ({ ...e })) };
     const sexN = i => (i !== null && i !== undefined && tree.persons[i] ? tree.persons[i].sex : null);
     const nameN = i => (i !== null && i !== undefined && tree.persons[i] ? tree.persons[i].rec.n : "");
@@ -1532,61 +1537,173 @@ function applyTree(peerId, tree, parentKey) {
             rep.links++;
         }
     }
-    // пачка в ответе на триггер: корни — дети цитируемой персоны
-    if (parentKey) {
-        const px = xrefOfKey(peerId, parentKey);
-        if (px) {
-            const pro = indiOf(peerId, px) || {};
-            const proSex = pro.sex || null;
-            // пачка начинается со строки свадьбы «+» — цитируемый берётся в пару;
-            // первая строка свадьбы (не привязавшаяся внутри пачки) даёт дату/место
-            const sp = tree.persons[0] && tree.persons[0].spouseLine ? 0 : null;
-            if (sp !== null && xr[sp]) {
-                const w0 = tree.weddings.find(w => w.m === null && w.f === null
-                    && (w.rec.d || w.rec.plac || w.rec.note));
-                const wd = w0 ? w0.rec : {};
-                const bY = x => x ? Number(String(x).slice(0, 4)) : null;
-                let bad = null;
-                if (proSex == null) bad = "пол цитируемого неизвестен";
-                else if (wd.d && bY(tree.persons[sp].rec.d) !== null && wd.d
-                    && wd.d.slice(0, 4) - bY(tree.persons[sp].rec.d) < 16) bad = "супруг слишком молод";
-                else if (wd.d && bY(pro.birt_d) !== null && wd.d.slice(0, 4) - bY(pro.birt_d) < 16) bad = "цитируемый слишком молод";
-                else if (wd.d && pro.deat_d && pro.deat_d < wd.d) bad = "цитируемый умер до свадьбы";
-                if (bad) rep.errors.push({ line: 0, msg: "«" + tree.persons[sp].rec.n + "» не женился на цитате: " + bad });
-                else {
-                    const hx = proSex === "M" ? px : xr[sp];
-                    const wx = proSex === "M" ? xr[sp] : px;
-                    const x2 = nextFamXref(peerId, "W");
-                    qr("INSERT INTO fam(chat,xref,adhoc,husb,wife,marr_d,marr_plac,note,div_d,div_plac) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                        peerId, x2, 1, hx, wx, wd.d ?? null, wd.plac ?? null,
-                        (w0 && w0.note) || wd.note || null, wd.dd ?? null, wd.plac2 ?? null);
-                    rep.fams++;
-                }
-            }
-            for (let i = 0; i < tree.persons.length; i++) {
-                if (i === sp) continue; // супруг уже разобран выше
-                if (tree.children.some(ch => ch.c === i)) continue;
-                if (tree.weddings.some(w => w.m === i || w.f === i)) continue;
-                const x = xr[i];
-                const cd = tree.persons[i].rec.d ?? null;
-                if (!x || !cd) {
-                    rep.errors.push({ line: 0, msg: "«" + nameN(i) + "» без даты — не привязан к цитате" });
-                    continue;
-                }
-                if (pro.birt_d && Number(cd.slice(0, 4)) - Number(String(pro.birt_d).slice(0, 4)) < 12) {
-                    rep.errors.push({ line: 0, msg: "родитель «" + (pro.name || "цитата")
-                        + "» слишком молод для «" + nameN(i) + "»" });
-                    continue;
-                }
-                const x2 = nextFamXref(peerId, "L");
-                qr("INSERT INTO fam(chat,xref,adhoc,husb,wife) VALUES(?,?,1,?,?)", peerId, x2,
-                    proSex === "F" ? null : px, proSex === "F" ? px : null);
-                qr("INSERT INTO chil(chat,fam,indi) VALUES(?,?,?)", peerId, x2, x);
-                rep.links++;
+    return rep;
+}
+
+// ---- правка ветви: резать и прививать (ТГ-копия — tgcloud/lib/bot.js) ----
+
+// обновить поля персоны по xref (правка героя по якорю цитаты); поля, не
+// заданные в rec, не перетираются; имя и дата рождения — тоже правимы
+function setPersonByXref(peerId, xref, rec) {
+    const s = [], v = [];
+    const put = (col, val) => { s.push(col + "=?"); v.push(val); };
+    if (rec.n !== undefined) put("name", rec.n);
+    if (rec.d !== undefined) put("birt_d", rec.d);
+    if (rec.h !== undefined) { put("birt_h", rec.h); put("birt_m", rec.m ?? 0); }
+    if (rec.srcH !== undefined) { put("src_h", rec.srcH); put("src_m", rec.srcM ?? 0); }
+    if (rec.dd !== undefined) {
+        put("deat_d", rec.dd || null);
+        if (rec.dh !== undefined) { put("deat_h", rec.dh); put("deat_m", rec.dm ?? 0); }
+        if (rec.dsrcH !== undefined) { put("dsrc_h", rec.dsrcH); put("dsrc_m", rec.dsrcM ?? 0); }
+    } else if (rec.dh !== undefined) { put("deat_h", rec.dh); put("deat_m", rec.dm ?? 0); }
+    if (rec.sex !== undefined) put("sex", rec.sex || null);
+    if (rec.plac !== undefined) put("plac", rec.plac || null);
+    if (rec.note !== undefined) put("note", rec.note || null);
+    if (s.length) qr("UPDATE indi SET " + s.join(",") + " WHERE chat=? AND xref=?", ...v, peerId, xref);
+    return personRows(peerId).find(r => r.xref === xref) || null;
+}
+
+// резать ветвь персоны xref молча: все fams, где xref/потомок — половина,
+// каскадно вниз; удалаются: потомки (записи indi), семьи ветви, ребра chil,
+// связи links, висячие кандидаты; вторые половины ветви — тоже, ПОКА они не
+// участники семей вне ветви (тогда запись остаётся, связи рвутся, запись живёт)
+function cutBranch(peerId, px, extraNames = []) {
+    const famRows = qa("SELECT xref,husb,wife FROM fam WHERE chat=? ORDER BY rowid", peerId);
+    const kidsOfFam = new Map();
+    for (const r of qa("SELECT fam,indi FROM chil WHERE chat=? ORDER BY rowid", peerId)) {
+        if (!kidsOfFam.has(r.fam)) kidsOfFam.set(r.fam, []);
+        kidsOfFam.get(r.fam).push(r.indi);
+    }
+    // интерактивные связи: «родитель(ключ) → дети(xref)» — цепочка по links
+    const rows0 = qa("SELECT * FROM indi WHERE chat=?", peerId);
+    const keyOf = new Map(rows0.map(r => [r.xref, r.name + " " + r.birt_d]));
+    const kidsOfKey = edgeKids(peerId);
+    const inF = new Set();      // fam-xref'ы ветви
+    const D = new Set([px]);    // потомки
+    let frontier = [px];
+    while (frontier.length) {
+        const nf = [];
+        for (const f of famRows) {
+            if (inF.has(f.xref)) continue;
+            const halves = [f.husb, f.wife].filter(Boolean);
+            if (!halves.some(h => D.has(h))) continue;
+            inF.add(f.xref);
+            for (const c of kidsOfFam.get(f.xref) || [])
+                if (!D.has(c)) { D.add(c); nf.push(c); }
+        }
+        for (const x of frontier)
+            for (const c of kidsOfKey.get(keyOf.get(x)) || [])
+                if (!D.has(c)) { D.add(c); nf.push(c); }
+        frontier = nf;
+    }
+    const fams = [...inF];
+    // жертвы: потомки + половины ветви (половина остаётся, если есть семья вне ветви)
+    const victims = new Set();
+    for (const x of D) if (x !== px) victims.add(x);
+    for (const fx of fams) {
+        const f = famRows.find(t => t.xref === fx);
+        for (const h of [f.husb, f.wife]) {
+            if (!h || D.has(h)) continue;
+            const outside = famRows.some(t => !inF.has(t.xref) && (t.husb === h || t.wife === h));
+            if (!outside) victims.add(h);
+        }
+    }
+    const victimKeys = new Set([...victims]
+        .map(x => { const r = indiOf(peerId, x); return r && r.birt_d ? r.name + " " + r.birt_d : null; })
+        .filter(Boolean));
+    // свадьбы-заглушки («Имя1+Имя2 Д») пары ветви: половины-заглушки по именам
+    // попали в срез — fam-заглушки удаляем, иначе после прививки двойные события
+    const names = new Set([...victimKeys].map(k => k.slice(0, -11)));
+    const heroRow = indiOf(peerId, px);
+    if (heroRow) names.add(heroRow.name);
+    // персонажи прививаемой пачки: их свадьбы-заглушки (пары по именам) — тоже
+    for (const n of extraNames) names.add(n);
+    let stubDel = 0;
+    for (const f of famRows) {
+        if (inF.has(f.xref) || !f.husb || !f.wife) continue;
+        const hn = indiOf(peerId, f.husb);
+        const wn = indiOf(peerId, f.wife);
+        if (hn && wn && !hn.birt_d && !wn.birt_d && names.has(hn.name) && names.has(wn.name)) {
+            qr("DELETE FROM fam WHERE chat=? AND xref=?", peerId, f.xref);
+            qr("DELETE FROM chil WHERE chat=? AND fam=?", peerId, f.xref);
+            stubDel++;
+        }
+    }
+    for (const x of victims) qr("DELETE FROM indi WHERE chat=? AND xref=?", peerId, x);
+    for (const fx of fams) qr("DELETE FROM fam WHERE chat=? AND xref=?", peerId, fx);
+    const chParts = [], chArgs = [];
+    if (victims.size) { chParts.push("indi IN (" + [...victims].map(() => "?").join(",") + ")"); chArgs.push(...victims); }
+    if (fams.length) { chParts.push("fam IN (" + fams.map(() => "?").join(",") + ")"); chArgs.push(...fams); }
+    if (chParts.length)
+        qr("DELETE FROM chil WHERE chat=? AND (" + chParts.join(" OR ") + ")", peerId, ...chArgs);
+    if (victimKeys.size) {
+        const ph = [...victimKeys].map(() => "?").join(",");
+        qr("DELETE FROM links WHERE chat=? AND (p IN (" + ph + ") OR c IN (" + ph + "))",
+            peerId, ...victimKeys, ...victimKeys);
+    }
+    for (const l of qa("SELECT id, pairCand FROM links WHERE chat=? AND pairCand IS NOT NULL", peerId)) {
+        const cur = JSON.parse(l.pairCand);
+        const cand = cur.filter(c => !keyN(c.pair).split("+").some(n => names.has(n)));
+        if (cand.length !== cur.length)
+            qr("UPDATE links SET pairCand=? WHERE chat=? AND id=?", cand.length ? JSON.stringify(cand) : null, peerId, l.id);
+    }
+    return { cut: victims.size, fams: fams.length + stubDel };
+}
+
+// герой пачки: не «+»-половина (spouseLine) и не ребёнок внутри пачки; свои
+// свадьбы герою не мешают (его браки — часть ветви). Ветвевая пачка всегда
+// начинается с героя — первым корнем он и берётся
+// (ТГ-копия: tgcloud/lib/bot.js, rootOf)
+function rootOf(tree) {
+    for (let i = 0; i < tree.persons.length; i++) {
+        if (tree.persons[i].spouseLine) continue;
+        if (tree.children.some(ch => ch.c === i)) continue;
+        return tree.persons[i];
+    }
+    return null;
+}
+
+// правка ветви: цитируемый anchorKey — герой пачки tree. Молча: старая ветвь
+// срезается (cutBranch), поля героя обновляются по первой строке пачки (имя и
+// дата рождения правимы), новая ветвь прививается applyTree'ом. Цитируемый
+// не найден — пачка применяется как есть (добавление merge'ем)
+function cutAndGraft(peerId, anchorKey, tree) {
+    const px = xrefOfKey(peerId, anchorKey);
+    if (!px) { const rep = applyTree(peerId, tree); rep.cut = 0; rep.famsCut = 0; return rep; }
+    const cut = cutBranch(peerId, px, tree.persons.map(p => p.rec.n)); // свадьбы-заглушки пар пачки тоже срезаются
+    const root = rootOf(tree);
+    if (root && root.rec.d !== undefined) // герой без даты — заглушка не замещает запись
+        setPersonByXref(peerId, px, Object.assign({ sex: root.sex, note: root.note }, root.rec));
+    else if (!root) deleteEventCascade(peerId, anchorKey);
+    const rep = applyTree(peerId, tree);
+    restoreEdges(peerId);
+    rep.cut = cut.cut; rep.famsCut = cut.fams;
+    return rep;
+}
+
+// восстановление интерактивных связей (links) после резки-прививки: у fam с
+// детьми — по ребру на каждого реального родителя-половину; ребро
+// (родитель → ребёнок) уже есть где-либо в чате — не дублируем
+// (ТГ-копия: tgcloud/lib/bot.js, restoreEdges)
+function restoreEdges(peerId) {
+    const keyOf = new Map(qa("SELECT xref,name,birt_d FROM indi WHERE chat=?", peerId)
+        .filter(r => r.birt_d != null).map(r => [r.xref, r.name + " " + r.birt_d]));
+    const edgesAll = qa("SELECT p,c FROM links WHERE chat=?", peerId).map(l => ({ p: l.p, c: l.c }));
+    if (process.env.LR_DEBUG) console.error('restoreEdges peer', peerId, 'snapshot:', JSON.stringify(edgesAll));
+    for (const f of qa("SELECT * FROM fam WHERE chat=? ORDER BY rowid", peerId)) {
+        const kids = qa("SELECT indi FROM chil WHERE chat=? AND fam=?", peerId, f.xref)
+            .map(r => r.indi).filter(x => keyOf.get(x));
+        if (!kids.length) continue;
+        for (const h of [f.husb, f.wife].filter(Boolean)) {
+            if (!keyOf.get(h)) continue;
+            for (const k of kids) {
+                if (edgesAll.some(e => e.p === keyOf.get(h) && e.c === keyOf.get(k))) continue;
+                qr("INSERT INTO links(chat,p,c,who,fam,cmid) VALUES(?,?,?,?,?,0)",
+                    peerId, keyOf.get(h), keyOf.get(k), "p", f.xref);
+                edgesAll.push({ p: keyOf.get(h), c: keyOf.get(k) });
             }
         }
     }
-    return rep;
 }
 
 // сводка применения пачки (✅-строка + ошибки построчно) — общий формат ответа
@@ -1594,6 +1711,9 @@ function applyTree(peerId, tree, parentKey) {
 function treeReport(rep) {
     let body = "✅ древо: добавлено " + rep.persons + " персон, " + rep.fams
         + " пар, " + rep.links + " детей";
+    if (rep.cut !== undefined)
+        body = (rep.cut ? "✂️ ветвь срезана: " + rep.cut + " персон, " + rep.famsCut + " пар\n" : "✂️ ветвь обновлена\n")
+            + body;
     if (rep.errors.length)
         body += "\n" + rep.errors.map(e => "💥 стр " + e.line + ": " + e.msg).join("\n");
     return body;
@@ -2113,13 +2233,10 @@ function gedcomText(peerId, keys) {
 // именные строки.
 // Показ — тапом на 🔔/🔕 колокольчика.
 // Чистая логика дословно продублирована в tgcloud/lib/bot.js (dev/sync-check.mjs).
-function chatFlatText(peerId, keys = null) {
-    // keys (опционально) — фокус-радиус: пачка только этого подмножества
-    // («Имя ГГГГ-ММ-ДД»); семьи фильтруются по касанию персон карт ключей
-    const hasKeys = Array.isArray(keys) && keys.length > 0;
-    const rows = qa("SELECT * FROM indi WHERE chat=? ORDER BY rowid", peerId)
-        .filter(r => !hasKeys || keys.includes(r.name + " " + (r.birt_d ?? "")));
-    const persons = rows.map(r => ({
+// строки персон/семей чата — общий вход chatFlatText и branchFlatText
+// (ТГ-копия: tgcloud/lib/bot.js, flatRows)
+function flatRows(peerId) {
+    const rows = qa("SELECT * FROM indi WHERE chat=? ORDER BY rowid", peerId).map(r => ({
         key: r.xref, name: r.name, sex: r.sex || null,
         d: r.birt_d ?? undefined, dd: r.deat_d ?? undefined,
         h: r.birt_h ?? undefined, m: r.birt_m ?? undefined,
@@ -2153,10 +2270,85 @@ function chatFlatText(peerId, keys = null) {
             if (!m.note) m.note = F.note;
         } else fams.push({ s, ...F });
     }
-    const kMap = new Map(persons.map(p => [p.key, p.name + " " + (p.d ?? "")]));
-    if (hasKeys) // радиус: семьи, что касается персон ключей (супруга или дети)
-        return flatTreeText(persons, fams.filter(f =>
-            [f.hKey, f.wKey, ...f.children].some(k => k != null && keys.includes(kMap.get(k) || ""))));
+    return [rows, fams];
+}
+
+function chatFlatText(peerId, keys = null) {
+    // keys (опционально) — фокус-радиус: пачка только этого подмножества
+    // («Имя ГГГГ-ММ-ДД»); семьи фильтруются по касанию персон карт ключей
+    const hasKeys = Array.isArray(keys) && keys.length > 0;
+    const [rows, allFams] = flatRows(peerId);
+    const persons = rows.filter(r => !hasKeys || keys.includes(r.name + " " + (r.d ?? "")));
+    if (!hasKeys) return flatTreeText(persons, allFams);
+    const kOf = new Map(rows.map(r => [r.key, r.name + " " + (r.d ?? "")]));
+    return flatTreeText(persons, allFams.filter(f =>
+        [f.hKey, f.wKey, ...f.children].some(k => k != null && keys.includes(kOf.get(k) || ""))));
+}
+
+// чистые подмножества пачки «ветвь героя»: fams, где герой/потомок является
+// половиной (его браки, рекурсивно до листьев); вторые половины включаются в
+// печать, но ветвь НЕ продолжают — другие семьи супруга в ветвь не годятся;
+// extraKids — интерактивные связи (links, «родитель→ребёнок»): потомки
+// героя/потомка/половин по связям тоже в ветви
+// (ТГ-копия: tgcloud/lib/bot.js, subsetBranch)
+function subsetBranch(persons, fams, x, extraKids = null) {
+    const D = new Set([x]); // потомки (ветвь, расширение)
+    const inF = new Set();  // индексы включённых fams
+    let frontier = [x];
+    const byKey = new Map(persons.map(p => [p.key, p]));
+    while (frontier.length) {
+        const nf = [];
+        for (let i = 0; i < fams.length; i++) {
+            if (inF.has(i)) continue;
+            const f = fams[i];
+            const halves = [f.hKey, f.wKey].filter(k => k != null);
+            if (!halves.some(h => D.has(h))) {
+                // свадьба-заглушка пары ветви («Имя1+Имя2 Д»): половины —
+                // именные заглушки с именами ветви — свадьба тоже ветви
+                if (halves.length === 2) {
+                    const a = byKey.get(halves[0]), b = byKey.get(halves[1]);
+                    const namesD = new Set([...D].map(c => (byKey.get(c) || {}).name));
+                    if (a && b && a.nameOnly && b.nameOnly
+                        && namesD.has(a.name) && namesD.has(b.name)) inF.add(i);
+                }
+                continue;
+            }
+            inF.add(i);
+            for (const c of f.children) if (!D.has(c)) { D.add(c); nf.push(c); }
+        }
+        for (const k of frontier)
+            for (const c of (extraKids ? extraKids.get(k) || [] : []))
+                if (!D.has(c)) { D.add(c); nf.push(c); }
+        frontier = nf;
+    }
+    const P = new Set(D); // печать: потомки + половины их семей
+    for (const i of inF)
+        for (const h of [fams[i].hKey, fams[i].wKey]) if (h != null) P.add(h);
+    return [persons.filter(p => P.has(p.key)), fams.filter((_, i) => inF.has(i))];
+}
+
+// карта интерактивных связей «родитель(xref) → [дети xref]» по links
+function edgeKids(peerId) {
+    const rows = qa("SELECT * FROM indi WHERE chat=?", peerId);
+    const xOf = new Map(rows.map(r => [r.name + " " + r.birt_d, r.xref]));
+    const kids = new Map();
+    for (const l of qa("SELECT p,c FROM links WHERE chat=?", peerId)) {
+        const p = xOf.get(l.p), c = xOf.get(l.c);
+        if (!p || !c) continue;
+        if (!kids.has(p)) kids.set(p, []);
+        if (!kids.get(p).includes(c)) kids.get(p).push(c);
+    }
+    return kids;
+}
+
+// пачка ветви персоны key («Имя ГГГГ-ММ-ДД»): поддерево потомков на всю
+// глубину (семьи + интерактивные связи), герой — корневой строкой
+// «-»×1/«=»×1; ввод/вывод симметричны
+function branchFlatText(peerId, key) {
+    const [rows, allFams] = flatRows(peerId);
+    const x = (rows.find(r => r.name + " " + (r.d ?? "") === key) || {}).key;
+    if (x == null) return "";
+    const [persons, fams] = subsetBranch(rows, allFams, x, edgeKids(peerId));
     return flatTreeText(persons, fams);
 }
 
@@ -2202,10 +2394,6 @@ function flatTreeText(persons, fams) {
         if (f.note) bits.push(f.note);
         return bits.join(" ");
     };
-    const wedLine = (f, d) => {
-        if (!f.marr) return;
-        out.push("+".repeat(d + 1) + wedPlus(f)); // без пары — свадьба одностороняя
-    };
     // тело семьи на глубине d: свадьба «+»×(d+1) и вторая половина (строка
     // ниже, без маркера пола; уже напечатанная — именной заглушкой); дети
     // на глубине d+1
@@ -2221,7 +2409,12 @@ function flatTreeText(persons, fams) {
             if (other.key != null && printed.has(other.key))
                 lineOf({ name: other.name, nameOnly: true }, other.sex !== "F", d, true);
             else lineOf(other, other.sex !== "F", d, true);
-        } else if (f.marr) wedLine(f, d);
+        } else if (f.marr || f.children.some(c => byKey.has(c))) {
+            // семья без второй половины: односторонняя свадьба («+дата») или
+            // голый «+» (семья есть, детей привязывать к чему-то надо, иначе
+            // при пересборке пачки они останутся без родителей)
+            out.push("+".repeat(d + 1) + (f.marr ? wedPlus(f) : ""));
+        }
         for (const ck of f.children) {
             const rk = byKey.get(ck);
             if (rk) visit(rk, d + 1);
@@ -3280,7 +3473,7 @@ async function longPollStep() {
     }
 }
 
-const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Ответ триггером на триггер — связь родитель→ребёнок. Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата.\nКнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf), «-+=» — пачка древа (.ged.txt); если не влезает — файлом в ответ.";
+const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Ответ триггером на триггер — связь родитель→ребёнок. Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата; /links (в ответ на триггер) — связи персоны.\nКнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf), «-+=» — пачка ВЕТВИ: герой первой строкой, потомки — вся глубина.\nПачка в ответе на цитату — ЗАМЕНА ветви цитируемого (срезана и привита); просто сообщением/файлом — добавление к древу.";
 
 // большой ответ — одним файлом: «.ged.txt» (пачка древа) либо «.txt» (список
 // событий); не выложился — сообщение об ошибке (без кусков). Файл — ответом
@@ -3342,7 +3535,7 @@ async function handleGedDrop(peerId, doc, msgId, convMsgId, fromId) {
 }
 
 // дроп .txt-документа с пачкой «плоское древо»: в ответе на триггер —
-// применить сразу (корни, а если пачка начинается с «+» — супруг, к цитате);
+// применить сразу (ветвь цитируемого срезана, пачка привита);
 // просто дроп — те же 3 кнопки «Да/Нет/Да, с резервом», что у .ged (ТГ: txtDrop)
 async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
     const name = doc.title || "пачка.ged.txt";
@@ -3364,12 +3557,13 @@ async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
     const rh = replyMsg && replyMsg.from_id > 0
         ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
     if (rh) {
-        let parentKey = null;
+        // в ответе на триггер — резка-прививка: цитируемый — герой пачки
+        let anchor = null;
         const k = rh[1].trim() + " " + rh[2];
-        if (recordOf(peerId, k)) parentKey = k;
-        const rep = applyTree(peerId, tree, parentKey);
+        if (recordOf(peerId, k)) anchor = k;
+        const rep = anchor ? cutAndGraft(peerId, anchor, tree) : applyTree(peerId, tree);
         await messagesSend(peerId, treeReport(rep), msgId, convMsgId);
-        console.log("txt tree:", rep.persons, "персон,", rep.links, "детей, peer", peerId);
+        console.log("txt tree:", rep.cut !== undefined ? "срезано " + rep.cut + ", " : "", rep.persons, "персон,", rep.links, "детей, peer", peerId);
         return;
     }
     gedPending.set(peerId, { name, text, fromId, ts: Date.now() });
@@ -3414,9 +3608,8 @@ async function focusKeyboard(peerId, userId, key, radius, depth) {
         .filter(n => n !== radius && n <= (depth === undefined ? 5 : depth))
         .map(n => mk(String(n) + "\u20E3", { c: "foc", k: key, r: n }));
     const tail = [...digits, mk("❌", { c: "close" })];
-    const base = (peerId < 2000000000 || await isChatAdmin(peerId, userId))
-        ? [mk("🗑", { c: "del", k: key, r: radius }), bell, tree, flat]
-        : [bell, tree, flat];
+    // 🗑-радиус снят: удаление — только глобальное (кнопка 🗑 у 🔔 чата)
+    const base = [bell, tree, flat];
     // VK: максимум 5 кнопок в ряду — цифры отдельным рядом
     return JSON.stringify({ inline: true, buttons: [base, tail] });
 }
@@ -3529,6 +3722,21 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         await sendGedArtifacts(peerId, undefined, "🧬 Гедком-древо чата", msgId, convMsgId);
         return;
     }
+    // «/links» (в ТГ — кнопка 🔗 под событием): заново выложить сообщения-связи
+    // персоны с кнопками (листинг связи одноразовый, пропало — восстановить)
+    if (t === "/links" || t === "связи") {
+        if (!linkPairs(peerId).length) { await messagesSend(peerId, "связей пока нет — ответьте триггером на триггер", msgId, convMsgId); return; }
+        const lrh = replyMsg && replyMsg.from_id > 0
+            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+        const lkey = lrh ? lrh[1].trim() + " " + lrh[2] : null;
+        const links = linkPairs(peerId).filter(l => !lkey || l.p === lkey || l.c === lkey);
+        if (!links.length) { await messagesSend(peerId, "у этой персоны связей нет", msgId, convMsgId); return; }
+        for (const l of links)
+            await messagesSend(peerId, linkText(peerId, l) + "\n" + gedcomText(peerId, [l.p, l.c]),
+                msgId, convMsgId, linkKeyboard(peerId, l));
+        console.log("links re-listed:", links.length, "peer", peerId);
+        return;
+    }
     // ответ триггером на триггер пользователя = связь: заголовок «Имя ГГГГ-ММ-ДД»
     // в цитируемом сообщении (у ответа бота связей нет)
     const replyHead = replyMsg && replyMsg.from_id > 0
@@ -3547,21 +3755,23 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     }
     // пачка «плоское древо»: строки с маркерами '-'/'=' (глубина), «+дата»/«+»
     // (свадьбы) и безмарковыми именами вторых половин — весь разбор одним
-    // сообщением; в ответе сводка добавленного + ошибки построчно. (ТГ: handlers/message.js)
+    // сообщением; в ответе сводка + ошибки построчно. В ответе на триггер —
+    // резка-прививка: ветвь цитируемого срезана, пачка (герой = цитируемый,
+    // ветвь целиком) привита; мимо цитаты — добавление merger'ем. (ТГ: handlers/message.js)
     const lines0 = String(text).split(/\r?\n/).map(l => l.trim()).filter(Boolean);
     if (lines0.some(l => /^[-+=]/.test(l))) {
         const tree = parseTree(text);
         if (tree.persons.length || tree.errors.length) {
-            // в ответе на триггер — корни пачки становятся его детьми
-            let parentKey = null;
+            // в ответе на триггер — ветвь цитируемого заменяется пачкой
+            let anchor = null;
             if (replyHead) {
                 const k = replyHead[1].trim() + " " + replyHead[2];
-                if (recordOf(peerId, k)) parentKey = k;
+                if (recordOf(peerId, k)) anchor = k;
             }
-            const rep = applyTree(peerId, tree, parentKey);
+            const rep = anchor ? cutAndGraft(peerId, anchor, tree) : applyTree(peerId, tree);
             const body = treeReport(rep);
             await messagesSend(peerId, body, msgId, convMsgId);
-            console.log("tree:", rep.persons, "персон,", rep.fams, "пар,", rep.links, "детей,", rep.errors.length, "ошибок, peer", peerId);
+            console.log("tree:", rep.cut !== undefined ? "срезано " + rep.cut + ", " : "", rep.persons, "персон,", rep.fams, "пар,", rep.links, "детей,", rep.errors.length, "ошибок, peer", peerId);
             return;
         }
     }
@@ -3745,7 +3955,7 @@ async function editOriginDoc(o, name, content, kb) {
 async function handleEvent(o) {
     const p = unpay(o.payload);
     const peerId = o.peer_id;
-    // кнопки фокус-сообщения: радиус родни 1–5, 🔔/🧬 в радиусе
+    // кнопки фокус-сообщения: радиус родни 1–5, 🔔/🧬 в радиусе, «-+=» ветвь
     if (p && typeof p === "object" && (p.c === "foc" || p.c === "foc:bell" || p.c === "foc:tree" || p.c === "foc:flat")) {
         const key = String(p.k || "");
         const depth = focusDepth(linkPairs(peerId), key);
@@ -3758,7 +3968,7 @@ async function handleEvent(o) {
         }
         await answerEvent(o.event_id || o.id, o.user_id, peerId,
             p.c === "foc" ? focusLabel(radius)
-                : (p.c === "foc:bell" ? "список " : (p.c === "foc:flat" ? "пачка " : "древо ")) + focusLabel(radius));
+                : (p.c === "foc:bell" ? "список " : (p.c === "foc:flat" ? "пачка ветви " : "древо ")) + focusLabel(radius));
         // 🧬 в радиусе: <имя>.ged + <имя>.pdf (диаграмма — родство к герою),
         // правка сообщения не нужна — файлы отдельным сообщением
         if (p.c === "foc:tree") {
@@ -3767,11 +3977,11 @@ async function handleEvent(o) {
                 o, await focusKeyboard(peerId, o.user_id, key, radius, depth));
             return;
         }
-        // «-+=» в радиусе: пачка радиуса (.ged.txt) — инлайн или файлом reply
+        // «-+=» на фокусе: пачка ВЕТВИ героя (.ged.txt) — вся глубина, герой
+        // первой строкой; реплай правленной пачкой на цитату заменяет ветвь
         if (p.c === "foc:flat") {
-            const keys = focusWithSpouses(focusKeys(linkPairs(peerId), key, radius), focusSpousePairs(peerId));
-            const pack = chatFlatText(peerId, keys);
-            if (!pack) { await answerEvent(o.event_id || o.id, o.user_id, peerId, "радиус пуст"); return; }
+            const pack = branchFlatText(peerId, key);
+            if (!pack) { await answerEvent(o.event_id || o.id, o.user_id, peerId, "ветвь пуста"); return; }
             const kb = await focusKeyboard(peerId, o.user_id, key, radius, depth);
             const txt = focusHead(key, radius, rec.dd) + "\n" + pack;
             if (txt.length < 4000) { await editOrigin(o, txt, kb); return; }
@@ -3849,9 +4059,6 @@ async function handleEvent(o) {
     }
     // нормализуем: {c} / {rel} либо строка "del" / "del:yes" / "rel:orth"
     const payload = typeof p === "object" ? (p.rel ? "rel:" + p.rel : String(p.c ?? "")) : p;
-    // фокус-контекст 🗑 (payload несёт k/r): удалять только родню в радиусе
-    const fd = p && typeof p === "object" && (p.c === "del" || p.c === "del:yes") && p.k
-        ? { k: String(p.k), r: Math.min(5, Math.max(1, Number(p.r) || 1)) } : null;
     console.log("event:", payload, "peer", peerId);
     if (!["del", "del:yes", "del:no", "bell", "flat", "tree", "close", "ged:rep", "ged:bak", "ged:ign"].includes(payload) && !payload.startsWith("rel:")) {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "неизвестная кнопка");
@@ -3906,39 +4113,19 @@ async function handleEvent(o) {
         return;
     }
     if (payload === "del") {
-        // подтверждение: список событий чата по полной дате ГГГГ-ММ-ДД (🔔 — по ММ-ДД) + 🗑/❌;
-        // из фокус-сообщения — только родня в радиусе (список тот же, что у 🔔)
-        let head, list;
-        if (fd) {
-            const rec = recordOf(peerId, fd.k);
-            if (!rec) {
-                await answerEvent(o.event_id || o.id, o.user_id, peerId, "персона не найдена");
-                return;
-            }
-            const pairs = linkPairs(peerId);
-            fd.r = Math.min(fd.r, Math.max(1, focusDepth(pairs, fd.k)));
-            const spPairs = focusSpousePairs(peerId);
-            const keys = focusWithSpouses(focusKeys(pairs, fd.k, fd.r), spPairs);
-            const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
-            list = focusListText([...personRows(peerId), ...weddingRows(peerId)], keys, fd.k, pairs, spPairs, k => sexMap.get(k) ?? null, true);
-            if (!list) {
-                await answerEvent(o.event_id || o.id, o.user_id, peerId, "в радиусе нет событий");
-                return;
-            }
-            head = focusHead(fd.k, fd.r, rec.dd) + "\nУдалить родню в радиусе?";
-        } else {
-            list = upcomingEvents(peerId, true); // по полной дате, со смертями
-            if (!list) {
-                await answerEvent(o.event_id || o.id, o.user_id, peerId, "событий нет");
-                return;
-            }
-            head = "Удалить все события чата?";
+        // подтверждение: список событий чата по полной дате ГГГГ-ММ-ДД + 🗑/❌
+        // (🗑-радиус снят: удаление — только глобальное)
+        const list = upcomingEvents(peerId, true); // по полной дате, со смертями
+        if (!list) {
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "событий нет");
+            return;
         }
+        const head = "Удалить все события чата?";
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "подтвердите удаление");
         const kb = JSON.stringify({
             inline: true,
             buttons: [[
-                { action: { type: "callback", label: "🗑", payload: JSON.stringify(fd ? { c: "del:yes", k: fd.k, r: fd.r } : { c: "del:yes" }) }, color: "secondary" },
+                { action: { type: "callback", label: "🗑", payload: JSON.stringify({ c: "del:yes" }) }, color: "secondary" },
                 { action: { type: "callback", label: "❌", payload: JSON.stringify({ c: "del:no" }) }, color: "secondary" }
             ]]
         });
@@ -3952,29 +4139,7 @@ async function handleEvent(o) {
         }
         await editOrigin(o, head + "\n" + list, kb);
     } else if (payload === "del:yes") {
-        if (fd) {
-            // фокус: удалить родню в радиусе; связи/свадьбы/семьи — каскадом,
-            // как при одиночном удалении (deleteEventCascade)
-            const rec = recordOf(peerId, fd.k);
-            if (!rec) {
-                await answerEvent(o.event_id || o.id, o.user_id, peerId, "персона не найдена");
-                return;
-            }
-            const pairs = linkPairs(peerId);
-            const spPairs = focusSpousePairs(peerId);
-            const keys = focusWithSpouses(focusKeys(pairs, fd.k, fd.r), spPairs);
-            const set = new Set(keys);
-            // жертвы: персоны множества + свадьбы, обе половины которых в нём
-            const all = [
-                ...personRows(peerId).map(r => pkey(r)).filter(k => set.has(k)),
-                ...weddingRows(peerId).map(r => pkey(r)).filter(k => focusHasPair(k.slice(0, -11), keys)),
-            ];
-            for (const k of new Set(all)) deleteEventCascade(peerId, k);
-            console.log("deleted", all.length, "records (focus", fd.k, "r" + fd.r + ") peer", peerId);
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "удалено событий: " + all.length);
-            await editOrigin(o, "Удалено событий: " + all.length + "\n" + HELP, await peerKeyboard(peerId, o.user_id));
-            return;
-        }
+        // глобальное удаление: дерево чата (персоны/свадьбы/связи/семьи) целиком
         const n = personRows(peerId).length + weddingRows(peerId).length;
         clearChatTree(peerId);
         console.log("deleted", n, "records peer", peerId);
@@ -4397,5 +4562,6 @@ module.exports.__test = {
     personRows, weddingRows, famList, famView, focusSpousePairs, upsertPerson, deleteEventCascade,
     clearChatTree, recordOf, recordAnyOf, chartPdf, chartModel, chartFor, fileBaseOf, b64ToBytes, parseTtf,
     gedcomText, importGedcom, jubileeText, setLinkCand, setLinkCmid, weddingByFx, upsertWedding, linkRowOf,
-    chatFlatText, flatTreeText,
+    chatFlatText, flatTreeText, branchFlatText, subsetBranch, flatRows,
+    cutAndGraft, setPersonByXref, rootOf,
 };

@@ -30,6 +30,7 @@ const cond = c => {
     if (!c) return () => true;
     if (c.__and) return r => c.__and.every(x => cond(x)(r));
     if (c.__or) return r => c.__or.some(x => cond(x)(r));
+    if (c.__in) return r => c.in.includes(r[c.prop]);
     if (c.__cond) return r => r[c.prop] === c.val;
     return () => true;
 };
@@ -165,7 +166,8 @@ const db = {
 };
 
 const ne = () => ({}), gt = () => ({}), gte = () => ({}), lt = () => ({}), lte = () => ({});
-const asc = () => ({}), desc = () => ({}), inArray = () => ({});
+const asc = () => ({}), desc = () => ({});
+const inArray = (col, vals) => ({ __in: true, prop: col.__prop, in: vals ?? [] });
 const not = () => ({});
 const and = (...cs) => ({ __cond: true, __and: cs });
 const or = (...cs) => ({ __cond: true, __or: cs });

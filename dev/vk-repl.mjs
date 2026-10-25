@@ -54,8 +54,8 @@ const PATCHES = [
      'const VK_API = "http://127.0.0.1:" + (globalThis.__VK_REPL_PORT || 8899) + "/method/";'],
     ['main().catch(e => { console.error("fatal:", e); process.exit(1); });',
      'if (!process.env.LR_NO_MAIN) main().catch(e => { console.error("fatal:", e); process.exit(1); });'],
-    ['    chatFlatText, flatTreeText,\n};',
-     '    chatFlatText, flatTreeText, handleEvent, handleMessage, handleGedDrop, handleTxtDrop,\n'
+    ['    cutAndGraft, setPersonByXref, rootOf,\n};',
+     '    cutAndGraft, setPersonByXref, rootOf, handleEvent, handleMessage, handleGedDrop, handleTxtDrop,\n'
      + '    peerKeyboard, getSettings, qa, isChatAdmin,\n};'],
     ['    if (!token) {',
      '    if (!token && !process.env.LR_NO_MAIN) {'],
@@ -70,6 +70,7 @@ globalThis.__VK_REPL_PORT = PORT;
 const MOD = path.join(os.tmpdir(), 'lrvk-repl-' + crypto.randomBytes(4).toString('hex') + '.cjs');
 fs.writeFileSync(MOD, patch(SRC));
 process.env.LR_NO_MAIN = '1'; // main() Not to launch — only in the repl
+process.env.LR_DB = process.env.LR_DB || path.resolve(DB_FILE); // изолированная скретч-база (иначе модуль взял бы tmpdir/lunarreturns.db общий для всех прогонов)
 const mod = await import(url.pathToFileURL(MOD));
 const T = mod.__test;
 
@@ -172,7 +173,7 @@ const rl = readline.createInterface({ input: process.stdin });
 let msgId = 0, myCmid = 0; // свои сообщения: msgId/convMsgId растут независимо
 const pending = { text: '' }; // «\n» — продолжение строки, как в ТГ-репле
 
-function fail(e) { console.log('ERROR:', e.message || e); }
+function fail(e) { console.log('ERROR:', e.message || e); if (process.env.LR_DEBUG) console.log(e.stack); }
 
 async function handleMessageText(text, replyMsg = null) {
     const cmid = ++myCmid;
@@ -240,42 +241,54 @@ const hang = () => new Promise((_, rj) => setTimeout(() => rj(new Error('обр�
 console.log('vk-repl: chat=' + CHAT + (ADMIN ? ' (админ)' : ' (участник)'), 'user=' + USER, 'db=' + DB_FILE);
 console.log('Ввод: текст | /N M [uID] — кнопка | >N текст — ответ | !ged путь | !txt путь [>N] | !dump | Ctrl-C — выход');
 
-for (;;) {
-    const line = await rl.question('> ').catch(() => 'exit');
+// нет TTY — пайп: readline может закрыться до опроса (весь буфер вычитан
+// мгновенно) — читаем ввод весь и исполняем построчно
+const SCRIPT = !process.stdin.isTTY
+    ? fs.readFileSync(0, 'utf8').split('\n').filter(l => l.trim() !== '' || l === '\\n')
+    : null;
+
+async function exec(line) {
     if (process.env.LR_DEBUG) console.log('GOT:', JSON.stringify(line));
-    if (line === 'exit' || line === null) break;
-    if (!line.trim()) continue;
-    if (line === '\\n' || line.trim() === '\\n') { pending.text += '\n'; continue; }
-    if (line === '!dump') {
-        dump();
-        continue;
-    }
+    if (!line.trim()) return;
+    if (line === '\\n') { pending.text += '\n'; return; } // литерал «\n» — перевод строки
+    line = String(line).replace(/\\n/g, '\n'); // «\n» внутри строки — тоже перевод
+    if (line === '!dump') { dump(); return; }
     // /N M [uID] — тап
     let m;
     if (m = line.match(/^\/(\d+)\s+(\d+)(?:\s+(\d+))?$/)) {
         const msg = msgs[Number(m[1]) - 1];
-        if (!msg) { console.log('ERROR: нет сообщения ' + m[1]); continue; }
-        if (!msg.kb) { console.log('ERROR: у сообщения ' + m[1] + ' нет клавиатуры'); continue; }
+        if (!msg) { console.log('ERROR: нет сообщения ' + m[1]); return; }
+        if (!msg.kb) { console.log('ERROR: у сообщения ' + m[1] + ' нет клавиатуры'); return; }
         await tap(msg, Number(m[2]), m[3] ? Number(m[3]) : undefined);
-        continue;
+        return;
     }
     // >N текст — reply
     if (m = line.match(/^>(\d+)\s* ?\n?([\s\S]+)$/)) {
         const msg = msgs[Number(m[1]) - 1];
-        if (!msg) { console.log('ERROR: нет сообщения ' + m[1]); continue; }
+        if (!msg) { console.log('ERROR: нет сообщения ' + m[1]); return; }
+        // цитата бота — from_id < 0 (реплай на бота связей не создаёт)
         const replyMsg = { from_id: msg.fromBot ? -99 : USER, text: msg.text };
         await handleMessageText(m[2], replyMsg);
-        continue;
+        return;
     }
     // !ged/!txt путь [>N]
     if (m = line.match(/^!(ged|txt)\s+(\S+)(?:\s*>(\d+))?$/)) {
         await dropFile(m[1], m[2], m[3] && Number(m[3]));
-        continue;
+        return;
     }
     // обычное сообщение (накопление «\n»)
     const text = (pending.text + line).trimEnd();
     pending.text = '';
     await handleMessageText(text);
+}
+
+if (SCRIPT) {
+    for (const line of SCRIPT) await exec(line);
+    if (pending.text.trim()) await exec(pending.text);
+} else for (;;) {
+    const line = await rl.question('> ').catch(() => 'exit');
+    if (line === 'exit' || line === null) break;
+    await exec(line);
 }
 rl.close();
 srv.close();
