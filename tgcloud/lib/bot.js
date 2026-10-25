@@ -386,8 +386,8 @@ export async function applyTree(chatId, tree) {
             if (ch[pi] === null || !xr[ch[pi]]) continue;
             const pd = tree.persons[ch[pi]].rec.d ?? null;
             if (pd && cd && Number(cd.slice(0, 4)) - Number(pd.slice(0, 4)) < 12) {
-                rep.errors.push({ line: 0, msg: "родитель «" + nameN(ch[pi])
-                    + "» слишком молод для «" + nameN(ch.c) + "»" });
+                rep.errors.push({ line: 0, msg: "родитель «" + nameN(ch[pi]) + " " + pd
+                    + "» слишком молод для «" + nameN(ch.c) + " " + cd + "»" });
                 continue;
             }
             ps.push({ x: xr[ch[pi]], sex: sexN(ch[pi]) });
@@ -1413,11 +1413,11 @@ export function flatTreeText(persons, fams) {
             if (other.key != null && printed.has(other.key))
                 lineOf({ name: other.name, nameOnly: true }, other.sex !== "F", d, true);
             else lineOf(other, other.sex !== "F", d, true);
-        } else if (f.marr || f.children.some(c => byKey.has(c))) {
-            // семья без второй половины: односторонняя свадьба («+дата») или
-            // голый «+» (семья есть, детей привязывать к чему-то надо, иначе
-            // при пересборке пачки они останутся без родителей)
-            out.push("+".repeat(d + 1) + (f.marr ? wedPlus(f) : ""));
+        } else if (f.marr) {
+            // семья без второй половины: односторонняя свадьба («+дата»);
+            // голый «+» без даты не выводится — при пересборке пачки дети
+            // и так привязываются к строке родителя
+            out.push("+".repeat(d + 1) + wedPlus(f));
         }
         for (const ck of f.children) {
             const rk = byKey.get(ck);
@@ -1428,7 +1428,16 @@ export function flatTreeText(persons, fams) {
         if (printed.has(r.key)) return;
         printed.add(r.key);
         lineOf(r, r.sex !== "F", d, false);
-        for (const f of fams) if (f.hKey === r.key || f.wKey === r.key) famBody(f, r.key, d);
+        // бездатные односторонние семьи (дети от неизвестного супруга) —
+        // первыми, сразу после строки персоны: при пересборке пачки их дети
+        // привязываются к собственной семье персоны, а не к паре ниже
+        const hasOther = f => {
+            const k = f.hKey === r.key, x = k ? f.wKey : f.hKey;
+            return x != null ? byKey.has(x) : (k ? f.wName : f.hName) != null;
+        };
+        const mine = fams.filter(f => f.hKey === r.key || f.wKey === r.key);
+        for (const f of [...mine.filter(f => !hasOther(f) && !f.marr), ...mine.filter(f => hasOther(f) || f.marr)])
+            famBody(f, r.key, d);
     };
     for (const r of persons) visit(r, 0);
     return out.join("\n");
@@ -1561,7 +1570,7 @@ export async function importGedcom(chatId, g) {
         byX.set(ind.__xref, xref);
         persons++;
     }
-    let linkCount = 0, weddings = 0;
+    let famCount = 0, childCount = 0;
     for (const f of g.fams) {
         const h = f.husb && byX.get(f.husb), w = f.wife && byX.get(f.wife);
         const hasMarr = f.marr && f.marr.date;
@@ -1573,11 +1582,13 @@ export async function importGedcom(chatId, g) {
             divD: f.div && f.div.date ? f.div.date : null,
             divPlac: f.div && f.div.plac ? f.div.plac : null,
         }).run(); // тот же FAM zweimal — не бывает в валидном гедкоме
+        famCount++;
         for (const cx of f.chil) {
             const c = byX.get(cx);
             if (!c) continue;
             try {
                 await db.insert(chil).values({ chatId, fam: f.__xref, indi: c, adopted: f.adopted.includes(cx) }).run();
+                childCount++;
             } catch { /* дубли */ }
             for (const p of [h, w]) {
                 if (!p || p === c) continue;
@@ -1586,10 +1597,8 @@ export async function importGedcom(chatId, g) {
                 const exists = (await edgeRows(chatId)).find(l => l.parent === pk && l.child === ck);
                 if (exists) continue;
                 await db.insert(edges).values({ chatId, parent: pk, child: ck, who: "c", famXref: f.__xref }).run();
-                linkCount++;
             }
         }
-        if (h && w && hasMarr) weddings++;
     }
     // ADOP + FAMC у персоны: усыновление в указанной семье (PEDI мог не быть)
     for (const ind of g.indis) {
@@ -1602,7 +1611,7 @@ export async function importGedcom(chatId, g) {
                 .where(and(eq(chil.chatId, chatId), eq(chil.fam, fx), eq(chil.indi, c))).run();
         }
     }
-    return { persons, links: linkCount, weddings };
+    return { persons, fams: famCount, links: childCount, errors: [] };
 }
 
 // резерв прежнего дерева чата файлом <имя>-old.ged (фолбэк — текстом);
@@ -1638,11 +1647,7 @@ export async function replaceWithGedcom(chatId, g, backup) {
     if (backup && !(await sendTreeBackup(chatId)))
         return { ok: false, head: "💥 Не удалось выложить резерв — замена отменена, прежнее дерево цело" };
     const r = await importGedcom(chatId, g);
-    return {
-        ok: true,
-        head: "✅ Добавлено: персон " + r.persons + ", связей " + r.links
-            + (r.weddings ? ", свадеб " + r.weddings : ""),
-    };
+    return { ok: true, head: treeReport(r) };
 }
 
 // sendMessage с разбиением длинного текста (лимит TG 4096);
@@ -1685,9 +1690,9 @@ export function stripHtml(t) {
 // сводка применения пачки (✅-строка + ошибки построчно) — общий формат ответа
 export function treeReport(rep) {
     let body = "✅ древо: добавлено " + rep.persons + " персон, " + rep.fams
-        + " пар, " + rep.links + " детей";
+        + " семей, " + rep.links + " детей";
     if (rep.cut !== undefined)
-        body = (rep.cut ? "✂️ ветвь срезана: " + rep.cut + " персон, " + rep.famsCut + " пар\n" : "✂️ ветвь обновлена\n")
+        body = (rep.cut ? "✂️ ветвь срезана: " + rep.cut + " персон, " + rep.famsCut + " семей\n" : "✂️ ветвь обновлена\n")
             + body;
     if (rep.errors.length)
         body += "\n" + rep.errors.map(e => "💥 стр " + e.line + ": " + e.msg).join("\n");

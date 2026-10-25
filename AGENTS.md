@@ -41,7 +41,11 @@ and true. For the full SDK reference (db, Bot API, fetch), see
    колокольчиком 🔔) и зеркально в ВК (`node lunarreturns.js test "..."`,
    при правках древа — полный прогон пачки типа Romanov_family.txt через
    импорт и вывод). После прогонов вернуть `git checkout -- dev/tg-db.json`.
-   Оффлайн-репл для ВК: `node dev/vk-repl.mjs --fresh` (см. шапку файла).
+   Внимание: sdk-mок хранит БД по пути относительно cwd (`dev/tg-db.json`), а
+   `--fresh` чистит путь от корня репо — при запусках репла вне корня репо
+   (скриптами/из другого каталога) изоляция БД только через
+   `LR_DEV_DB=<абсолютный путь>`. Оффлайн-репл для ВК: `node dev/vk-repl.mjs
+   --fresh` (см. шапку файла).
 3. `node lunarreturns.js test "..."` — быстрая проверка ВК-логики без токена.
 Пуш в облако только после 1–2: `npx tgcloud status` → `push` → `migrate`
 (если менялась `schema.js`; деплой БД не трогает).

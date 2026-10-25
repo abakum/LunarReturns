@@ -226,13 +226,10 @@ function gedStats(g) {
         persons++;
         have.add(ind.__xref);
     }
-    let links = 0, weddings = 0;
-    for (const f of g.fams) {
-        const ps = [f.husb, f.wife].filter(x => have.has(x));
-        for (const p of ps) for (const cx of f.chil) if (have.has(cx) && cx !== p) links++;
-        if (ps.length === 2 && f.marr && f.marr.date) weddings++;
-    }
-    return { persons, links, weddings };
+    let links = 0;
+    for (const f of g.fams)
+        for (const cx of f.chil) if (have.has(cx)) links++;
+    return { persons, fams: g.fams.length, links };
 }
 
 // ====================== ПЛОСКОЕ ДРЕВО (пакетный ввод) ======================
@@ -325,17 +322,20 @@ function weddingRecOf(s) {
 // строго к семье этой глубины на стеке (глубины на стеке строго растут, семья
 // одна — без подбора и проверок возраста/живости). Половина занимает
 // свободный слот; при повторном браке (обе заняты, копия наверх) — замена
-// стороны spouseLine копии. Половины нет — флаг снимается молча; датную
-// свадьбу при этом тихо привязываем без половины (одностороняя).
+// стороны spouseLine копии. Половины нет — свадьба одностороняя (в т.ч.
+// бездатная «+»: после полной пары открывает новый брак с неизвестной
+// половиной — дети ниже принадлежат ему).
 function parseTree(text) {
     const errors = [], persons = [], weddings = [], children = [];
-    const stack = []; // открытые семьи: {depth, m, f} — глубины строго растут
+    const stack = []; // открытые семьи: {depth, m, f, o} — глубины строго растут; o — владелец
     let pw = null;    // открытое «+»: {wIdx, depth, spi|null, line}
     let ln = 0;
     // привязка свадьбы к семье владельца глубины depth. Слот половины S:
     // свободная половина семьи, а при повторном браке (обе заняты, копия
     // наверх) — замена стороны, помеченной spouseLine; пол S —
-    // противоположный другой половине. false — семьи глубины depth нет.
+    // противоположный другой половине. Безымянная дата (S=null) при полной
+    // семье — новый брак с неизвестной половиной: копия держит только
+    // сторону владельца. false — семьи глубины depth нет.
     const bindW = (wIdx, S, depth, line) => {
         const wr = weddings[wIdx];
         let j = -1; // глубины на стеке строго растут — семья depth единственная
@@ -345,7 +345,10 @@ function parseTree(text) {
         stack.length = j + 1; // глубже — законченные поддеревья
         let fam = stack[j];
         if (fam.m !== null && fam.f !== null) { // повторный брак владельца: копия наверх
-            stack.push({ depth: fam.depth, m: fam.m, f: fam.f });
+            const ownM = fam.o !== null && persons[fam.o].sex === "M";
+            stack.push(S === null // безымянная дата — брак с неизвестной половиной
+                ? { depth: fam.depth, o: fam.o, m: ownM ? fam.m : null, f: ownM ? null : fam.f }
+                : { depth: fam.depth, o: fam.o, m: fam.m, f: fam.f });
             fam = stack[stack.length - 1];
         }
         if (S !== null) {
@@ -368,12 +371,11 @@ function parseTree(text) {
         wr.f = fam.f ?? null;
         return true;
     };
-    // закрыть открытое «+»: без половины — свадьба одностороняя; датную
-    // тихо привязываем, а пустая «+» так и остаётся бездатной записью
+    // закрыть открытое «+»: без половины — свадьба одностороняя (дата или
+    // без); при полной семье — копия только с владельцем (новый брак)
     const flushPw = () => {
         if (pw === null) return;
-        if (pw.spi === null && weddings[pw.wIdx].rec.d !== undefined
-            && !bindW(pw.wIdx, null, pw.depth, pw.line))
+        if (pw.spi === null && !bindW(pw.wIdx, null, pw.depth, pw.line))
             errors.push({ line: pw.line, msg: "свадьба без подходящей пары" });
         pw = null;
     };
@@ -394,7 +396,7 @@ function parseTree(text) {
                 children.push({ c: idx, m: top.m ?? null, f: top.f ?? null });
             else if (d > 0)
                 errors.push({ line: ln, msg: "нет родителей на глубине " + (d - 1) });
-            stack.push({ depth: d, m: it.sex === "M" ? idx : null, f: it.sex === "F" ? idx : null });
+            stack.push({ depth: d, m: it.sex === "M" ? idx : null, f: it.sex === "F" ? idx : null, o: idx });
             continue;
         }
         if (it.k === "sp") { // имя без маркера — вторая половина открытой «+»-свадьбы

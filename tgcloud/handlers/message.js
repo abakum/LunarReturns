@@ -54,8 +54,8 @@ async function gedDrop(chatId, doc, fromId) {
     // «Да, с резервом» — только при непустом дереве чата (резервовать нечего)
     await api.sendMessage({
         chat_id: chatId,
-        text: "🧬 Файл " + name + ": персон " + s.persons + ", связей " + s.links
-            + ", свадеб " + s.weddings + ". Заменить события чата деревом?",
+        text: "🧬 Файл " + name + ": персон " + s.persons + ", семей " + s.fams
+            + ", детей " + s.links + ". Заменить события чата деревом?",
         reply_markup: dropKb((await personRows(chatId)).length > 0),
     });
     console.log("ged drop:", name, "chat", chatId);
@@ -96,7 +96,7 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
     await api.sendMessage({
         chat_id: chatId,
         text: "📄 Файл " + name + ": персон " + tree.persons.length
-            + ", пар " + tree.weddings.length + ", детей " + tree.children.length
+            + ", семей " + tree.weddings.length + ", детей " + tree.children.length
             + ". Добавить пачку к дереву чата?",
         // «Да, с резервом» — только при непустом дереве чата
         reply_markup: dropKb((await personRows(chatId)).length > 0),
@@ -270,7 +270,7 @@ export default async function (message, ctx) {
             const rep = anchor ? await cutAndGraft(chatId, anchor, tree) : await applyTree(chatId, tree);
             const body = treeReport(rep);
             await sendLong(chatId, body);
-            console.log("tree:", rep.cut !== undefined ? "срезано " + rep.cut + ", " : "", rep.persons, "персон,", rep.fams, "пар,",
+            console.log("tree:", rep.cut !== undefined ? "срезано " + rep.cut + ", " : "", rep.persons, "персон,", rep.fams, "семей,",
                 rep.links, "детей,", rep.errors.length, "ошибок, чат", chatId);
             return;
         }
