@@ -29,15 +29,31 @@ const dropKb = hasTree => ({
 // дроп .ged-документа: скачать, разобрать, запомнить в ged_drops (последний
 // дроп выигрывает); «Да» — ЗАМЕНА дерева (с резервом — прежнее дерево файлом
 // <имя>-old.ged перед очисткой)
+
+// скачать текст документа-дропа с ретраями: файл отдаётся не сразу
+// (ВК: HTTP 502 от CDN) — после дропа ждём 3 с, попытка; провал — ещё 3 с и
+// попытка, ещё 3 с и последняя (ВК-копия: lunarreturns.js, fetchDocText)
+async function downloadDoc(doc) {
+    for (let i = 0; i < 3; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        try {
+            const bytes = await api.getFileContent(doc.file_id);
+            return new TextDecoder().decode(bytes);
+        } catch (e) {
+            if (i === 2) throw e;
+            console.warn("doc download retry", (i + 1) + "/3:", e.message);
+        }
+    }
+}
+
 async function gedDrop(chatId, doc, fromId) {
     const name = doc.file_name || "gedcom.ged";
     let content;
     try {
-        const bytes = await api.getFileContent(doc.file_id);
-        content = new TextDecoder().decode(bytes);
+        content = await downloadDoc(doc);
     } catch (e) {
         console.error("ged download:", e.message);
-        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось скачать файл " + name });
+        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось скачать файл " + name + " (трижды; повторите отправку файла в чат)" });
         return;
     }
     const g = parseGedcom(content);
@@ -65,11 +81,10 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
     const name = doc.file_name || "пачка.ged.txt";
     let content;
     try {
-        const bytes = await api.getFileContent(doc.file_id);
-        content = new TextDecoder().decode(bytes);
+        content = await downloadDoc(doc);
     } catch (e) {
         console.error("txt download:", e.message);
-        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось скачать файл " + name });
+        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось скачать файл " + name + " (трижды; повторите отправку файла в чат)" });
         return;
     }
     const tree = parseTree(content);

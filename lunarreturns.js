@@ -3287,12 +3287,20 @@ function bellKeyboard() {
 const snackbar = text => JSON.stringify({ type: "show_snackbar", text });
 
 async function answerEvent(eventId, userId, peerId, text) {
-    return vkApi("messages.sendMessageEventAnswer", {
-        event_id: eventId,
-        user_id: userId,
-        peer_id: peerId,
-        event_data: snackbar(text)
-    });
+    // тост — косметика: ВК отвечает 100 invalid event_id на повторный/старый
+    // event (reconnect long poll, черновик старой клавиатуры) — не роняем
+    // обработчик, дерево уже применено, правку сообщения (editOrigin) делаем
+    try {
+        return await vkApi("messages.sendMessageEventAnswer", {
+            event_id: eventId,
+            user_id: userId,
+            peer_id: peerId,
+            event_data: snackbar(text)
+        });
+    } catch (e) {
+        console.error("answerEvent:", e.message, "(peer", peerId, "event", String(eventId).slice(0, 24) + ")");
+        return null;
+    }
 }
 
 // удалить сообщение по conversation_message_id чата. В личных чатах удаление
@@ -3643,16 +3651,32 @@ const isStart = (text, payload) => {
 const GED_TTL = 3600000;
 const gedPending = new Map(); // peerId → {name, text, fromId, ts}
 
+// скачать текст документа-дропа с ретраями: CDN отдаёт файл не сразу
+// (наблюдалось HTTP 502), поэтому после дропа ждём 3 с, попытка; провал —
+// ещё 3 с и попытка, ещё 3 с и последняя (ТГ-копия: handlers/message.js)
+async function fetchDocText(url) {
+    for (let i = 0; i < 3; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        try {
+            const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            return await res.text();
+        } catch (e) {
+            if (i === 2) throw e;
+            console.warn("doc download retry", (i + 1) + "/3:", e.message);
+        }
+    }
+    return null; // недостижимо
+}
+
 async function handleGedDrop(peerId, doc, msgId, convMsgId, fromId) {
     const name = doc.title || "gedcom.ged";
     let text;
     try {
-        const res = await fetch(doc.url, { signal: AbortSignal.timeout(30000) });
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        text = await res.text();
+        text = await fetchDocText(doc.url);
     } catch (e) {
         console.error("ged download:", e.message);
-        await messagesSend(peerId, "💥 Не удалось скачать файл " + name, msgId, convMsgId);
+        await messagesSend(peerId, "💥 Не удалось скачать файл " + name + " (трижды; повторите написанием файла в чат)", msgId, convMsgId);
         return;
     }
     const g = parseGedcom(text);
@@ -3683,12 +3707,10 @@ async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
     const name = doc.title || "пачка.ged.txt";
     let text;
     try {
-        const res = await fetch(doc.url, { signal: AbortSignal.timeout(30000) });
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        text = await res.text();
+        text = await fetchDocText(doc.url);
     } catch (e) {
         console.error("txt download:", e.message);
-        await messagesSend(peerId, "💥 Не удалось скачать файл " + name, msgId, convMsgId);
+        await messagesSend(peerId, "💥 Не удалось скачать файл " + name + " (трижды; повторите написанием файла в чат)", msgId, convMsgId);
         return;
     }
     const tree = parseTree(text);
