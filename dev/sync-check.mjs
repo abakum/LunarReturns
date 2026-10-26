@@ -64,6 +64,11 @@ const TRIGGERS = [
     'Иван 1960-05-10 2020-02-03',
     'Пётр 1985-07-07 23:45 (Пермь) 2020-02-03 04:00',
     'Иван+Мария 1983-06-04 1990-01-01',
+    // «^» — маркер примечания: после него — дословно, дата в начале
+    // примечания не парсится как смерть/развод
+    'Николай 1868-05-18 ^1917 отрёкся',
+    'Иван 1960-05-10 2020-02-03 ^продолжение^вторая строка',
+    'Иван+Мария 1983-06-04 (Пермь) ^1990 разъехались',
 ];
 for (const t of TRIGGERS) cmp('parseTrigger ' + JSON.stringify(t), VK.parseTrigger(t), TGP.parseTrigger(t));
 
@@ -71,6 +76,7 @@ for (const t of TRIGGERS) cmp('parseTrigger ' + JSON.stringify(t), VK.parseTrigg
 const GEDCOM = [
     '0 HEAD', '1 GEDC', '2 VERS 5.5.1',
     '0 @I1@ INDI', '1 NAME Иван /Иванов/', '1 SEX M', '1 BIRT', '2 DATE 10 MAY 1960', '2 TIME 06:30',
+    '1 NOTE 1960 год уточня', '2 CONC ется', '2 CONT вторая строка',
     '0 @I2@ INDI', '1 NAME Мария /Иванова/', '1 SEX F', '1 BIRT', '2 DATE 1 MAR 1962',
     '0 @I3@ INDI', '1 NAME Пётр /Иванов/', '1 BIRT', '2 DATE 7 JUL 1985', '2 TIME 23:45',
     '1 DEAT', '2 DATE 3 FEB 2020', '2 TIME 05:15', '1 ADOP', '2 FAMC @F1@',
@@ -79,6 +85,7 @@ const GEDCOM = [
     '0 @F1@ FAM', '1 HUSB @I1@', '1 WIFE @I2@', '1 CHIL @I3@', '2 PEDI adopted',
     '1 CHIL @I4@',
     '1 MARR', '2 DATE 4 JUN 1983', '2 PLAC Пермь', '1 DIV', '2 DATE 1 JAN 1990',
+    '1 NOTE венчание', '2 CONT в Перми',
     '0 TRLR',
 ].join('\n');
 cmp('parseGedcom', VK.parseGedcom(GEDCOM), TGP.parseGedcom(GEDCOM));
@@ -93,6 +100,17 @@ if (unfB.birt.date !== '1624-01-01' || unfB.deat.date !== '1669-01-01' || unfM.b
     console.log('✗ неполные даты гедкома\n  I4: ' + unfB.birt.date + ' / ' + unfB.deat.date
         + ', I5: ' + unfM.birt.date);
 }
+// NOTE с продолжениями: CONC — склейка без пробела, CONT — новая строка («^»)
+const unfA = gUnf.indis.find(i => i.__xref === 'I1');
+const unfF = gUnf.fams.find(f => f.__xref === 'F1');
+if (unfA.note !== '1960 год уточняется^вторая строка')
+    { failed++; console.log('✗ NOTE+CONC+CONT: ' + JSON.stringify(unfA.note)); }
+if (unfF.note !== 'венчание^в Перми')
+    { failed++; console.log('✗ FAM NOTE+CONT: ' + JSON.stringify(unfF.note)); }
+// «^» в триггере: дата в начале примечания — не смерть
+const hatP = VK.parseTrigger('Николай 1868-05-18 ^1917 отрёкся');
+if (!hatP || hatP.rec.dd !== undefined || hatP.tail !== '1917 отрёкся')
+    { failed++; console.log('✗ parseTrigger «^»: ' + JSON.stringify(hatP)); }
 
 // частичные даты и хвост-примечание триггеров («1663» → 1663-01-01,
 // «1693-01» → 1693-01-01; хвост после дат — примечание целиком)
@@ -170,6 +188,44 @@ cmp('applyTree повтор gedcomText', VK.gedcomText(TREE_CH), await TG.gedcom
 // плоское древо чата (формат пачки — тап на колокольчик): вывод идентичен
 cmp('applyTree chatFlatText', VK.chatFlatText(TREE_CH), await TG.chatFlatText(TREE_CH));
 cmp('applyTree повтор chatFlatText', VK.chatFlatText(TREE_CH), await TG.chatFlatText(TREE_CH));
+
+// примечания с маркером «^» (дата в начале — не смерть/развод; внутренние
+// «^» — переносы строк NOTE гедкома): вывод пачки всегда с «^», реимпорт
+// идемпотентен
+const NOTE_CH = 78;
+const TREE_NOTE = `\
+-Николай II 1868-05-18 ^1917 отрёкся^вторая строка примечания
++1894-11-26 ^венчание в Зимнем
+Александра 1872-06-06 ^получила 18 орденов
+--Ольга 1895-11-15 1918-07-17 ^старшая дочь`;
+cmp('parseTree «примечания»', VK.parseTree(TREE_NOTE), TGP.parseTree(TREE_NOTE));
+VK.clearChatTree(NOTE_CH); await TG.clearChatTree(NOTE_CH);
+cmp('applyTree отчёт «примечания»',
+    VK.applyTree(NOTE_CH, VK.parseTree(TREE_NOTE)),
+    await TG.applyTree(NOTE_CH, TGP.parseTree(TREE_NOTE)));
+cmp('applyTree chatFlatText «примечания»',
+    VK.chatFlatText(NOTE_CH), await TG.chatFlatText(NOTE_CH));
+cmp('applyTree gedcomText «примечания»',
+    VK.gedcomText(NOTE_CH), await TG.gedcomText(NOTE_CH));
+const noteFlat = VK.chatFlatText(NOTE_CH);
+const NOTE_FLAT_EXPECT = '-Николай II 1868-05-18 ^1917 отрёкся^вторая строка примечания\n'
+    + '+1894-11-26 ^венчание в Зимнем\n'
+    + 'Александра 1872-06-06 ^получила 18 орденов\n'
+    + '--Ольга 1895-11-15 1918-07-17 ^старшая дочь';
+if (noteFlat !== NOTE_FLAT_EXPECT)
+    { failed++; console.log('✗ пачка с «^»-примечаниями:\n  ' + noteFlat); }
+// round-trip: реимпорт выведенной пачки идемпотентен (примечание и смерти
+// на месте), гедком раскладывает переносы в 2 CONT
+VK.applyTree(NOTE_CH, VK.parseTree(noteFlat));
+await TG.applyTree(NOTE_CH, TGP.parseTree(noteFlat));
+cmp('round-trip chatFlatText «примечания»',
+    VK.chatFlatText(NOTE_CH), await TG.chatFlatText(NOTE_CH));
+if (VK.chatFlatText(NOTE_CH) !== NOTE_FLAT_EXPECT)
+    { failed++; console.log('✗ round-trip пачки:\n  ' + VK.chatFlatText(NOTE_CH)); }
+const noteGed = VK.gedcomText(NOTE_CH);
+if (!noteGed.includes('1 NOTE 1917 отрёкся') || !noteGed.includes('2 CONT вторая строка примечания')
+    || !noteGed.includes('1 NOTE венчание в Зимнем'))
+    { failed++; console.log('✗ гедком с NOTE/CONT:\n  ' + noteGed); }
 
 // ===================== 4б. ветвь героя: резка-прививка =====================
 // «-+=» на фокусе — пачка ветви: поддерево потомков на всю глубину, герой
@@ -611,6 +667,11 @@ cmp('importGedcom: замена стирает старое',
 if (VK.recordAnyOf(1, 'Старьё 1900-01-01') !== null) { failed++; console.log('✗ замена: старое «Старьё» не стёрто'); }
 cmp('importGedcom отчёт', vkImp, tgImp);
 cmp('gedcomText после импорта', VK.gedcomText(1), await TG.gedcomText(1));
+// импорт-экспорт NOTE с переносами: 1 NOTE + 2 CONT построчно
+if (!VK.gedcomText(1).includes('1 NOTE 1960 год уточняется')
+    || !VK.gedcomText(1).includes('2 CONT вторая строка')
+    || !VK.gedcomText(1).includes('1 NOTE венчание'))
+    { failed++; console.log('✗ гедком-экспорт NOTE/CONT после импорта'); }
 
 // SEX пустой → null (нет половых ярлыков; «unknown» тоже null)
 {

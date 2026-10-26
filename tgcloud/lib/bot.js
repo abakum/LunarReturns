@@ -1261,7 +1261,12 @@ export async function gedcomText(chatId, keys) {
             out.push("1 DEAT", "2 DATE " + gdate(r.dd));
             if (r.dsrcH !== undefined) out.push("2 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
         }
-        if (r.note) out.push("1 NOTE " + r.note);
+        // NOTE с переносами («^») — построчно: 1 NOTE + 2 CONT на строку
+        if (r.note) {
+            const segs = r.note.split("^");
+            for (let i = 0; i < segs.length; i++)
+                out.push((i ? "2 CONT " : "1 NOTE ") + segs[i]);
+        }
         for (const f of fams) {
             if (f.children.includes(pkey(r))) {
                 out.push("1 FAMC @" + fidOf.get(f) + "@");
@@ -1296,7 +1301,12 @@ export async function gedcomText(chatId, keys) {
             out.push("1 DIV", "2 DATE " + gdate(f.div.d));
             if (f.div.plac) out.push("2 PLAC " + f.div.plac);
         }
-        if (f.fnote) out.push("1 NOTE " + f.fnote);
+        // NOTE с переносами — построчно (как у персон)
+        if (f.fnote) {
+            const segs = f.fnote.split("^");
+            for (let i = 0; i < segs.length; i++)
+                out.push((i ? "2 CONT " : "1 NOTE ") + segs[i]);
+        }
     }
     out.push("0 TRLR");
     return out.join("\n");
@@ -1308,6 +1318,7 @@ export async function gedcomText(chatId, keys) {
 // глубина владельца) — свадьба, вторая половина — строкой ниже без маркера
 // (пол выводится); одностороняя семья — «+»×n сама по себе; дети — глубина пары+1; заглушки
 // (без события) — именные строки. Показ — тапом на колокольчик (🔔/🔕).
+// Примечание — с маркером «^» (см. грамматику пакета в tgcloud/lib/parse.js).
 // Чистая логика дословно продублирована в lunarreturns.js (dev/sync-check.mjs).
 
 // fam в виде полу: hKey/wKey — xref реальных персон, hName/wName — имена
@@ -1453,10 +1464,12 @@ export function flatTreeText(persons, fams) {
         return d;
     };
     const pad = v => String(v).padStart(2, "0");
+    // note выводится с маркером «^»: при обратном разборе всё после первого
+    // «^» — примечание дословно (дата в его начале — не дата смерти)
     const tail = r => [
         r.d,
         r.h !== undefined && r.h !== null ? pad(r.h) + ":" + pad(r.m ?? 0) : null,
-        r.dd, r.note,
+        r.dd, r.note ? "^" + r.note : null,
     ].filter(Boolean).join(" ");
     const out = [], printed = new Set(), famsDone = new Set();
     // строка персоны: bare — вторая половина «+»-свадьбы (без маркера), иначе
@@ -1468,11 +1481,12 @@ export function flatTreeText(persons, fams) {
         if (typeof r.key === "string") printed.add(r.key);
     };
     // строка свадьбы «+»×(d+1) + даты: вторая дата = развод; место/примечание в хвосте
+    // (примечание — с маркером «^», как у персон)
     const wedPlus = f => {
         const bits = [f.marr.d];
         if (f.div) bits.push(f.div.d);
         if (f.marr.plac) bits.push("(" + f.marr.plac + ")");
-        if (f.note) bits.push(f.note);
+        if (f.note) bits.push("^" + f.note);
         return bits.join(" ");
     };
     // тело семьи на глубине d: свадьба «+»×(d+1) и вторая половина (строка

@@ -497,12 +497,15 @@ function explicitZoneMinutes(s) {
 // пересчитывается по его зоне, неизвестный — время московское; без времени —
 // 12:00. «МСК+2»/«UTC+5» (в скобках) — смещение, не место: время корректируется
 // без PLAC. Скобки в хвосте (не сразу за датой) — примечание.
+// «^» — маркер примечания: разбор идёт до первого «^», всё после него —
+// примечание дословно (дата в его начале — не дата смерти).
 const DATE_TAIL = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?(?:\\s+(\\d{1,2})(?:[:.\\u0433](\\d{2}))?)?\\s*(?:\\(\\s*([^)]+?)\\s*\\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\\s*[+-]\\s*\\d{1,2}))?";
 const TRIGGER_RE = new RegExp("^(.+?)\\s+" + DATE_TAIL + "(?:\\s+" + DATE_TAIL + ")?(?:\\s+(.+))?\\s*$", "iu");
 // строка свадьбы плоского древа — только даты: «дата [дата развода] [прим]»
 // строка свадьбы плоского древа: «дата [дата развода] (место) [прим]» — без
 // времени/зоны (свадьбе оно не нужно); пара в скобках — место, голый хвост —
-// примечание (вывод — тем же порядком: даты, место в скобках, примечание)
+// примечание (вывод — тем же порядком: даты, место в скобках, примечание);
+// «^» — маркер примечания (как в TRIGGER_RE): после него — дословно
 const WDATE = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?";
 const WEDDING_RE = new RegExp("^" + WDATE + "(?:\\s+" + WDATE + ")?(?:\\s*\\(([^)]*)\\))?(?:\\s+(.+))?\\s*$", "iu");
 
@@ -580,7 +583,14 @@ function parseDateGroups(m, gi, what) {
 }
 
 function parseTrigger(text) {
-    const m = text.trim().match(TRIGGER_RE);
+    // «^» — маркер примечания: всё после первого «^» — примечание дословно
+    // (не разбирается на даты); внутренние «^» сохраняются — это переносы
+    // строк NOTE из гедкома (CONC/CONT → «^»)
+    let hat = "";
+    let s = text.trim();
+    const hi = s.indexOf("^");
+    if (hi >= 0) { hat = s.slice(hi + 1).trim(); s = s.slice(0, hi).trim(); }
+    const m = s.match(TRIGGER_RE);
     if (!m) return null;
     const n = m[1].trim();
     const b = parseDateGroups(m, 2, "");
@@ -600,6 +610,7 @@ function parseTrigger(text) {
         if (s.tailNote) tailNote = (tailNote ? tailNote + " " : "") + s.tailNote;
     }
     if (m[16] || tailNote) tailNote = (tailNote + " " + (m[16] || "")).trim();
+    if (hat) tailNote = (tailNote ? tailNote + " " : "") + hat;
     return { rec, note, tail: tailNote };
 }
 
@@ -677,6 +688,11 @@ function parseGedcom(text) {
         } else if (lvl === 2 && tag === "PLAC") {
             if (curTag === "MARR" && cur.marr) cur.marr.plac = val;
             else if (curTag === "DIV" && cur.div) cur.div.plac = val;
+        } else if (lvl === 2 && (tag === "CONC" || tag === "CONT") && (curTag === "NOTE" || curTag === "TITL")) {
+            // продолжение NOTE/TITL: CONC — склейка без пробела, CONT — новая
+            // строка («^» в note — маркер переноса, симметричен пачке/экспорту)
+            if (cur.note) cur.note += (tag === "CONT" ? "^" : "") + val;
+            else if (val) cur.note = val;
         }
     }
     if (!indis.size && !fams.size) return null;
@@ -715,7 +731,11 @@ function gedStats(g) {
 // половины выводится: свободный слот — противоположный занятому; при
 // повторном браке — замена стороны spouseLine. Семья может остаться с одной
 // половиной (второй супруг неизвестен) — мужа не требует.
-// Примечание — весь хвост после дат, целиком. (ТГ-копия дословно — tgcloud/lib/parse.js.)
+// Примечание — весь хвост после дат, целиком; «^» — явный маркер примечания:
+// разбор строки идёт до первого «^», после него — примечание дословно (дата
+// в его начале — не смерть/развод); внутренние «^» — переносы строк NOTE
+// гедкома (CONC/CONT). Экспорт всегда пишет примечание с «^».
+// (ТГ-копия дословно — tgcloud/lib/parse.js.)
 
 // одна строка древа без семантики пар: {k:'p'|'wp'|'sp'|'err', ...}
 // 'wp' — строка свадьбы «+»×n (дата или пустая «+»; depth = n−1 — владелец),
@@ -756,7 +776,8 @@ function parseTreeLine(line) {
 
 // разбор дат свадьбы (WEDDING_RE) → {rec:{d,plac,dd,plac2},note} | {err}
 // группа 1: дата свадьбы 2: дата развода 3: место (пара в скобках)
-// 4: примечание; место принадлежит свадьбе
+// 4: примечание; место принадлежит свадьбе; «^» — маркер примечания
+// (хвост после него — дословно, дата в начале — не развод)
 const wdate = (m, gi, what) => {
     const y = Number(m[gi]), mo = Number(m[gi + 1] ?? "01"), dd = Number(m[gi + 2] ?? "01");
     if (y < 1000 || y > 9999) return { error: "некорректный год" + what + ": " + m[gi] };
@@ -766,7 +787,12 @@ const wdate = (m, gi, what) => {
     return { d: y + "-" + pad(mo) + "-" + pad(dd) };
 };
 function weddingRecOf(s) {
-    const wm = s.match(WEDDING_RE);
+    // «^» — маркер примечания: разбор до первого «^», после — дословно
+    let hat = "";
+    let t = s;
+    const hi = t.indexOf("^");
+    if (hi >= 0) { hat = t.slice(hi + 1).trim(); t = t.slice(0, hi).trim(); }
+    const wm = t.match(WEDDING_RE);
     if (!wm) return { err: "не распознаны даты свадьбы" };
     const b = wdate(wm, 1, " свадьбы");
     if (b.error) return { err: b.error };
@@ -777,7 +803,8 @@ function weddingRecOf(s) {
         if (b2.error) return { err: b2.error };
         rec.dd = b2.d;
     }
-    return { rec, note: wm[8] ? wm[8].trim() : "" };
+    const note = wm[8] ? wm[8].trim() : "";
+    return { rec, note: note && hat ? note + " " + hat : (note || hat) };
 }
 
 // строки → семантика: { persons, weddings, children, errors }
@@ -2251,7 +2278,12 @@ function gedcomText(peerId, keys) {
             out.push("1 DEAT", "2 DATE " + gdate(r.dd));
             if (r.dsrcH !== undefined) out.push("2 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
         }
-        if (r.note) out.push("1 NOTE " + r.note);
+        // NOTE с переносами («^») — построчно: 1 NOTE + 2 CONT на строку
+        if (r.note) {
+            const segs = r.note.split("^");
+            for (let i = 0; i < segs.length; i++)
+                out.push((i ? "2 CONT " : "1 NOTE ") + segs[i]);
+        }
         for (const f of fams) {
             if (f.children.includes(pkey(r))) {
                 out.push("1 FAMC @" + fidOf.get(f) + "@");
@@ -2286,7 +2318,12 @@ function gedcomText(peerId, keys) {
             out.push("1 DIV", "2 DATE " + gdate(f.div.d));
             if (f.div.plac) out.push("2 PLAC " + f.div.plac);
         }
-        if (f.fnote) out.push("1 NOTE " + f.fnote);
+        // NOTE с переносами — построчно (как у персон)
+        if (f.fnote) {
+            const segs = f.fnote.split("^");
+            for (let i = 0; i < segs.length; i++)
+                out.push((i ? "2 CONT " : "1 NOTE ") + segs[i]);
+        }
     }
     out.push("0 TRLR");
     return out.join("\n");
@@ -2297,7 +2334,7 @@ function gedcomText(peerId, keys) {
 // глубины n−1; '='×n — своя женщина; «+»×n (n−1 — глубина владельца) —
 // свадьба, вторая половина — строкой ниже без маркера (пол выводится);
 // одностороняя семья — «+»×n сама по себе; дети — глубина пары+1; заглушки —
-// именные строки.
+// именные строки. Примечание — с маркером «^» (см. пакетный ввод выше).
 // Показ — тапом на 🔔/🔕 колокольчика.
 // Чистая логика дословно продублирована в tgcloud/lib/bot.js (dev/sync-check.mjs).
 // строки персон/семей чата — общий вход chatFlatText и branchFlatText
@@ -2439,10 +2476,12 @@ function flatTreeText(persons, fams) {
         return d;
     };
     const pad = v => String(v).padStart(2, "0");
+    // note выводится с маркером «^»: при обратном разборе всё после первого
+    // «^» — примечание дословно (дата в его начале — не дата смерти)
     const tail = r => [
         r.d,
         r.h !== undefined && r.h !== null ? pad(r.h) + ":" + pad(r.m ?? 0) : null,
-        r.dd, r.note,
+        r.dd, r.note ? "^" + r.note : null,
     ].filter(Boolean).join(" ");
     const out = [], printed = new Set(), famsDone = new Set();
     // строка персоны: bare — вторая половина «+»-свадьбы (без маркера), иначе
@@ -2454,11 +2493,12 @@ function flatTreeText(persons, fams) {
         if (typeof r.key === "string") printed.add(r.key);
     };
     // строка свадьбы «+»×(d+1) + даты: вторая дата = развод; место/примечание
+    // (примечание — с маркером «^», как у персон)
     const wedPlus = f => {
         const bits = [f.marr.d];
         if (f.div) bits.push(f.div.d);
         if (f.marr.plac) bits.push("(" + f.marr.plac + ")");
-        if (f.note) bits.push(f.note);
+        if (f.note) bits.push("^" + f.note);
         return bits.join(" ");
     };
     // тело семьи на глубине d: свадьба «+»×(d+1) и вторая половина (строка
