@@ -8,6 +8,7 @@ import {
     linkText, linkMarkup, recordOf, replaceWithGedcom,
     linkPairs, linksAll, personRows, gedcomText, sendGedPdf, splitText, focusKeys, focusHead, focusMarkup,
     focusWithSpouses, focusSpousePairs, focusDepth, upsertPerson, applyTree, cutAndGraft, treeReport,
+    chatFlatText, flatSearch,
 } from '../lib/bot.js';
 
 // заголовок «Имя ГГГГ-ММ-ДД» (+ кейкап радиуса у фокус-сообщений) в цитате;
@@ -248,7 +249,23 @@ export default async function (message, ctx) {
         // гедком без персон с датами — дальше как триггеры
     }
 
-    if (text.startsWith("/")) return;
+    // /Иван — префиксный поиск по пачке «плоское древо» (/-Пётр — только
+    // мужчины глубины 0, /--Иван — глубины 1, /=… — женщины); "/ текст" —
+    // подстрока. Пусто — справка. (логика — flatSearch в lib/bot.js)
+    if (text.startsWith("/")) {
+        const hits = flatSearch(await chatFlatText(chatId), text);
+        if (hits.length) {
+            await sendLong(chatId, hits.join("\n"));
+            console.log("flat search:", JSON.stringify(text), "->", hits.length, "строк, чат", chatId);
+            return;
+        }
+        const admin = await chatAdmin(message.chat, message.from?.id);
+        await api.sendMessage({
+            chat_id: chatId, text: HELP,
+            reply_markup: startMarkup(message.chat, admin, chatId, await getSettings(chatId)),
+        });
+        return;
+    }
 
     // пачка «плоское древо»: строки с маркерами '-'/'=' (глубина), «+дата»/«+»
     // (свадьбы) и безмарковыми именами вторых половин — весь разбор одним

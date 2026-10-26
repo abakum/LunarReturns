@@ -2441,6 +2441,27 @@ function flatTreeText(persons, fams) {
     return out.join("\n");
 }
 
+// поиск по пачке «плоское древо» (chatFlatText): "/Иван" — префикс от начала
+// строки (ведущие маркеры '-'/'='/'+' строк сняты); "/-Пётр" — только мужчины
+// глубины 0, "/--Иван" — глубины 1, "/=…" — женщины (серия маркеров запроса
+// должна совпасть с серией строки); "/ текст" — подстрока в строке без
+// маркера; "/-", "/==", "/++" — все строки с такой серией маркеров (все
+// мужчины/женщины/свадьбы уровня). Регистр не учитывается.
+// Чистая логика дословно продублирована в tgcloud/lib/bot.js (dev/sync-check.mjs)
+function flatSearch(flat, query) {
+    const q = String(query).replace(/^\//, "");
+    const sub = q.startsWith(" ");
+    const mark = (q.match(/^([-+=])\1*/) || [""])[0];
+    const needle = (sub ? q.slice(1) : q.slice(mark.length)).trim().toLowerCase();
+    if (!needle && !mark) return [];
+    return String(flat).split(/\r?\n/).filter(line => {
+        const lmark = (line.match(/^([-+=])\1*/) || [""])[0];
+        const body = line.slice(lmark.length).toLowerCase();
+        if (mark) return lmark === mark && (!needle || body.startsWith(needle));
+        return sub ? body.includes(needle) : body.startsWith(needle);
+    });
+}
+
 // ============================== ГЕДКОМ → PDF ==============================
 // Диаграмма «линии жизни»: бары рождения–смерти (без даты смерти — до правого
 // края), связи родитель→ребёнок в год рождения ребёнка. Отправляется файлом
@@ -3484,7 +3505,7 @@ async function longPollStep() {
     }
 }
 
-const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Пачкой древа в ответе на героя — замена его ветви (срезана и привита). Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата; /links (в ответ на триггер) — связи персоны.\nКнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf), «-+=» — пачка ВЕТВИ: герой первой строкой, потомки — вся глубина.\nПачка в ответе на цитату — ЗАМЕНА ветви цитируемого (срезана и привита); просто сообщением/файлом — добавление к древу.";
+const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Пачкой древа в ответе на героя — замена его ветви (срезана и привита). Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата; /links (в ответ на триггер) — связи персоны; /Иван — поиск по древу (/-Пётр — мужчины 0-го уровня, /--Иван — 1-го, /=… — женщины; «/ текст» — подстрока; /-, /--, /+…, /=… — все мужчины/свадьбы/женщины уровня).\nКнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf), «-+=» — пачка ВЕТВИ: герой первой строкой, потомки — вся глубина.\nПачка в ответе на цитату — ЗАМЕНА ветви цитируемого (срезана и привита); просто сообщением/файлом — добавление к древу.";
 
 // большой ответ — одним файлом: «.ged.txt» (пачка древа) либо «.txt» (список
 // событий); не выложился — сообщение об ошибке (без кусков). Файл — ответом
@@ -3755,6 +3776,22 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             setLinkCmid(l, sent.conversation_message_id || sent.message_id || 0);
         }
         console.log("links re-listed:", links.length, "peer", peerId);
+        return;
+    }
+    // /Иван — префиксный поиск по пачке «плоское древо» (/-Пётр — только
+    // мужчины глубины 0, /--Иван — глубины 1, /=… — женщины); "/ текст" —
+    // подстрока. Пусто — справка. (ТГ: handlers/message.js; логика — flatSearch)
+    if (text.trim().startsWith("/")) {
+        const hits = flatSearch(chatFlatText(peerId), text.trim());
+        if (hits.length) {
+            await messagesSend(peerId, hits.join("\n"), msgId, convMsgId);
+            console.log("flat search:", JSON.stringify(text.trim()), "->", hits.length, "строк, peer", peerId);
+            return;
+        }
+        let kb;
+        if (peerId < 2000000000) kb = relKeyboard(peerId);
+        else kb = (await isChatAdmin(peerId, fromId)) ? ownerKeyboard() : bellKeyboard();
+        await messagesSend(peerId, HELP, msgId, convMsgId, kb);
         return;
     }
     // цитата для пачки «плоское древо»: ветвь цитируемого срезана, пачка привита
@@ -4545,6 +4582,6 @@ module.exports.__test = {
     personRows, weddingRows, famList, famView, focusSpousePairs, upsertPerson, deleteEventCascade,
     clearChatTree, recordOf, recordAnyOf, chartPdf, chartModel, chartFor, fileBaseOf, b64ToBytes, parseTtf,
     gedcomText, importGedcom, jubileeText, setLinkCand, setLinkCmid, weddingByFx, upsertWedding, linkRowOf,
-    chatFlatText, flatTreeText, branchFlatText, subsetBranch, flatRows,
+    chatFlatText, flatTreeText, branchFlatText, subsetBranch, flatRows, flatSearch,
     cutAndGraft, setPersonByXref, rootOf,
 };
