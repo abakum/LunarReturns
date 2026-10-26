@@ -211,6 +211,43 @@ const vkRepM = VK.cutAndGraft(TREE_CH, 'Нет-Такого-Человека 169
 const tgRepM = await TG.cutAndGraft(TREE_CH, 'Нет-Такого-Человека 1690-01-01', TGP.parseTree(TREE1));
 cmp('cutAndGraft без якоря', vkRepM, tgRepM);
 
+// ===================== 4в. точечная правка триггера =====================
+// одна строка без маркера в ответе на триггер — ПОЛНАЯ замена записи:
+// пол цел, ветвь и связи не трогаются, ключи связей переименовываются
+// (Фёдор III после «без якоря» уже есть из TREE1 — берём имя без коллизии)
+const EDIT_HERO = 'Пётр Фёдорович 1661-06-09';
+const EDIT1 = { n: 'Фёдор Алексеевич', d: '1661-06-09', h: 1, m: 30, note: 'Царь' };
+cmp('editTrigger отчёт',
+    VK.editTrigger(TREE_CH, EDIT_HERO, { ...EDIT1 }),
+    await TG.editTrigger(TREE_CH, EDIT_HERO, { ...EDIT1 }));
+cmp('editTrigger personRows', VK.personRows(TREE_CH), await TG.personRows(TREE_CH));
+cmp('editTrigger edges', [...VK.linkPairs(TREE_CH)].sort(),
+    (await TG.linksAll(TREE_CH)).map(l => [l.p, l.c]).sort());
+cmp('editTrigger chatFlatText', VK.chatFlatText(TREE_CH), await TG.chatFlatText(TREE_CH));
+cmp('editTrigger gedcomText', VK.gedcomText(TREE_CH), await TG.gedcomText(TREE_CH));
+const hero1 = VK.personRows(TREE_CH).find(r => r.n === 'Фёдор Алексеевич' && r.d === '1661-06-09');
+if (!hero1 || hero1.sex !== 'M')
+    { failed++; console.log('✗ editTrigger: пол не сохранён\n  ' + JSON.stringify(hero1)); }
+if (!VK.linkPairs(TREE_CH).some(([p]) => p === 'Фёдор Алексеевич 1661-06-09'))
+    { failed++; console.log('✗ editTrigger: связь не перевешена на новый ключ'); }
+// полная замена: не заданные в строке поля (время, примечание) стираются
+cmp('editTrigger полная замена отчёт',
+    VK.editTrigger(TREE_CH, 'Фёдор Алексеевич 1661-06-09', { n: 'Фёдор Алексеевич', d: '1661-06-09' }),
+    await TG.editTrigger(TREE_CH, 'Фёдор Алексеевич 1661-06-09', { n: 'Фёдор Алексеевич', d: '1661-06-09' }));
+cmp('editTrigger полная замена personRows', VK.personRows(TREE_CH), await TG.personRows(TREE_CH));
+const hero2 = VK.personRows(TREE_CH).find(r => r.n === 'Фёдор Алексеевич' && r.d === '1661-06-09');
+if (!hero2 || hero2.h !== undefined || hero2.note !== undefined || hero2.sex !== 'M')
+    { failed++; console.log('✗ editTrigger: полная замена не стёрла время/примечание\n  ' + JSON.stringify(hero2)); }
+// коллизия: правка на существующее имя+дату отклоняется, древо не меняется
+const vkColl = VK.editTrigger(TREE_CH, 'Фёдор Алексеевич 1661-06-09', { n: 'Агафья Анна', d: '1663-01-01' });
+const tgColl = await TG.editTrigger(TREE_CH, 'Фёдор Алексеевич 1661-06-09', { n: 'Агафья Анна', d: '1663-01-01' });
+cmp('editTrigger коллизия', vkColl, tgColl);
+if (!vkColl || !vkColl.error) { failed++; console.log('✗ editTrigger: коллизия не отклонена'); }
+// якорь не найден — null (правки нет, транспорт ведёт как обычный ввод)
+cmp('editTrigger мимо якоря',
+    VK.editTrigger(TREE_CH, 'Нет-Такого 1690-01-01', { n: 'Имя', d: '1690-01-01' }),
+    await TG.editTrigger(TREE_CH, 'Нет-Такого 1690-01-01', { n: 'Имя', d: '1690-01-01' }));
+
 // сводка пачки — общий формат ответа (обе копии)
 cmp('treeReport пачка', VK.treeReport(Object.assign(vkRep3, { errors: [{ line: 2, msg: 'свадьба без подходящей пары' }] })),
     TG.treeReport(Object.assign({}, tgRep3, { errors: [{ line: 2, msg: 'свадьба без подходящей пары' }] })));
@@ -310,6 +347,12 @@ const vkWed = VK.weddingRows(FOCUS_CH).find(r => r.n === 'Отец+Мать');
 cmp('upsertWedding правка даты', vkWed, (await TG.weddingRows(FOCUS_CH)).find(r => r.n === 'Отец+Мать'));
 if (!vkWed || vkWed.d !== '1985-05-05' || vkWed.plac !== 'Курск')
     { failed++; console.log('✗ повторный триггер свадьбы не правит дату\n  ' + JSON.stringify(vkWed)); }
+// якорь-свадьба — не персона: точечной правки нет (null у обеих копий)
+cmp('editTrigger якорь-свадьба',
+    VK.editTrigger(FOCUS_CH, 'Отец+Мать 1985-05-05', { n: 'Отец', d: '1955-03-03' }),
+    await TG.editTrigger(FOCUS_CH, 'Отец+Мать 1985-05-05', { n: 'Отец', d: '1955-03-03' }));
+if (VK.editTrigger(FOCUS_CH, 'Отец+Мать 1985-05-05', { n: 'Отец', d: '1955-03-03' }) !== null)
+    { failed++; console.log('✗ editTrigger: якорь-свадьба не null'); }
 const son = 'Сын 1980-06-06';
 for (const r of [1, 2, 3, 5]) {
     const vkK = VK.focusKeys(focusPairs, son, r);
@@ -403,9 +446,9 @@ if (JSON.stringify([4, 4, 1]) !== JSON.stringify([
     VK.focusDepth(kinPairs, sonKey), VK.focusDepth(kinPairs, kinKeys['Двоюродный']),
     VK.focusDepth([['Родитель 1930-01-01', 'Сын 1990-01-01']], 'Сын 1990-01-01')]))
     { failed++; console.log('✗ focusDepth: неверные глубины'); }
-// цифры радиуса: при depth 1 активная 1 скрыта и 2–5 нет — ряд только с ❌
+// цифры радиуса: при depth 1 активная 1 скрыта и 2–5 нет — ряд [💬 цифры]
 const digs = (radius, depth) => TG.focusMarkup('private', 1, {}, radius, depth)
-    .inline_keyboard[1].filter(b => /^\d/.test(b.text)).map(b => b.text).join('');
+    .inline_keyboard[0].filter(b => /^\d/.test(b.text)).map(b => b.text).join('');
 if (digs(1, 1) !== '') { failed++; console.log('✗ focusMarkup: без дедов цифры не скрыты\n  ' + digs(1, 1)); }
 if (digs(1, 2) !== '2\u20E3') { failed++; console.log('✗ focusMarkup: с дедом нет 2️⃣\n  ' + digs(1, 2)); }
 if (digs(2, 2) !== '1\u20E3') { failed++; console.log('✗ focusMarkup: радиус 2/деды\n  ' + digs(2, 2)); }
@@ -624,10 +667,15 @@ const tgL1f = await TG.linkById(CH, tgL1.id);
 cmp('linkText: pairCand после удаления пары', VK.linkText(CH, vkL1), await TG.linkText(CH, tgL1f));
 cmp('gedcomText: MARR после удаления пары', VK.gedcomText(CH), await TG.gedcomText(CH));
 
-// каскад: удалить персону «Мать» — связи падают, семья остаётся с «Отцом»
+// каскад: удалить персону «Мать» — связи падают, семья остаётся с «Отцом»;
+// сама запись удаляется: персон больше нет ни в записи, ни в пачке/поиске
 VK.deleteEventCascade(CH, mk);
 await TG.deleteEventCascade(CH, mk);
 cmp('gedcomText после удаления персоны', VK.gedcomText(CH), await TG.gedcomText(CH));
+if (VK.recordOf(CH, mk) !== null || (await TG.recordOf(CH, mk)) !== null)
+    { failed++; console.log('✗ каскад: удалённая персона осталась в записях'); }
+if (VK.chatFlatText(CH).includes('1957-04-04') || (await TG.chatFlatText(CH)).includes('1957-04-04'))
+    { failed++; console.log('✗ каскад: удалённая персона осталась в пачке'); }
 
 // ==================== 4b. тёзки: MARR по xref, не «по первому имени» ========
 // отец и сын-тёзка «Пётр Сидоров» 1908/1965; жена 1968; MARR у сына + ребёнок

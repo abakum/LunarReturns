@@ -9,10 +9,10 @@ import {
     HELP, GED_TTL, relMarkup, chatFlatText, getSettings, startMarkup, chatAdmin, eventMarkup,
     recordOf, recordByXref, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong,
     deleteEventCascade, replaceWithGedcom, clearChatTree, deleteLink, setIndiSex, toggleAdopted,
-    linkById, linksAll, linkPairs, xrefOfKey, personRows, weddingRows, sendTreeBackup,
+    linkById, linkPairs, xrefOfKey, personRows, weddingRows, sendTreeBackup,
     upcomingText, mmddToday, focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText,
     focusWithSpouses, focusSpousePairs, focusListText, focusDepth, sendGedPdf,
-    applyTree, branchFlatText, keyOfXref, cutAndGraft, treeReport,
+    applyTree, branchFlatText, keyOfXref, cutAndGraft, treeReport, sendFlatPack,
 } from '../lib/bot.js';
 
 export default async function (cq, ctx) {
@@ -251,22 +251,16 @@ export default async function (cq, ctx) {
         return;
     }
 
-    // «↺ связи» (🔗 на сообщении персоны): заново выложить сообщения-связи
-    // персон с их кнопками (пропали из чата — восстановить нечем было)
+    // «🔗» на сообщении персоны: пачка ВЕТВИ героя — как тап «-+=» на фокусе
+    // и как /links в ответ на триггер (листинг сообщений-связей не восстановить)
     if (data.startsWith("links:")) {
         const key = await keyOfXref(chatId, data.slice(6));
         if (!key) { await answer("персона не найдена"); return; }
-        const links = (await linksAll(chatId)).filter(l => l.p === key || l.c === key);
-        if (!links.length) { await answer("связей пока нет"); return; }
-        await answer("связи: " + links.length);
-        for (const l of links) {
-            if (cq.message.reply_markup) await editMarkup(undefined);
-            await api.sendMessage({
-                chat_id: chatId,
-                text: await linkText(chatId, l) + "\n" + await gedcomText(chatId, [l.p, l.c]),
-                reply_markup: await linkMarkup(chatId, l),
-            });
-        }
+        const rec = await recordOf(chatId, key);
+        await answer("пачка ветви");
+        const ok = await sendFlatPack(chatId, key, focusHead(key, 1, rec ? rec.dd : null), cq.message.message_id);
+        if (!ok) await api.sendMessage({ chat_id: chatId, text: "ветвь пуста",
+            reply_parameters: { message_id: cq.message.message_id, allow_sending_without_reply: true } });
         return;
     }
 
@@ -339,7 +333,7 @@ export default async function (cq, ctx) {
         // обновляем focus_view и пересчитываем ключи под НОВЫЙ радиус
         const wantR = /^foc[1-5]$/.test(data) ? Number(data.slice(3)) : row.radius;
         const [radius, keys, depth] = await radiusOf(row.pkey, wantR);
-        const bell = data === "focbell";
+        const bell = data === "focbell" || /^foc[1-5]$/.test(data);
         // список всегда по ММ-ДД (сортировка подписки касается только дампа)
         const byFull = false;
         if (/^foc[1-5]$/.test(data))
@@ -367,7 +361,7 @@ export default async function (cq, ctx) {
             await editText(head + "\n" + pack, fKb0);
             return;
         }
-        // цифра — только заголовок; тело (список) — по 🔔
+        // цифра меняет радиус и сразу показывает список (как 🔔)
         let body = null;
         if (bell) {
             const pairs = await linkPairs(chatId);

@@ -1545,24 +1545,86 @@ function applyTree(peerId, tree) {
 // ---- правка ветви: резать и прививать (ТГ-копия — tgcloud/lib/bot.js) ----
 
 // обновить поля персоны по xref (правка героя по якорю цитаты); поля, не
-// заданные в rec, не перетираются; имя и дата рождения — тоже правимы
-function setPersonByXref(peerId, xref, rec) {
+// заданные в rec, не перетираются; имя и дата рождения — тоже правимы.
+// full=true — полная замена: не заданные поля стираются (кроме пола — он
+// меняется только явным rec.sex). Смена имени/даты переименовывает ключ
+// в связях (links) и кандидатах-свадьбах
+// (ТГ-копия: tgcloud/lib/bot.js, setPersonByXref)
+function setPersonByXref(peerId, xref, rec, full = false) {
+    const old = indiOf(peerId, xref);
     const s = [], v = [];
     const put = (col, val) => { s.push(col + "=?"); v.push(val); };
     if (rec.n !== undefined) put("name", rec.n);
     if (rec.d !== undefined) put("birt_d", rec.d);
-    if (rec.h !== undefined) { put("birt_h", rec.h); put("birt_m", rec.m ?? 0); }
-    if (rec.srcH !== undefined) { put("src_h", rec.srcH); put("src_m", rec.srcM ?? 0); }
-    if (rec.dd !== undefined) {
-        put("deat_d", rec.dd || null);
-        if (rec.dh !== undefined) { put("deat_h", rec.dh); put("deat_m", rec.dm ?? 0); }
-        if (rec.dsrcH !== undefined) { put("dsrc_h", rec.dsrcH); put("dsrc_m", rec.dsrcM ?? 0); }
-    } else if (rec.dh !== undefined) { put("deat_h", rec.dh); put("deat_m", rec.dm ?? 0); }
+    if (full) {
+        put("birt_h", rec.h ?? null); put("birt_m", rec.h !== undefined ? (rec.m ?? 0) : null);
+        put("src_h", rec.srcH ?? null); put("src_m", rec.srcH !== undefined ? (rec.srcM ?? 0) : null);
+        put("deat_d", rec.dd ?? null);
+        put("deat_h", rec.dh ?? null); put("deat_m", rec.dh !== undefined ? (rec.dm ?? 0) : null);
+        put("dsrc_h", rec.dsrcH ?? null); put("dsrc_m", rec.dsrcH !== undefined ? (rec.dsrcM ?? 0) : null);
+        put("plac", rec.plac ?? null);
+        put("note", rec.note ?? null);
+    } else {
+        if (rec.h !== undefined) { put("birt_h", rec.h); put("birt_m", rec.m ?? 0); }
+        if (rec.srcH !== undefined) { put("src_h", rec.srcH); put("src_m", rec.srcM ?? 0); }
+        if (rec.dd !== undefined) {
+            put("deat_d", rec.dd || null);
+            if (rec.dh !== undefined) { put("deat_h", rec.dh); put("deat_m", rec.dm ?? 0); }
+            if (rec.dsrcH !== undefined) { put("dsrc_h", rec.dsrcH); put("dsrc_m", rec.dsrcM ?? 0); }
+        } else if (rec.dh !== undefined) { put("deat_h", rec.dh); put("deat_m", rec.dm ?? 0); }
+        if (rec.plac !== undefined) put("plac", rec.plac || null);
+        if (rec.note !== undefined) put("note", rec.note || null);
+    }
     if (rec.sex !== undefined) put("sex", rec.sex || null);
-    if (rec.plac !== undefined) put("plac", rec.plac || null);
-    if (rec.note !== undefined) put("note", rec.note || null);
     if (s.length) qr("UPDATE indi SET " + s.join(",") + " WHERE chat=? AND xref=?", ...v, peerId, xref);
+    // смена имени/даты — переименовать ключ персоны в связях и кандидатах-
+    // свадьбах (ветка и связи остаются при герое); фокус-таблицы в ВК нет
+    if (old && old.birt_d != null && (rec.n !== undefined || rec.d !== undefined)) {
+        const oldKey = old.name + " " + old.birt_d;
+        const newKey = (rec.n !== undefined ? rec.n : old.name)
+            + " " + (rec.d !== undefined ? rec.d : old.birt_d);
+        if (newKey !== oldKey) rekeyPerson(peerId, oldKey, newKey);
+    }
     return personRows(peerId).find(r => r.xref === xref) || null;
+}
+
+// ключ персоны сменился: перевесить связи (p/c) и кандидаты-свадьбы на новый
+// ключ — иначе ветка «теряет» героя (ТГ-копия: tgcloud/lib/bot.js, rekeyPerson)
+function rekeyPerson(peerId, oldKey, newKey) {
+    const oldName = keyN(oldKey), newName = keyN(newKey);
+    qr("UPDATE links SET p=? WHERE chat=? AND p=?", newKey, peerId, oldKey);
+    qr("UPDATE links SET c=? WHERE chat=? AND c=?", newKey, peerId, oldKey);
+    for (const l of qa("SELECT id, pairCand FROM links WHERE chat=? AND pairCand IS NOT NULL", peerId)) {
+        const cur = JSON.parse(l.pairCand);
+        let changed = false;
+        for (const c of cur) {
+            if (oldName !== newName && c.pair
+                && keyN(c.pair).split("+").some(n => n === oldName)) {
+                c.pair = keyN(c.pair).split("+").map(n => n === oldName ? newName : n).join("+")
+                    + " " + c.pair.slice(-10); // дата свадьбы — своя, не трогается
+                changed = true;
+            }
+            if (c.other === oldKey) { c.other = newKey; changed = true; }
+        }
+        if (changed)
+            qr("UPDATE links SET pairCand=? WHERE chat=? AND id=?", JSON.stringify(cur), peerId, l.id);
+    }
+}
+
+// точечная правка триггера: якорь-цитата — персона; rec заменяет запись
+// ПОЛНОСТЬЮ (не заданные поля стираются), пол не трогается, ветвь и связи
+// целы (ключи переименовываются). null — якорь не персона (правки нет);
+// { error } — новое имя+дата заняты, запись не менялась
+// (ТГ-копия: tgcloud/lib/bot.js, editTrigger)
+function editTrigger(peerId, anchorKey, rec) {
+    const xref = xrefOfKey(peerId, anchorKey);
+    if (!xref) return null;
+    const newKey = rec.n + " " + rec.d;
+    if (newKey !== anchorKey
+        && q1("SELECT xref FROM indi WHERE chat=? AND name=? AND birt_d IS NOT NULL AND birt_d=? AND xref<>? LIMIT 1",
+            peerId, rec.n, rec.d, xref))
+        return { error: "«" + newKey + "» уже есть — правка отменена" };
+    return { rec: setPersonByXref(peerId, xref, rec, true) };
 }
 
 // резать ветвь персоны xref молча: все fams, где xref/потомок — половина,
@@ -1983,6 +2045,9 @@ function deleteEventCascade(peerId, key) {
         qr("DELETE FROM chil WHERE chat=? AND indi=?", peerId, x);
         qr("UPDATE fam SET husb=NULL WHERE chat=? AND husb=?", peerId, x);
         qr("UPDATE fam SET wife=NULL WHERE chat=? AND wife=?", peerId, x);
+        // сама запись удаляется: «Событие удалено» — персона целиком (раньше
+        // строка оставалась и персон показывали поиск/списки/пачка/гедком)
+        qr("DELETE FROM indi WHERE chat=? AND xref=?", peerId, x);
         for (const fx of fams) normalizeFam(peerId, fx);
     } else if (name.includes("+")) {
         // свадьба «Имя1+Имя2 Д»: снять marr/div с семей с этой датой и половиной
@@ -3505,7 +3570,7 @@ async function longPollStep() {
     }
 }
 
-const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Пачкой древа в ответе на героя — замена его ветви (срезана и привита). Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата; /links (в ответ на триггер) — связи персоны; /Иван — поиск по древу (/-Пётр — мужчины 0-го уровня, /--Иван — 1-го, /=… — женщины; «/ текст» — подстрока; /-, /--, /+…, /=… — все мужчины/свадьбы/женщины уровня).\nКнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf), «-+=» — пачка ВЕТВИ: герой первой строкой, потомки — вся глубина.\nПачка в ответе на цитату — ЗАМЕНА ветви цитируемого (срезана и привита); просто сообщением/файлом — добавление к древу.";
+const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Пачкой древа в ответе на героя — замена его ветви (срезана и привита). Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата; /links (в ответ на триггер) — пачка ВЕТВИ героя (как «-+=» на фокусе), без ответа — пачка древа чата; /Иван — поиск по древу (/-Пётр — мужчины 0-го уровня, /--Иван — 1-го, /=… — женщины; «/ текст» — подстрока; /-, /--, /+…, /=… — все мужчины/свадьбы/женщины уровня).\nКнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf), «-+=» — пачка ВЕТВИ: герой первой строкой, потомки — вся глубина; в фокусе цифры радиуса отдельным рядом ([цифры] / [🔔 🧬 -+= ❌]). /bellN (в ответ на триггер) — список родни в радиусе N (как 🔔 фокуса).\nПачка в ответе на цитату — ЗАМЕНА ветви цитируемого (срезана и привита); одной строкой без маркера в ответе на триггер — ПРАВКА записи целиком (пол и ветвь не трогаются); просто сообщением/файлом — добавление к древу.";
 
 // большой ответ — одним файлом: «.ged.txt» (пачка древа) либо «.txt» (список
 // событий); не выложился — сообщение об ошибке (без кусков). Файл — ответом
@@ -3643,11 +3708,11 @@ async function focusKeyboard(peerId, userId, key, radius, depth) {
     const digits = [1, 2, 3, 4, 5]
         .filter(n => n !== radius && n <= (depth === undefined ? 5 : depth))
         .map(n => mk(String(n) + "\u20E3", { c: "foc", k: key, r: n }));
-    const tail = [...digits, mk("❌", { c: "close" })];
     // 🗑-радиус снят: удаление — только глобальное (кнопка 🗑 у 🔔 чата)
-    const base = [bell, tree, flat];
-    // VK: максимум 5 кнопок в ряду — цифры отдельным рядом
-    return JSON.stringify({ inline: true, buttons: [base, tail] });
+    // цифры своим рядом, второй ряд — 🔔 🧬 -+= ❌ (ВК: до 5 кнопок в ряду);
+    // цифр нет (глубина 1) — один ряд, пустой ряд не выводим
+    const base = [bell, tree, flat, mk("❌", { c: "close" })];
+    return JSON.stringify({ inline: true, buttons: digits.length ? [digits, base] : [base] });
 }
 
 // список событий по множеству фокуса с ярлыками родства (kinLabel):
@@ -3758,24 +3823,62 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         await sendGedArtifacts(peerId, undefined, "🧬 Гедком-древо чата", msgId, convMsgId);
         return;
     }
-    // «/links» (в ТГ — кнопка 🔗 под событием): заново выложить сообщения-связи
-    // персоны с кнопками (листинг связи одноразовый, пропало — восстановить)
+    // /bellN (в ответ на триггер): список родни в радиусе N — как тап 🔔 на
+    // фокусе; без триггера — весь список чата (как 🔔 чата), не влезает —
+    // отрезаем (целые строки)
+    const bm = t.match(/^\/bell([1-5])?(?:@\S+)?$/);
+    if (bm) {
+        const radius = Number(bm[1]) || 1;
+        const brh = replyMsg && replyMsg.from_id > 0
+            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+        if (brh) {
+            const key = brh[1].trim() + " " + brh[2];
+            const rec = recordOf(peerId, key);
+            if (rec) {
+                // как тап: радиус не глубже имеющихся связей
+                const r = Math.min(radius, Math.max(1, focusDepth(linkPairs(peerId), key)));
+                const txt = focusText(peerId, key, r, true, rec.dd, false);
+                await messagesSend(peerId, txt, msgId, convMsgId);
+                console.log("bell text:", key, "радиус", r, "peer", peerId);
+                return;
+            }
+        }
+        const { mo, d: dToday } = mskNowParts();
+        const list = upcomingEvents(peerId, false,
+            String(mo).padStart(2, "0") + "-" + String(dToday).padStart(2, "0"));
+        // как у 🔔 чата: список «от сегодня» одним сообщением — что не
+        // влезает, отрезаем (целые строки)
+        let shownList = "";
+        for (const l of (list || "").split("\n")) {
+            if (shownList.length + 1 + l.length > 4000) break;
+            shownList += (shownList ? "\n" : "") + l;
+        }
+        await messagesSend(peerId, shownList || "Событий нет", msgId, convMsgId);
+        console.log("bell chat:", (list ? list.split("\n").length : 0) + "->" + shownList.split("\n").length, "строк, peer", peerId);
+        return;
+    }
+    // «/links» (в ТГ — кнопка 🔗 под событием): пачка ВЕТВИ героя — как тап
+    // «-+=» на фокусе (>4000 — вложением); без reply / не на триггер — пачка
+    // древа чата (листинг сообщений-связей не восстанавливается)
     if (t === "/links" || t === "связи") {
-        const rows = qa("SELECT * FROM links WHERE chat=?", peerId).map(linkRowOf);
-        if (!rows.length) { await messagesSend(peerId, "связей пока нет", msgId, convMsgId); return; }
         const lrh = replyMsg && replyMsg.from_id > 0
             ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
-        const lkey = lrh ? lrh[1].trim() + " " + lrh[2] : null;
-        const links = rows.filter(l => !lkey || l.p === lkey || l.c === lkey);
-        if (!links.length) { await messagesSend(peerId, "у этой персоны связей нет", msgId, convMsgId); return; }
-        for (const l of links) {
-            const res = await messagesSend(peerId, linkText(peerId, l) + "\n" + gedcomText(peerId, [l.p, l.c]),
-                msgId, convMsgId, linkKeyboard(peerId, l));
-            // cmid сообщения-связи — чтобы 👎 удалил именно связь
-            const sent = res && typeof res === "object" ? res : {};
-            setLinkCmid(l, sent.conversation_message_id || sent.message_id || 0);
+        let key = null, head = "";
+        if (lrh) {
+            const rk = lrh[1].trim() + " " + lrh[2];
+            const rec = recordOf(peerId, rk);
+            if (rec) { key = rk; head = focusHead(key, 1, rec.dd); }
+            else key = null; // ответ не на триггер — вся пачка
         }
-        console.log("links re-listed:", links.length, "peer", peerId);
+        const pack = key ? branchFlatText(peerId, key) : chatFlatText(peerId);
+        if (!pack) { await messagesSend(peerId, key ? "ветвь пуста" : "связей пока нет", msgId, convMsgId); return; }
+        if (pack.length >= 4000) {
+            const doc = await vkUploadDoc(peerId, fileBaseOf(head || "Древо чата") + ".ged.txt", "\uFEFF" + pack);
+            await messagesSend(peerId, head, msgId, convMsgId, null, doc);
+        } else {
+            await messagesSend(peerId, (head ? head + "\n" : "") + pack, msgId, convMsgId);
+        }
+        console.log("links flat pack:", key || "chat", "peer", peerId);
         return;
     }
     // /Иван — префиксный поиск по пачке «плоское древо» (/-Пётр — только
@@ -3834,6 +3937,27 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     // поштучного ввода детей больше нет: ребёнок/ветвь добавляется пачкой
     // «плоское древо» в ответе на героя (cutAndGraft выше)
     const lines = String(text).split(/\s*\n+\s*/).filter(Boolean);
+    // точечная правка: одна строка без маркера в ответе на триггер (сообщение
+    // пользователя) — ПОЛНАЯ замена записи цитируемого (пол не трогается,
+    // ветвь и связи целы); якорь не персона — правки нет, обычный ввод
+    // (ТГ-копия: tgcloud/handlers/message.js)
+    if (lines.length === 1 && replyHead) {
+        const parsed = parseTrigger(lines[0]);
+        if (parsed && !parsed.error) {
+            const anchor = replyHead[1].trim() + " " + replyHead[2];
+            const ed = editTrigger(peerId, anchor,
+                Object.assign({}, parsed.rec, parsed.tail ? { note: parsed.tail } : {}));
+            if (ed) {
+                if (ed.error) {
+                    await messagesSend(peerId, "💥 " + lines[0] + "\n" + ed.error, msgId, convMsgId);
+                    return;
+                }
+                await messagesSend(peerId, jubileeText(ed.rec, parsed.note), msgId, convMsgId);
+                console.log("edit:", anchor, "->", ed.rec.n, ed.rec.d, "peer", peerId);
+                return;
+            }
+        }
+    }
     for (const line of lines) {
         const parsed = parseTrigger(line);
         if (!parsed) continue; // не триггер — молчим
@@ -4010,13 +4134,11 @@ async function handleEvent(o) {
             await editOriginDoc(o, fileBaseOf(focusHead(key, radius, rec.dd)) + ".ged.txt", "\uFEFF" + pack, kb);
             return;
         }
-        const bell = p.c === "foc:bell";
+        const bell = p.c === "foc:bell" || p.c === "foc";
         // список всегда по ММ-ДД (сортировка подписки касается только дампа)
         const byFull = false;
-        // цифра — только заголовок; тело (список/гедком) — по 🔔/🧬
-        let txt;
-        if (p.c === "foc") txt = focusHead(key, radius, rec.dd);
-        else txt = focusText(peerId, key, radius, bell, rec.dd, byFull);
+        // цифра меняет радиус и сразу показывает список (как 🔔); тело — по 🔔
+        const txt = focusText(peerId, key, radius, bell, rec.dd, byFull);
         const kb = await focusKeyboard(peerId, o.user_id, key, radius, depth);
         if (txt.length < 4000) { await editOrigin(o, txt, kb); return; }
         // список начинается с сегодня — что не влезает в сообщение,
@@ -4583,5 +4705,5 @@ module.exports.__test = {
     clearChatTree, recordOf, recordAnyOf, chartPdf, chartModel, chartFor, fileBaseOf, b64ToBytes, parseTtf,
     gedcomText, importGedcom, jubileeText, setLinkCand, setLinkCmid, weddingByFx, upsertWedding, linkRowOf,
     chatFlatText, flatTreeText, branchFlatText, subsetBranch, flatRows, flatSearch,
-    cutAndGraft, setPersonByXref, rootOf,
+    cutAndGraft, setPersonByXref, editTrigger, rootOf,
 };

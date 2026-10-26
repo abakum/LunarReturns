@@ -10,15 +10,18 @@ import { jubileeText } from './text.js';
 export const HELP = "Отправьте «Имя ГГГГ-ММ-ДД [ЧЧ:ММ] [дата смерти]» — покажу лунно-солнечные юбилеи.\n"
     + "Можно с зоной: «… 12:30 (Пермь)» или «… 12:30 МСК+2», по одной строке на событие.\n"
     + "Пачкой древа в ответе на героя — ЗАМЕНА его ветви (срезана и привита);\n"
-    + "кнопка 🔗 под ответом — снова выложить связи персоны.\n"
+    + "кнопка 🔗 под ответом — пачка ВЕТВИ персоны (как «-+=» на фокусе).\n"
     + ".ged-файл чатом — замена древа; /today — события сегодня (МСК), /gedcom — древо,\n"
-    + "/links (в ответе на триггер) — связи персоны; /Иван — поиск по древу\n"
+    + "/bellN (в ответ на триггер) — список родни в радиусе N (как 🔔 фокуса),\n"
+    + "/links (в ответ на триггер) — пачка ВЕТВИ героя (как «-+=» на фокусе),\n"
+    + "без ответа — пачка древа чата; /Иван — поиск по древу\n"
     + "(/-Пётр — мужчины 0-го уровня, /--Иван — 1-го, /=… — женщины; «/ текст» — подстрока;\n"
     + "/-, /--, /+…, /=… — все мужчины/свадьбы/женщины уровня)\n"
     + "Кнопки под ответом: 👎 удалить, 👀 подробно.\n"
     + "Кнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf),\n"
     + "«-+=» — пачка ветви (герой первой строкой, потомки — вся глубина).\n"
-    + "Пачкой в ответе на цитату — ЗАМЕНА ветви цитируемого: срезана и привита.\n"
+    + "Пачкой в ответе на цитату — ЗАМЕНА ветви цитируемого: срезана и привита;\n"
+    + "одной строкой без маркера в ответе на триггер — ПРАВКА записи целиком (пол и ветвь не трогаются).\n"
     + "Пачкой просто сообщением — добавление к древу.\n"
     + "Пачка одним сообщением/файлом .ged.txt: «-»/«=»×n Имя … — свой мужчина/женщина\n"
     + "глубины n−1, «+»×n дата или «+» без даты (n−1 — глубина владельца) — свадьба,\n"
@@ -421,25 +424,92 @@ export async function applyTree(chatId, tree) {
 // ---- правка ветви: резать и прививать ----
 
 // обновить поля персоны по xref (правка героя по якорю цитаты); поля, не
-// заданные в rec, не перетираются; имя и дата рождения — тоже правимы
-export async function setPersonByXref(chatId, xref, rec) {
+// заданные в rec, не перетираются; имя и дата рождения — тоже правимы.
+// full=true — полная замена: не заданные поля стираются (кроме пола — он
+// меняется только явным rec.sex). Смена имени/даты переименовывает ключ
+// в связях (edges), фокус-строках (focus_view) и кандидатах-свадьбах
+// (ВК-копия: lunarreturns.js, setPersonByXref)
+export async function setPersonByXref(chatId, xref, rec, full = false) {
+    const old = await getIndi(chatId, xref);
     const set = {};
     if (rec.n !== undefined) set.name = rec.n;
     if (rec.d !== undefined) set.birtD = rec.d;
-    if (rec.h !== undefined) { set.birtH = rec.h; set.birtM = rec.m ?? 0; }
-    if (rec.srcH !== undefined) { set.srcH = rec.srcH; set.srcM = rec.srcM ?? 0; }
-    if (rec.dd !== undefined) {
-        set.deatD = rec.dd || null;
-        if (rec.dh !== undefined) { set.deatH = rec.dh; set.deatM = rec.dm ?? 0; }
-        if (rec.dsrcH !== undefined) { set.dsrcH = rec.dsrcH; set.dsrcM = rec.dsrcM ?? 0; }
-    } else if (rec.dh !== undefined) { set.deatH = rec.dh; set.deatM = rec.dm ?? 0; }
+    if (full) {
+        set.birtH = rec.h ?? null; set.birtM = rec.h !== undefined ? (rec.m ?? 0) : null;
+        set.srcH = rec.srcH ?? null; set.srcM = rec.srcH !== undefined ? (rec.srcM ?? 0) : null;
+        set.deatD = rec.dd ?? null;
+        set.deatH = rec.dh ?? null; set.deatM = rec.dh !== undefined ? (rec.dm ?? 0) : null;
+        set.dsrcH = rec.dsrcH ?? null; set.dsrcM = rec.dsrcH !== undefined ? (rec.dsrcM ?? 0) : null;
+        set.plac = rec.plac ?? null;
+        set.note = rec.note ?? null;
+    } else {
+        if (rec.h !== undefined) { set.birtH = rec.h; set.birtM = rec.m ?? 0; }
+        if (rec.srcH !== undefined) { set.srcH = rec.srcH; set.srcM = rec.srcM ?? 0; }
+        if (rec.dd !== undefined) {
+            set.deatD = rec.dd || null;
+            if (rec.dh !== undefined) { set.deatH = rec.dh; set.deatM = rec.dm ?? 0; }
+            if (rec.dsrcH !== undefined) { set.dsrcH = rec.dsrcH; set.dsrcM = rec.dsrcM ?? 0; }
+        } else if (rec.dh !== undefined) { set.deatH = rec.dh; set.deatM = rec.dm ?? 0; }
+        if (rec.plac !== undefined) set.plac = rec.plac || null;
+        if (rec.note !== undefined) set.note = rec.note || null;
+    }
     if (rec.sex !== undefined) set.sex = rec.sex || null;
-    if (rec.plac !== undefined) set.plac = rec.plac || null;
-    if (rec.note !== undefined) set.note = rec.note || null;
     if (Object.keys(set).length)
         await db.update(indi).set(set)
             .where(and(eq(indi.chatId, chatId), eq(indi.xref, xref))).run();
+    // смена имени/даты — переименовать ключ персоны в связях, фокус-строках
+    // и кандидатах-свадьбах (ветка и связи остаются при герое)
+    if (old && old.birtD != null && (set.name !== undefined || set.birtD !== undefined)) {
+        const oldKey = old.name + " " + old.birtD;
+        const newKey = (set.name !== undefined ? set.name : old.name)
+            + " " + (set.birtD !== undefined ? set.birtD : old.birtD);
+        if (newKey !== oldKey) await rekeyPerson(chatId, oldKey, newKey);
+    }
     return (await personRows(chatId)).find(r => r.xref === xref) || null;
+}
+
+// ключ персоны сменился: перевесить связи (parent/child), фокус-строки и
+// кандидаты-свадьбы на новый ключ — иначе ветка «теряет» героя
+// (ВК-копия: lunarreturns.js, rekeyPerson; в ВК фокус-таблицы нет)
+async function rekeyPerson(chatId, oldKey, newKey) {
+    const oldName = keyN(oldKey), newName = keyN(newKey);
+    await db.update(edges).set({ parent: newKey })
+        .where(and(eq(edges.chatId, chatId), eq(edges.parent, oldKey))).run();
+    await db.update(edges).set({ child: newKey })
+        .where(and(eq(edges.chatId, chatId), eq(edges.child, oldKey))).run();
+    await db.update(focusView).set({ pkey: newKey })
+        .where(and(eq(focusView.chatId, chatId), eq(focusView.pkey, oldKey))).run();
+    for (const l of (await edgeRows(chatId)).filter(l => l.pairCand)) {
+        const cur = JSON.parse(l.pairCand);
+        let changed = false;
+        for (const c of cur) {
+            if (oldName !== newName && c.pair
+                && keyN(c.pair).split("+").some(n => n === oldName)) {
+                c.pair = keyN(c.pair).split("+").map(n => n === oldName ? newName : n).join("+")
+                    + " " + c.pair.slice(-10); // дата свадьбы — своя, не трогается
+                changed = true;
+            }
+            if (c.other === oldKey) { c.other = newKey; changed = true; }
+        }
+        if (changed)
+            await db.update(edges).set({ pairCand: JSON.stringify(cur) })
+                .where(and(eq(edges.chatId, chatId), eq(edges.id, l.id))).run();
+    }
+}
+
+// точечная правка триггера: якорь-цитата — персона; rec заменяет запись
+// ПОЛНОСТЬЮ (не заданные поля стираются), пол не трогается, ветвь и связи
+// целы (ключи переименовываются). null — якорь не персона (правки нет);
+// { error } — новое имя+дата заняты, запись не менялась
+// (ВК-копия: lunarreturns.js, editTrigger)
+export async function editTrigger(chatId, anchorKey, rec) {
+    const xref = await xrefOfKey(chatId, anchorKey);
+    if (!xref) return null;
+    const newKey = rec.n + " " + rec.d;
+    if (newKey !== anchorKey
+        && (await indiRows(chatId)).some(r => r.xref !== xref && r.name === rec.n && r.birtD === rec.d))
+        return { error: "«" + newKey + "» уже есть — правка отменена" };
+    return { rec: await setPersonByXref(chatId, xref, rec, true) };
 }
 
 // резать ветвь персоны xref молча: все fams, где xref/потомок — половина,
@@ -798,6 +868,9 @@ export async function deleteEventCascade(chatId, key) {
         await db.delete(chil).where(and(eq(chil.chatId, chatId), eq(chil.indi, x))).run();
         await db.update(fam).set({ husb: null }).where(and(eq(fam.chatId, chatId), eq(fam.husb, x))).run();
         await db.update(fam).set({ wife: null }).where(and(eq(fam.chatId, chatId), eq(fam.wife, x))).run();
+        // сама запись удаляется: «Событие удалено» — персона целиком (раньше
+        // строка оставалась и персон показывали поиск/списки/пачка/гедком)
+        await db.delete(indi).where(and(eq(indi.chatId, chatId), eq(indi.xref, x))).run();
         for (const fx of fams) await normalizeFam(chatId, fx);
     } else if (name.includes("+")) {
         // свадьба «Имя1+Имя2 Д»: снять marr/div с семей с этой датой и половиной
@@ -919,8 +992,8 @@ export function mmddToday() {
 }
 
 // кнопки под ответом бота на триггер: 👎 — удалить событие (как реакция VK),
-// 👀 — подробно, 🔗 — снова выложить сообщения-связи (кнопки dell пропали
-// из чата — листинг связи в чате одноразовый); callback_data — xref
+// 👀 — подробно, 🔗 — пачка ВЕТВИ персоны (как «-+=» на фокусе, тап —
+// handlers/callback_query.js links:); callback_data — xref
 export function eventMarkup(xref) {
     return {
         inline_keyboard: [[
@@ -1091,8 +1164,10 @@ export function focusMarkup(chat, chatId, s, radius, depth) {
     const digits = [1, 2, 3, 4, 5]
         .filter(n => n !== radius && n <= (depth === undefined ? 5 : depth))
         .map(n => btn(String(n) + "\u20E3", "foc" + n));
-    const tail = [...digits, btn("❌", "close")];
-    return { inline_keyboard: [[bell, tree, flat], tail] };
+    // цифры (радиус — только 🔔/🧬) своим рядом; 🔔 🧬 -+= ❌ — вторым;
+    // цифр нет (глубина 1) — один ряд, пустой ряд не выводим
+    const base = [bell, tree, flat, btn("❌", "close")];
+    return { inline_keyboard: digits.length ? [digits, base] : [base] };
 }
 
 // разбить длинный текст на куски < 4000 по границам строк (как splitText VK)
@@ -1697,6 +1772,34 @@ export async function sendLong(chatId, text, replyMarkup, name) {
         await api.sendMessage({
             chat_id: chatId, text: "💥 Не удалось выложить файл " + base });
     }
+}
+
+// «/links» и тап 🔗: пачка ВЕТВИ героя (key) — как «-+=» на фокусе, или
+// пачка всего древа чата (key=null). Короткая — текстом, длинная (>4000) —
+// файлом «.ged.txt» (как tailDoc). false — пачки нет (древо/ветвь пусты).
+// Листинг сообщений-связей больше не восстанавливается.
+export async function sendFlatPack(chatId, key, head = "", replyTo = 0) {
+    const pack = key === null ? await chatFlatText(chatId) : await branchFlatText(chatId, key);
+    if (!pack) return false;
+    const reply = replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {};
+    if (pack.length <= 4000) {
+        await api.sendMessage({ chat_id: chatId, text: (head ? head + "\n" : "") + pack, ...reply });
+        return true;
+    }
+    const base = fileBaseOf(head || "Древо чата") + ".ged.txt";
+    try {
+        // BOM — чтобы Windows-редакторы открывали как UTF-8
+        await api.sendDocument({
+            chat_id: chatId,
+            document: new InputFile(new TextEncoder().encode("\uFEFF" + pack), base, { type: "text/plain" }),
+            ...(head ? { caption: head } : {}),
+            ...reply,
+        });
+    } catch (e) {
+        console.error("tail document:", e.message);
+        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось выложить файл " + base, ...reply });
+    }
+    return true;
 }
 
 // снять разметку HTML/ТГ для .txt-файла (теги — прочь, сущности — в символы,
