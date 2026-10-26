@@ -82,6 +82,7 @@ const kbButtons = kb => JSON.parse(kb).buttons.flat();
 const files = [""];            // маршруты /file/<n> — дропы !ged/!txt
 let fileN = 0;
 let snackN = 0;
+let uploadHits = 0; // LR_UPLOAD_FAIL1: самый первый /upload/ — HTML (проверка ретрая)
 
 const srv = http.createServer((req, res) => {
     // без keep-alive: undici переиспользует сокет после /file/-загрузки,
@@ -94,7 +95,16 @@ const srv = http.createServer((req, res) => {
         catch (e) { res.writeHead(404); res.end('нет файла'); }
         return;
     }
-    if (req.url.startsWith('/upload/')) return json({ file: 'xyz' });
+    if (req.url.startsWith('/upload/')) {
+        uploadHits++;
+        const fail1 = process.env.LR_UPLOAD_FAIL1 && uploadHits === 1; // самый первый — HTML 502 (проверка ретрая vkUploadDoc)
+        if (fail1) console.log('    (upload #' + uploadHits + ' — HTML 502)');
+        if (fail1) {
+            res.writeHead(502, { 'Content-Type': 'text/html' });
+            return res.end('<!DOCTYPE html><html><body>bad gateway</body></html>');
+        }
+        return json({ file: 'xyz' });
+    }
     let body = '';
     req.on('data', c => body += c);
     req.on('end', () => {

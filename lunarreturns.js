@@ -3167,14 +3167,31 @@ function chartFor(peerId, keys, title, heroKey = null, range = null) {
     return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }), persons: Math.min(recs.length, CHART_MAX) };
 }
 
-// загрузка документа на серверы VK (docs… — файлы любого типа)
+// загрузка документа на серверы VK (docs… — файлы любого типа); сервер загрузки
+// иногда отвечает HTML-страницей ошибки вместо JSON — до 3 попыток, каждый раз
+// с новым upload_url (одноразовый) и свежим FormData; явная ошибка VK в JSON
+// (нет file) — без повторов
 async function vkUploadDoc(peerId, title, content) {
-    const up = await vkApi("docs.getMessagesUploadServer",
-        groupId ? { peer_id: peerId, group_id: groupId, type: "doc" } : { peer_id: peerId, type: "doc" });
-    const fd = new FormData();
-    fd.append("file", new Blob([content]), title);
-    const res = await fetch(up.upload_url, { method: "POST", body: fd, signal: AbortSignal.timeout(60000) });
-    const j = await res.json();
+    let j = null, lastErr = null;
+    for (let attempt = 1; attempt <= 3 && !j; attempt++) {
+        if (attempt > 1) await sleep(1500 * (attempt - 1));
+        const up = await vkApi("docs.getMessagesUploadServer",
+            groupId ? { peer_id: peerId, group_id: groupId, type: "doc" } : { peer_id: peerId, type: "doc" });
+        const fd = new FormData();
+        fd.append("file", new Blob([content]), title);
+        try {
+            const res = await fetch(up.upload_url, { method: "POST", body: fd, signal: AbortSignal.timeout(60000) });
+            const text = await res.text();
+            try {
+                j = JSON.parse(text);
+            } catch {
+                lastErr = new Error("docs upload: HTTP " + res.status + " " + text.slice(0, 120).replace(/\s+/g, " "));
+            }
+        } catch (e) {
+            lastErr = e; // сеть/таймаут — повторить
+        }
+    }
+    if (!j) throw lastErr || new Error("docs upload: пустой ответ");
     if (!j.file) throw new Error("docs upload: " + JSON.stringify(j).slice(0, 200));
     const saved = await vkApi("docs.save", { file: j.file, title });
     const d = saved.doc || (saved[0] || {}).doc;
