@@ -1566,6 +1566,9 @@ function applyTree(peerId, tree) {
             rep.links++;
         }
     }
+    // голая пачка тоже восстанавливает интерактивные связи (edges) — иначе
+    // /gedcom после импорта .ged.txt не видит связей
+    restoreEdges(peerId);
     return rep;
 }
 

@@ -69,3 +69,25 @@
   (restoreEdges после голого applyTree) — по новому контракту `/links`
   из `links` не читает вовсе; вопросы lobbying кнопок сообщений-связей
   остаются как были (создание, 👎 по cmid).
+
+## Отчёт 3 — restoreEdges после голой applyTree (2026-10-26)
+
+Долганутый пунктом «не трогал» из Отчёта 1 получен: после импорта
+`.ged.txt`-пачки (`applyTree`) `/gedcom` и `/gedcomN` отвечали «связей
+пока нет» (REPL воспроизводит: `!txt Romanov_family.txt` → Да → `/gedcom`
+= «связей пока нет»), при том что `/links` показывал полную пачку (57
+персон). Причина: `applyTree` пишет `indi`/`fam`/`chil`, но не
+интерактивные связи `links`/`edges` — а `/gedcom` смотрит именно туда
+(`linkPairs`).
+
+Правка: `restoreEdges` (ВК) / `await restoreEdges` (ТГ) теперь вызывается
+в конце самой `applyTree` — голая пачка тоже восстанавливает связи;
+вызов в `cutAndGraft` оставлен (идемпотентен, дублирование безвредно).
+
+Проверено:
+- ТГ-репл: `!txt Romanov_family.txt` → Да → `/gedcom` → .ged+pdf (57
+  персон), `/gedcom2` — тоже; `/links` — файл 6819 Б; повтор после
+  `!ged Romanov_family.ged` — как раньше.
+- ВК-репл: зеркально, `/gedcom` после `.txt`-пачки выдаёт древо.
+- `node dev/sync-check.mjs` — ✓ «ВК и ТГ синхронны (23 триггеров, …)».
+- `node lunarreturns.js test "…" ` — ок; dev/tg-db.json откатил.

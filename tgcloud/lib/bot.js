@@ -418,6 +418,9 @@ export async function applyTree(chatId, tree) {
             rep.links++;
         }
     }
+    // голая пачка тоже восстанавливает интерактивные связи (edges) — иначе
+    // /gedcom после импорта .txt-пачки не видит связей
+    await restoreEdges(chatId);
     return rep;
 }
 
