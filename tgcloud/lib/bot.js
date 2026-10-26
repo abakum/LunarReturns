@@ -10,9 +10,11 @@ import { jubileeText } from './text.js';
 export const HELP = "Отправьте «Имя ГГГГ-ММ-ДД [ЧЧ:ММ] [дата смерти]» — покажу лунно-солнечные юбилеи.\n"
     + "Можно с зоной: «… 12:30 (Пермь)» или «… 12:30 МСК+2», по одной строке на событие.\n"
     + "Пачкой древа в ответе на героя — ЗАМЕНА его ветви (срезана и привита);\n"
-    + "кнопка 🔗 под ответом — снова выложить связи персоны.\n"
+    + "кнопка 🔗 под ответом — пачка ВЕТВИ персоны (как «-+=» на фокусе).\n"
     + ".ged-файл чатом — замена древа; /today — события сегодня (МСК), /gedcom — древо,\n"
-    + "/links (в ответе на триггер) — связи персоны; /Иван — поиск по древу\n"
+    + "/bellN (в ответ на триггер) — список родни в радиусе N (как 🔔 фокуса),\n"
+    + "/links (в ответ на триггер) — пачка ВЕТВИ героя (как «-+=» на фокусе),\n"
+    + "без ответа — пачка древа чата; /Иван — поиск по древу\n"
     + "(/-Пётр — мужчины 0-го уровня, /--Иван — 1-го, /=… — женщины; «/ текст» — подстрока;\n"
     + "/-, /--, /+…, /=… — все мужчины/свадьбы/женщины уровня)\n"
     + "Кнопки под ответом: 👎 удалить, 👀 подробно.\n"
@@ -919,8 +921,8 @@ export function mmddToday() {
 }
 
 // кнопки под ответом бота на триггер: 👎 — удалить событие (как реакция VK),
-// 👀 — подробно, 🔗 — снова выложить сообщения-связи (кнопки dell пропали
-// из чата — листинг связи в чате одноразовый); callback_data — xref
+// 👀 — подробно, 🔗 — пачка ВЕТВИ персоны (как «-+=» на фокусе, тап —
+// handlers/callback_query.js links:); callback_data — xref
 export function eventMarkup(xref) {
     return {
         inline_keyboard: [[
@@ -1091,8 +1093,10 @@ export function focusMarkup(chat, chatId, s, radius, depth) {
     const digits = [1, 2, 3, 4, 5]
         .filter(n => n !== radius && n <= (depth === undefined ? 5 : depth))
         .map(n => btn(String(n) + "\u20E3", "foc" + n));
-    const tail = [...digits, btn("❌", "close")];
-    return { inline_keyboard: [[bell, tree, flat], tail] };
+    // цифры (радиус — только 🔔/🧬) своим рядом; 🔔 🧬 -+= ❌ — вторым;
+    // цифр нет (глубина 1) — один ряд, пустой ряд не выводим
+    const base = [bell, tree, flat, btn("❌", "close")];
+    return { inline_keyboard: digits.length ? [digits, base] : [base] };
 }
 
 // разбить длинный текст на куски < 4000 по границам строк (как splitText VK)
@@ -1697,6 +1701,34 @@ export async function sendLong(chatId, text, replyMarkup, name) {
         await api.sendMessage({
             chat_id: chatId, text: "💥 Не удалось выложить файл " + base });
     }
+}
+
+// «/links» и тап 🔗: пачка ВЕТВИ героя (key) — как «-+=» на фокусе, или
+// пачка всего древа чата (key=null). Короткая — текстом, длинная (>4000) —
+// файлом «.ged.txt» (как tailDoc). false — пачки нет (древо/ветвь пусты).
+// Листинг сообщений-связей больше не восстанавливается.
+export async function sendFlatPack(chatId, key, head = "", replyTo = 0) {
+    const pack = key === null ? await chatFlatText(chatId) : await branchFlatText(chatId, key);
+    if (!pack) return false;
+    const reply = replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {};
+    if (pack.length <= 4000) {
+        await api.sendMessage({ chat_id: chatId, text: (head ? head + "\n" : "") + pack, ...reply });
+        return true;
+    }
+    const base = fileBaseOf(head || "Древо чата") + ".ged.txt";
+    try {
+        // BOM — чтобы Windows-редакторы открывали как UTF-8
+        await api.sendDocument({
+            chat_id: chatId,
+            document: new InputFile(new TextEncoder().encode("\uFEFF" + pack), base, { type: "text/plain" }),
+            ...(head ? { caption: head } : {}),
+            ...reply,
+        });
+    } catch (e) {
+        console.error("tail document:", e.message);
+        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось выложить файл " + base, ...reply });
+    }
+    return true;
 }
 
 // снять разметку HTML/ТГ для .txt-файла (теги — прочь, сущности — в символы,

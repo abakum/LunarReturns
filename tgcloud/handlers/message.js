@@ -5,10 +5,10 @@ import { parseTrigger, parseGedcom, gedStats, parseTree } from '../lib/parse.js'
 import { jubileeText } from '../lib/text.js';
 import {
     HELP, startMarkup, chatAdmin, getSettings, todayText, eventMarkup, sendLong,
-    linkText, linkMarkup, recordOf, replaceWithGedcom,
-    linkPairs, linksAll, personRows, gedcomText, sendGedPdf, splitText, focusKeys, focusHead, focusMarkup,
-    focusWithSpouses, focusSpousePairs, focusDepth, upsertPerson, applyTree, cutAndGraft, treeReport,
-    chatFlatText, flatSearch,
+    recordOf, replaceWithGedcom,
+    linkPairs, personRows, weddingRows, sendGedPdf, focusKeys, focusHead, focusMarkup,
+    focusWithSpouses, focusSpousePairs, focusDepth, focusListText, mmddToday, upcomingText, upsertPerson, applyTree, cutAndGraft, treeReport,
+    chatFlatText, flatSearch, sendFlatPack,
 } from '../lib/bot.js';
 
 // заголовок «Имя ГГГГ-ММ-ДД» (+ кейкап радиуса у фокус-сообщений) в цитате;
@@ -180,6 +180,47 @@ export default async function (message, ctx) {
         return;
     }
 
+    // /bellN (в ответ на триггер): список родни в радиусе N — как тап 🔔 на
+    // фокусе; без триггера — весь список чата (как 🔔 чата), не влезает —
+    // отрезаем (целые строки)
+    const bm = text.match(/^\/bell([1-5])?(?:@\S+)?$/i);
+    if (bm) {
+        const radius = Number(bm[1]) || 1;
+        const rh = replyHeadOf(message.reply_to_message);
+        if (rh) {
+            const key = rh[1].trim() + " " + rh[2];
+            const rec = await recordOf(chatId, key);
+            if (rec) {
+                // как тап: радиус не глубже имеющихся связей
+                const pairs = await linkPairs(chatId);
+                const r = Math.min(radius, Math.max(1, focusDepth(pairs, key)));
+                const keys = focusWithSpouses(focusKeys(pairs, key, r),
+                    await focusSpousePairs(chatId));
+                const items = [...await personRows(chatId), ...await weddingRows(chatId)];
+                const sexMap = new Map((await personRows(chatId))
+                    .map(rw => [rw.n + " " + rw.d, rw.sex ?? null]));
+                const body = focusListText(items, keys, key, pairs,
+                    await focusSpousePairs(chatId), k => sexMap.get(k) ?? null, false, mmddToday())
+                    || "(в радиусе нет событий)";
+                await api.sendMessage({ chat_id: chatId,
+                    text: focusHead(key, r, rec.dd) + "\n" + body });
+                console.log("bell text:", key, "радиус", r, "chat", chatId);
+                return;
+            }
+        }
+        // как у 🔔 чата: список «от сегодня» одним сообщением — что не
+        // влезает, отрезаем (целые строки)
+        const list = await upcomingText(chatId, false, mmddToday());
+        let shownList = "";
+        for (const l of (list || "").split("\n")) {
+            if (shownList.length + 1 + l.length > 4000) break;
+            shownList += (shownList ? "\n" : "") + l;
+        }
+        await api.sendMessage({ chat_id: chatId, text: shownList || "Событий нет" });
+        console.log("bell chat:", (list ? list.split("\n").length : 0) + "->" + shownList.split("\n").length, "строк, chat", chatId);
+        return;
+    }
+
     // гедком-древо чата (то же выводит кнопка 🧬); ответом на триггер — только
     // текст родни выбранного радиуса (/gedcom2 = 2), без кнопок
     const gm = text.match(/^\/gedcom([1-5])?(?:@\S+)?$/);
@@ -206,33 +247,23 @@ export default async function (message, ctx) {
         return;
     }
 
-    // «/links» / «связи» (как в VK): заново выложить сообщения-связи с их
-    // кнопками (листинг одноразовый, пропало — восстановить); в ответе на
-    // триггер — только связи цитируемого персонажа
+    // «/links» / «связи» (как в VK): пачка ВЕТВИ героя — как «-+=» на фокусе
+    // (>4000 — файлом .ged.txt); без reply (и не на триггер) — пачка древа
+    // чата. Листинг сообщений-связей не восстановлен (листинг был одноразовым)
     if (/^\/links(?:@\S+)?$/i.test(text) || text.toLowerCase() === "связи") {
         const replyTo = { message_id: message.message_id, allow_sending_without_reply: true };
-        if (!(await linkPairs(chatId)).length) {
-            await api.sendMessage({ chat_id: chatId, text: "связей пока нет",
-                reply_parameters: replyTo });
-            return;
-        }
         const lrh = replyHeadOf(message.reply_to_message);
-        const lkey = lrh ? lrh[1].trim() + " " + lrh[2] : null;
-        const links = (await linksAll(chatId)).filter(l => !lkey || l.p === lkey || l.c === lkey);
-        if (!links.length) {
-            await api.sendMessage({ chat_id: chatId, text: "у этой персоны связей нет",
-                reply_parameters: replyTo });
-            return;
+        let key = null, head = "";
+        if (lrh) {
+            const rk = lrh[1].trim() + " " + lrh[2];
+            const rec = await recordOf(chatId, rk);
+            if (rec) { key = rk; head = focusHead(key, 1, rec.dd); }
+            else key = null; // ответ не на триггер — вся пачка
         }
-        for (const l of links) {
-            await api.sendMessage({
-                chat_id: chatId,
-                text: await linkText(chatId, l) + "\n" + await gedcomText(chatId, [l.p, l.c]),
-                reply_markup: await linkMarkup(chatId, l),
-                reply_parameters: replyTo,
-            });
-        }
-        console.log("links re-listed:", links.length, "chat", chatId);
+        const ok = await sendFlatPack(chatId, key, head, message.message_id);
+        if (!ok) await api.sendMessage({ chat_id: chatId, text: key ? "ветвь пуста" : "связей пока нет",
+            reply_parameters: replyTo });
+        console.log("links flat pack:", key || "chat", "chat", chatId);
         return;
     }
 

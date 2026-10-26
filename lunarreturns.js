@@ -3505,7 +3505,7 @@ async function longPollStep() {
     }
 }
 
-const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Пачкой древа в ответе на героя — замена его ветви (срезана и привита). Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата; /links (в ответ на триггер) — связи персоны; /Иван — поиск по древу (/-Пётр — мужчины 0-го уровня, /--Иван — 1-го, /=… — женщины; «/ текст» — подстрока; /-, /--, /+…, /=… — все мужчины/свадьбы/женщины уровня).\nКнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf), «-+=» — пачка ВЕТВИ: герой первой строкой, потомки — вся глубина.\nПачка в ответе на цитату — ЗАМЕНА ветви цитируемого (срезана и привита); просто сообщением/файлом — добавление к древу.";
+const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Пачкой древа в ответе на героя — замена его ветви (срезана и привита). Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата; /links (в ответ на триггер) — пачка ВЕТВИ героя (как «-+=» на фокусе), без ответа — пачка древа чата; /Иван — поиск по древу (/-Пётр — мужчины 0-го уровня, /--Иван — 1-го, /=… — женщины; «/ текст» — подстрока; /-, /--, /+…, /=… — все мужчины/свадьбы/женщины уровня).\nКнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf), «-+=» — пачка ВЕТВИ: герой первой строкой, потомки — вся глубина; в фокусе цифры радиуса отдельным рядом ([цифры] / [🔔 🧬 -+= ❌]). /bellN (в ответ на триггер) — список родни в радиусе N (как 🔔 фокуса).\nПачка в ответе на цитату — ЗАМЕНА ветви цитируемого (срезана и привита); просто сообщением/файлом — добавление к древу.";
 
 // большой ответ — одним файлом: «.ged.txt» (пачка древа) либо «.txt» (список
 // событий); не выложился — сообщение об ошибке (без кусков). Файл — ответом
@@ -3643,11 +3643,11 @@ async function focusKeyboard(peerId, userId, key, radius, depth) {
     const digits = [1, 2, 3, 4, 5]
         .filter(n => n !== radius && n <= (depth === undefined ? 5 : depth))
         .map(n => mk(String(n) + "\u20E3", { c: "foc", k: key, r: n }));
-    const tail = [...digits, mk("❌", { c: "close" })];
     // 🗑-радиус снят: удаление — только глобальное (кнопка 🗑 у 🔔 чата)
-    const base = [bell, tree, flat];
-    // VK: максимум 5 кнопок в ряду — цифры отдельным рядом
-    return JSON.stringify({ inline: true, buttons: [base, tail] });
+    // цифры своим рядом, второй ряд — 🔔 🧬 -+= ❌ (ВК: до 5 кнопок в ряду);
+    // цифр нет (глубина 1) — один ряд, пустой ряд не выводим
+    const base = [bell, tree, flat, mk("❌", { c: "close" })];
+    return JSON.stringify({ inline: true, buttons: digits.length ? [digits, base] : [base] });
 }
 
 // список событий по множеству фокуса с ярлыками родства (kinLabel):
@@ -3758,24 +3758,62 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         await sendGedArtifacts(peerId, undefined, "🧬 Гедком-древо чата", msgId, convMsgId);
         return;
     }
-    // «/links» (в ТГ — кнопка 🔗 под событием): заново выложить сообщения-связи
-    // персоны с кнопками (листинг связи одноразовый, пропало — восстановить)
+    // /bellN (в ответ на триггер): список родни в радиусе N — как тап 🔔 на
+    // фокусе; без триггера — весь список чата (как 🔔 чата), не влезает —
+    // отрезаем (целые строки)
+    const bm = t.match(/^\/bell([1-5])?(?:@\S+)?$/);
+    if (bm) {
+        const radius = Number(bm[1]) || 1;
+        const brh = replyMsg && replyMsg.from_id > 0
+            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+        if (brh) {
+            const key = brh[1].trim() + " " + brh[2];
+            const rec = recordOf(peerId, key);
+            if (rec) {
+                // как тап: радиус не глубже имеющихся связей
+                const r = Math.min(radius, Math.max(1, focusDepth(linkPairs(peerId), key)));
+                const txt = focusText(peerId, key, r, true, rec.dd, false);
+                await messagesSend(peerId, txt, msgId, convMsgId);
+                console.log("bell text:", key, "радиус", r, "peer", peerId);
+                return;
+            }
+        }
+        const { mo, d: dToday } = mskNowParts();
+        const list = upcomingEvents(peerId, false,
+            String(mo).padStart(2, "0") + "-" + String(dToday).padStart(2, "0"));
+        // как у 🔔 чата: список «от сегодня» одним сообщением — что не
+        // влезает, отрезаем (целые строки)
+        let shownList = "";
+        for (const l of (list || "").split("\n")) {
+            if (shownList.length + 1 + l.length > 4000) break;
+            shownList += (shownList ? "\n" : "") + l;
+        }
+        await messagesSend(peerId, shownList || "Событий нет", msgId, convMsgId);
+        console.log("bell chat:", (list ? list.split("\n").length : 0) + "->" + shownList.split("\n").length, "строк, peer", peerId);
+        return;
+    }
+    // «/links» (в ТГ — кнопка 🔗 под событием): пачка ВЕТВИ героя — как тап
+    // «-+=» на фокусе (>4000 — вложением); без reply / не на триггер — пачка
+    // древа чата (листинг сообщений-связей не восстанавливается)
     if (t === "/links" || t === "связи") {
-        const rows = qa("SELECT * FROM links WHERE chat=?", peerId).map(linkRowOf);
-        if (!rows.length) { await messagesSend(peerId, "связей пока нет", msgId, convMsgId); return; }
         const lrh = replyMsg && replyMsg.from_id > 0
             ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
-        const lkey = lrh ? lrh[1].trim() + " " + lrh[2] : null;
-        const links = rows.filter(l => !lkey || l.p === lkey || l.c === lkey);
-        if (!links.length) { await messagesSend(peerId, "у этой персоны связей нет", msgId, convMsgId); return; }
-        for (const l of links) {
-            const res = await messagesSend(peerId, linkText(peerId, l) + "\n" + gedcomText(peerId, [l.p, l.c]),
-                msgId, convMsgId, linkKeyboard(peerId, l));
-            // cmid сообщения-связи — чтобы 👎 удалил именно связь
-            const sent = res && typeof res === "object" ? res : {};
-            setLinkCmid(l, sent.conversation_message_id || sent.message_id || 0);
+        let key = null, head = "";
+        if (lrh) {
+            const rk = lrh[1].trim() + " " + lrh[2];
+            const rec = recordOf(peerId, rk);
+            if (rec) { key = rk; head = focusHead(key, 1, rec.dd); }
+            else key = null; // ответ не на триггер — вся пачка
         }
-        console.log("links re-listed:", links.length, "peer", peerId);
+        const pack = key ? branchFlatText(peerId, key) : chatFlatText(peerId);
+        if (!pack) { await messagesSend(peerId, key ? "ветвь пуста" : "связей пока нет", msgId, convMsgId); return; }
+        if (pack.length >= 4000) {
+            const doc = await vkUploadDoc(peerId, fileBaseOf(head || "Древо чата") + ".ged.txt", "\uFEFF" + pack);
+            await messagesSend(peerId, head, msgId, convMsgId, null, doc);
+        } else {
+            await messagesSend(peerId, (head ? head + "\n" : "") + pack, msgId, convMsgId);
+        }
+        console.log("links flat pack:", key || "chat", "peer", peerId);
         return;
     }
     // /Иван — префиксный поиск по пачке «плоское древо» (/-Пётр — только
@@ -4010,13 +4048,11 @@ async function handleEvent(o) {
             await editOriginDoc(o, fileBaseOf(focusHead(key, radius, rec.dd)) + ".ged.txt", "\uFEFF" + pack, kb);
             return;
         }
-        const bell = p.c === "foc:bell";
+        const bell = p.c === "foc:bell" || p.c === "foc";
         // список всегда по ММ-ДД (сортировка подписки касается только дампа)
         const byFull = false;
-        // цифра — только заголовок; тело (список/гедком) — по 🔔/🧬
-        let txt;
-        if (p.c === "foc") txt = focusHead(key, radius, rec.dd);
-        else txt = focusText(peerId, key, radius, bell, rec.dd, byFull);
+        // цифра меняет радиус и сразу показывает список (как 🔔); тело — по 🔔
+        const txt = focusText(peerId, key, radius, bell, rec.dd, byFull);
         const kb = await focusKeyboard(peerId, o.user_id, key, radius, depth);
         if (txt.length < 4000) { await editOrigin(o, txt, kb); return; }
         // список начинается с сегодня — что не влезает в сообщение,

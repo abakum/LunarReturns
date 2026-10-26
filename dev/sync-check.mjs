@@ -403,9 +403,9 @@ if (JSON.stringify([4, 4, 1]) !== JSON.stringify([
     VK.focusDepth(kinPairs, sonKey), VK.focusDepth(kinPairs, kinKeys['Двоюродный']),
     VK.focusDepth([['Родитель 1930-01-01', 'Сын 1990-01-01']], 'Сын 1990-01-01')]))
     { failed++; console.log('✗ focusDepth: неверные глубины'); }
-// цифры радиуса: при depth 1 активная 1 скрыта и 2–5 нет — ряд только с ❌
+// цифры радиуса: при depth 1 активная 1 скрыта и 2–5 нет — ряд [💬 цифры]
 const digs = (radius, depth) => TG.focusMarkup('private', 1, {}, radius, depth)
-    .inline_keyboard[1].filter(b => /^\d/.test(b.text)).map(b => b.text).join('');
+    .inline_keyboard[0].filter(b => /^\d/.test(b.text)).map(b => b.text).join('');
 if (digs(1, 1) !== '') { failed++; console.log('✗ focusMarkup: без дедов цифры не скрыты\n  ' + digs(1, 1)); }
 if (digs(1, 2) !== '2\u20E3') { failed++; console.log('✗ focusMarkup: с дедом нет 2️⃣\n  ' + digs(1, 2)); }
 if (digs(2, 2) !== '1\u20E3') { failed++; console.log('✗ focusMarkup: радиус 2/деды\n  ' + digs(2, 2)); }
