@@ -4593,7 +4593,7 @@ function msUntilNext9() {
 async function dailyCheck() {
     const n = mskNowParts();
     const today = n.y + "-" + String(n.mo).padStart(2, "0") + "-" + String(n.d).padStart(2, "0");
-    const mmdd = String(n.mo).padStart(2, "0") + String(n.d).padStart(2, "0");
+    const mmdd = String(n.mo).padStart(2, "0") + "-" + String(n.d).padStart(2, "0");
     if ((q1("SELECT v FROM meta WHERE k='checkedDate'") || {}).v === today) return;
     qr("INSERT OR REPLACE INTO meta(k,v) VALUES('checkedDate',?)", today);
     // годовщины персон и свадеб с сегодняшней датой (МСК); sent — раз в год

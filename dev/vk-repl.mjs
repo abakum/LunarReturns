@@ -56,7 +56,17 @@ const PATCHES = [
      'if (!process.env.LR_NO_MAIN) main().catch(e => { console.error("fatal:", e); process.exit(1); });'],
     ['    cutAndGraft, setPersonByXref, editTrigger, rootOf,\n};',
      '    cutAndGraft, setPersonByXref, editTrigger, rootOf, handleEvent, handleMessage, handleGedDrop, handleTxtDrop,\n'
-     + '    peerKeyboard, getSettings, qa, isChatAdmin,\n};'],
+     + '    peerKeyboard, getSettings, qa, isChatAdmin, dailyCheck, mskNowParts,\n};'],
+    // подмена «сегодня»: !date YYYY-MM-DD [hh] → globalThis.__LR_TODAY/[__LR_HOUR]
+    ['const mskToday = () => {',
+     'const mskToday = () => {\n    if (globalThis.__LR_TODAY) return globalThis.__LR_TODAY;'],
+    ['function mskNowParts() {\n    const t = new Date(Date.now() + TZ_MS);',
+     'function mskNowParts() {\n'
+     + '    if (globalThis.__LR_TODAY) {\n'
+     + '        const [y, mo, d] = globalThis.__LR_TODAY;\n'
+     + '        return { y, mo, d, h: globalThis.__LR_HOUR !== undefined ? globalThis.__LR_HOUR : 9, min: 0 };\n'
+     + '    }\n'
+     + '    const t = new Date(Date.now() + TZ_MS);'],
     ['    if (!token) {',
      '    if (!token && !process.env.LR_NO_MAIN) {'],
 ];
@@ -252,7 +262,7 @@ async function dropFile(kind, file, replyNum) {
 const hang = () => new Promise((_, rj) => setTimeout(() => rj(new Error('обработчик не завершился за 10с')), 10000));
 
 console.log('vk-repl: chat=' + CHAT + (ADMIN ? ' (админ)' : ' (участник)'), 'user=' + USER, 'db=' + DB_FILE);
-console.log('Ввод: текст | /N M [uID] — кнопка | >N текст — ответ | !ged путь | !txt путь [>N] | !dump | Ctrl-C — выход');
+console.log('Ввод: текст | /N M [uID] — кнопка | >N текст — ответ | !ged путь | !txt путь [>N] | !dump | !daily | !date ГГГГ-ММ-ДД [hh] | Ctrl-C — выход');
 
 // нет TTY — пайп: readline может закрыться до опроса (весь буфер вычитан
 // мгновенно) — читаем ввод весь и исполняем построчно
@@ -266,8 +276,23 @@ async function exec(line) {
     if (line === '\\n') { pending.text += '\n'; return; } // литерал «\n» — перевод строки
     line = String(line).replace(/\\n/g, '\n'); // «\n» внутри строки — тоже перевод
     if (line === '!dump') { dump(); return; }
-    // /N M [uID] — тап
     let m;
+    // !date YYYY-MM-DD [hh] — подмена «сегодня» (МСК) для dailyCheck/списков;
+    // !date off — вернуть настоящее
+    if (m = line.match(/^!date\s+(off|(\d{4})-(\d{2})-(\d{2}))(?:\s+(\d{1,2}))?$/)) {
+        if (m[2]) { globalThis.__LR_TODAY = [Number(m[2]), Number(m[3]), Number(m[4])]; if (m[5] !== undefined) globalThis.__LR_HOUR = Number(m[5]); else delete globalThis.__LR_HOUR; console.log('«сегодня» = ' + m[2] + '-' + m[3] + '-' + m[4] + (globalThis.__LR_HOUR !== undefined ? ', час ' + m[5] : '')); }
+        else { delete globalThis.__LR_TODAY; delete globalThis.__LR_HOUR; console.log('«сегодня» = настоящее'); }
+        return;
+    }
+    // !daily — прогнать суточную проверку (годовщины 09:00 + религиозный дайджест)
+    if (line === '!daily') {
+        try {
+            await Promise.race([T.dailyCheck(), hang()]);
+            console.log('--- dailyCheck завершён');
+        } catch (e) { fail(e); }
+        return;
+    }
+    // /N M [uID] — тап
     if (m = line.match(/^\/(\d+)\s+(\d+)(?:\s+(\d+))?$/)) {
         const msg = msgs[Number(m[1]) - 1];
         if (!msg) { console.log('ERROR: нет сообщения ' + m[1]); return; }
