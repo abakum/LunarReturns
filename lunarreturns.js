@@ -1021,15 +1021,20 @@ function focusWithSpouses(keys, spousePairs) {
 // sexOf(key) → 'M' | 'F' | null. Возвращает ярлык или «» (без ярлыка —
 // родство не прослеживается по крови/браку либо совсем вне таблицы степеней;
 // где короткого слова нет — составной ярлык: «двоюродная сестра бабушки»,
-// «троюродный брат отца», «двоюродный внучатый племянник»).
+// «троюродный брат отца», «двоюродный внучатый племянник»). Родство через
+// супруга в обе стороны: «жена внука», «муж дочки» (кровь цитируемого —
+// у партнёра) и «отец жены», «племянник мужа», «отец жены внука» (кровь —
+// у партнёра, ярлык партнёра к цитируемому — по браку, не глубже двух
+// браковых шагов — иначе «муж жены мужа…» зациклится).
 
-function kinLabel(pairs, spousePairs, sexOf, from, to) {
+function kinLabel(pairs, spousePairs, sexOf, from, to, depth = 0) {
     if (from === to) return "";
     const blood = kinBlood(pairs, sexOf, from, to);
     if (blood) return blood;
     // кровь не прослеживается — супруги: «муж/жена + родство партнёра»
-    // (жена внука, муж дочки…); у супруга цитируемого партнёр = from →
-    // просто «муж»/«жена»; партнёр вне родни — без ярлыка
+    // (жена внука, муж дочки…) и «родство партнёра + муж/жена» (отец жены,
+    // племянник мужа…); у супруга цитируемого партнёр = from → просто
+    // «муж»/«жена»; партнёр вне родни — без ярлыка
     for (const [x, y] of spousePairs || []) {
         const partner = x === to ? y : y === to ? x : null;
         if (partner === null) continue; // to — не супруг ни одной из пар
@@ -1037,13 +1042,42 @@ function kinLabel(pairs, spousePairs, sexOf, from, to) {
             const s = sexOf ? sexOf(to) : null;
             return s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
         }
-        // родство партнёра — только по крови (без цепочек супругов,
-        // иначе «муж жены мужа…» зациклится)
+        // родство партнёра — по крови
         const l = kinBlood(pairs, sexOf, from, partner);
         if (l) {
             const s = sexOf ? sexOf(to) : null;
             const who = s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
             return who + " " + genLabel(l);
+        }
+    }
+    // «родство партнёра + супруг»: to — кровный родственник X (сиблинг,
+    // ребёнок или родитель to), а X связан с цитируемым — часто через брак:
+    // «отец жены», «племянник мужа», «отец жены внука», «мать двоюродного
+    // брата»; ярлык X к цитируемому — в родительном падеже; depth —
+    // ограничитель браковых шагов (иначе «муж жены мужа…» зациклится)
+    if (depth < 2) {
+        const kidsOf = new Map(), parentsOf = new Map();
+        for (const [p, c] of pairs) {
+            if (!kidsOf.has(p)) kidsOf.set(p, []);
+            kidsOf.get(p).push(c);
+            if (!parentsOf.has(c)) parentsOf.set(c, []);
+            parentsOf.get(c).push(p);
+        }
+        // порядок кандидатов: сиблинги to (дают «племянник мужа»), дети
+        // («отец жены»), дядья/тётьи to (сиблинги родителей — тоже
+        // «племянник мужа»), родители — первые дающие оба звена выигрывают
+        const sibs = new Set(), uncles = new Set();
+        for (const par of parentsOf.get(to) || []) {
+            for (const c of kidsOf.get(par) || []) if (c !== to) sibs.add(c);
+            for (const gp of parentsOf.get(par) || [])
+                for (const c of kidsOf.get(gp) || []) if (c !== par) uncles.add(c);
+        }
+        for (const X of [...sibs, ...(kidsOf.get(to) || []), ...uncles, ...(parentsOf.get(to) || [])]) {
+            if (X === from) continue;
+            const rl = kinBlood(pairs, sexOf, X, to);   // to — родня X
+            const pl = rl
+                ? kinLabel(pairs, spousePairs, sexOf, from, X, depth + 1) : "";
+            if (pl) return rl + " " + genLabel(pl);
         }
     }
     return "";
@@ -1182,7 +1216,7 @@ function genLabel(label) {
         дедушка: "дедушки", бабушка: "бабушки", дед: "деда",
         внук: "внука", внучка: "внучки", правнук: "правнука", правнучка: "правнучки",
         дочь: "дочки", дядя: "дяди", тётя: "тёти", племянник: "племянника",
-        племянница: "племянницы",
+        племянница: "племянницы", муж: "мужа", жена: "жены", супруг: "супруга",
     };
     const fold = w => {
         if (GEN[w]) return GEN[w];
@@ -2881,7 +2915,8 @@ function chartModel(title, rows, links, rel = null) {
         p.cy = cy;
         draws.push({ k: "text", x: KW - 8, y: cy + 3.5, s: p.label, size: 10, fill: "#333333", anchor: "end" });
         // без даты смерти — до 80 лет от рождения, но не дальше сегодня
-        // (прожитая жизнь); «_» в конце — только если 80 лет уже прошли
+        // (прожитая жизнь); с известной датой смерти за баром пишем N —
+        // сколько лет прожито; без даты смерти — ничего
         const end = p.dy ?? Math.max(p.yr, Math.min(p.yr + 80, TODAY_Y));
         const x1 = xS(p.yr), x2 = xS(end);
         const bar = p.r.sex === "M" ? BAR_M : p.r.sex === "F" ? BAR_F : BAR_N;
@@ -2893,8 +2928,8 @@ function chartModel(title, rows, links, rel = null) {
             draws.push({ k: "line", x1: KW - 6, y1: cy, x2: lnEnd, y2: cy, stroke: "#bbbbbb", w: 1 });
         draws.push({ k: "text", x: x1 - 6, y: cy + 3.5, s: p.r.name, size: 10, fill: "#111111", anchor: "end" });
         draws.push({ k: "rrect", x: x1, y: cy - BAR_H / 2, w: Math.max(2, x2 - x1), h: BAR_H, r: 2, fill: bar });
-        if (p.dy === null && p.yr + 80 <= TODAY_Y) // смерть неизвестна и 80 лет прошли — «_»
-            draws.push({ k: "text", x: x2 + 4, y: cy + 3.5, s: "_", size: 10, fill: bar });
+        if (p.dy !== null) // известная смерть — N прожитых лет за баром
+            draws.push({ k: "text", x: x2 + 4, y: cy + 3.5, s: String(p.dy - p.yr), size: 10, fill: bar });
     }
     // дуги родитель→ребёнок (в год рождения ребёнка), точки на строках;
     // по родителю — одна точка даже при близнецах; цвет — цвет связи (семьи);

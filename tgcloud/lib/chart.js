@@ -287,7 +287,8 @@ export function chartModel(title, rows, links, rel = null) {
         p.cy = cy;
         draws.push({ k: "text", x: KW - 8, y: cy + 3.5, s: p.label, size: 10, fill: "#333333", anchor: "end" });
         // без даты смерти — до 80 лет от рождения, но не дальше сегодня
-        // (прожитая жизнь); «_» в конце — только если 80 лет уже прошли
+        // (прожитая жизнь); с известной датой смерти за баром пишем N —
+        // сколько лет прожито; без даты смерти — ничего
         const end = p.dy ?? Math.max(p.yr, Math.min(p.yr + 80, TODAY_Y));
         const x1 = xS(p.yr), x2 = xS(end);
         const bar = p.r.sex === "M" ? BAR_M : p.r.sex === "F" ? BAR_F : BAR_N;
@@ -299,8 +300,8 @@ export function chartModel(title, rows, links, rel = null) {
             draws.push({ k: "line", x1: KW - 6, y1: cy, x2: lnEnd, y2: cy, stroke: "#bbbbbb", w: 1 });
         draws.push({ k: "text", x: x1 - 6, y: cy + 3.5, s: p.r.name, size: 10, fill: "#111111", anchor: "end" });
         draws.push({ k: "rrect", x: x1, y: cy - BAR_H / 2, w: Math.max(2, x2 - x1), h: BAR_H, r: 2, fill: bar });
-        if (p.dy === null && p.yr + 80 <= TODAY_Y) // смерть неизвестна и 80 лет прошли — «_»
-            draws.push({ k: "text", x: x2 + 4, y: cy + 3.5, s: "_", size: 10, fill: bar });
+        if (p.dy !== null) // известная смерть — N прожитых лет за баром
+            draws.push({ k: "text", x: x2 + 4, y: cy + 3.5, s: String(p.dy - p.yr), size: 10, fill: bar });
     }
     // дуги родитель→ребёнок (в год рождения ребёнка), точки на строках;
     // по родителю — одна точка даже при близнецах; цвет — цвет связи (семьи);

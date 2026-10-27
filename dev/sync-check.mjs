@@ -453,6 +453,7 @@ const kinPersons = [
     ['Отец', '1955-03-03', 'M'], ['Тётя', '1957-04-04', 'F'], ['Мать', '1956-05-05', 'F'],
     ['Сын', '1980-06-06', 'M'], ['Дочь', '1982-07-07', 'F'], ['Двоюродный', '1984-08-08', 'M'],
     ['Тесть', '1931-12-12', 'M'], ['Чужая', '1991-10-10', 'F'], ['Сноха', '1981-03-03', 'F'],
+    ['Отец Снохи', '1952-02-02', 'M'],
     ['Прадед', '1900-01-01', 'M'],
     ['Дядька', '1928-07-07', 'M'], ['Тётка', '1929-08-08', 'F'], // сын/дочь Прадеда — брат/сестра Деда
     ['Прапрадед', '1870-01-01', 'M'], ['Брат Прадеда', '1898-09-09', 'M'],
@@ -484,6 +485,7 @@ const kinPairs = [
     ['Отец 1955-03-03', 'Дочь 1982-07-07'], ['Мать 1956-05-05', 'Дочь 1982-07-07'],
     ['Тётя 1957-04-04', 'Двоюродный 1984-08-08'],
     ['Чужая 1991-10-10', 'Двоюродный 1984-08-08'],
+    ['Отец Снохи 1952-02-02', 'Сноха 1981-03-03'],
 ];
 const kinSpouses = [
     ['Отец 1955-03-03', 'Мать 1956-05-05'], ['Дед 1930-01-01', 'Бабка 1932-02-02'],
@@ -529,7 +531,7 @@ const KIN_CASES = [
     [kinKeys['Правнучатый'], 'правнучатый племянник'],  // (a=1, b=4) — составной
     [kinKeys['ДвПлем'], 'двоюродный племянник'],        // (a=2, b=3)
     [kinKeys['ДвВнуч'], 'двоюродный внучатый племянник'], // (a=2, b=4) — составной
-    [kinKeys['Чужая'], ''],            // родство не прослеживается
+    [kinKeys['Чужая'], 'мать двоюродного брата'],      // родня родни по крови
 ];
 let kinOK = true;
 for (const [to, want] of KIN_CASES) {
@@ -574,6 +576,23 @@ cmp('kinLabel муж двоюродной сестры дедушки',
     TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Муж Кузины']));
 if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Муж Кузины']) !== 'муж двоюродной сестры дедушки')
     { failed++; console.log('✗ kinLabel муж двоюродной сестры дедушки'); }
+
+// родство через супруга: «отец жены», «племянник мужа», «отец жены внука»
+cmp('kinLabel отец жены',
+    VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Отец Снохи']),
+    TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Отец Снохи']));
+if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Отец Снохи']) !== 'отец жены')
+    { failed++; console.log('✗ kinLabel отец жены'); }
+cmp('kinLabel племянник мужа',
+    VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, 'Мать 1956-05-05', kinKeys['Двоюродный']),
+    TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, 'Мать 1956-05-05', kinKeys['Двоюродный']));
+if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, 'Мать 1956-05-05', kinKeys['Двоюродный']) !== 'племянник мужа')
+    { failed++; console.log('✗ kinLabel племянник мужа'); }
+cmp('kinLabel отец жены внука',
+    VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Отец Снохи']),
+    TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Отец Снохи']));
+if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Отец Снохи']) !== 'отец жены внука')
+    { failed++; console.log('✗ kinLabel отец жены внука'); }
 
 // ==================== 8. focusListText: список с датой смерти и родством ====================
 const kinItems = [
