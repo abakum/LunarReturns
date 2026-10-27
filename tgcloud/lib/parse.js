@@ -115,6 +115,14 @@ function parseDateGroups(m, gi, what) {
 
 // 1: имя; 2-4: дата рождения, 5-6: время, 7-8: зона; 9-15: хвост смерти; 16:
 // хвост строки — примечание целиком.
+// «ГГГГММДД» (8 цифр без разделителей) → «ГГГГ-ММ-ДД» — компактная форма
+// триггера; только правдоподобные даты (месяц 01–12, день 01–31), остальное
+// число не трогаем; вокруг не должно быть цифр и разделителей дат/времени
+function compactDates(s) {
+    return s.replace(/(?<![\d./:-])(\d{4})(\d{2})(\d{2})(?![\d./:-])/g, (all, y, mo, dd) =>
+        "01" <= mo && mo <= "12" && "01" <= dd && dd <= "31" ? y + "-" + mo + "-" + dd : all);
+}
+
 function parseTrigger(text) {
     // «^» — маркер примечания: всё после первого «^» — примечание дословно
     // (не разбирается на даты); внутренние «^» сохраняются — это переносы
@@ -123,7 +131,7 @@ function parseTrigger(text) {
     let s = text.trim();
     const hi = s.indexOf("^");
     if (hi >= 0) { hat = s.slice(hi + 1).trim(); s = s.slice(0, hi).trim(); }
-    const m = s.match(TRIGGER_RE);
+    const m = compactDates(s).match(TRIGGER_RE);
     if (!m) return null;
     const n = m[1].trim();
     const b = parseDateGroups(m, 2, "");
@@ -323,7 +331,7 @@ function weddingRecOf(s) {
     let t = s;
     const hi = t.indexOf("^");
     if (hi >= 0) { hat = t.slice(hi + 1).trim(); t = t.slice(0, hi).trim(); }
-    const wm = t.match(WEDDING_RE);
+    const wm = compactDates(t).match(WEDDING_RE);
     if (!wm) return { err: "не распознаны даты свадьбы" };
     const b = wdate(wm, 1, " свадьбы");
     if (b.error) return { err: b.error };
