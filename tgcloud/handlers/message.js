@@ -110,7 +110,8 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
     else await db.insert(gedDrops).values({ chatId, ...vals }).run();
     await api.sendMessage({
         chat_id: chatId,
-        text: "📄 Файл " + name + ": персон " + tree.persons.length
+        text: "📄 Файл " + name + ": персон " + new Set(tree.persons
+            .map(p => p.rec.n + "|" + (p.rec.d ?? ""))).size
             + ", семей " + tree.weddings.length + ", детей " + tree.children.length
             + ". Добавить пачку к дереву чата?",
         // «Да, с резервом» — только при непустом дереве чата

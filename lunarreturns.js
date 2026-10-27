@@ -1519,6 +1519,8 @@ function applyTree(peerId, tree) {
         return x;
     };
     const xr = []; // индекс persons → xref
+    const seen = new Set(); // реально учтённые записи: повторный «Имя Д»
+    // (выкладка среди супругов + у родителей) входит в счёт один раз
     for (let i = 0; i < tree.persons.length; i++) {
         const p = tree.persons[i], rec = p.rec;
         let x;
@@ -1531,7 +1533,7 @@ function applyTree(peerId, tree) {
             x = r ? r.xref : null;
         }
         xr.push(x);
-        rep.persons++;
+        if (x != null && !seen.has(x)) { seen.add(x); rep.persons++; }
     }
     for (const w of tree.weddings) {
         const mx = w.m !== null ? xr[w.m] : null, fx = w.f !== null ? xr[w.f] : null;
@@ -1811,8 +1813,8 @@ function restoreEdges(peerId) {
 // сводка применения пачки (✅-строка + ошибки построчно) — общий формат ответа
 // (ТГ: lib/bot.js treeReport)
 function treeReport(rep) {
-    let body = "✅ древо: добавлено " + rep.persons + " персон, " + rep.fams
-        + " семей, " + rep.links + " детей";
+    let body = "✅ древо: персон " + rep.persons + ", семей " + rep.fams
+        + ", детей " + rep.links;
     if (rep.cut !== undefined)
         body = (rep.cut ? "✂️ ветвь срезана: " + rep.cut + " персон, " + rep.famsCut + " семей\n" : "✂️ ветвь обновлена\n")
             + body;
@@ -2524,9 +2526,18 @@ function flatTreeText(persons, fams) {
             : (f.hKey != null ? byKey.get(f.hKey) : f.hName != null ? { name: f.hName, nameOnly: true } : null);
         if (other) {
             out.push("+".repeat(d + 1) + (f.marr ? wedPlus(f) : ""));
-            if (other.key != null && printed.has(other.key))
+            // «другая половина» — ребёнок другого семейства? Печатаем её
+            // полную строку (с событием) под свадьбой, но НЕ закрываем её
+            // от печати: строку с маркером позже выдаст родительская ветвь,
+            // а при импорте одинаковые «Имя Д» схлопнутся в одну персону —
+            // иначе связь с родителями потеряется
+            const kid = other.key != null && !printed.has(other.key)
+                && familyOf.has(other.key);
+            if (kid) lineOf(other, other.sex !== "F", d, true);
+            else if (other.key != null && printed.has(other.key))
                 lineOf({ name: other.name, nameOnly: true }, other.sex !== "F", d, true);
             else lineOf(other, other.sex !== "F", d, true);
+            if (kid) printed.delete(other.key); // маркерная строка — от родителей
         } else if (f.marr) {
             // семья без второй половины: односторонняя свадьба («+дата»);
             // голый «+» без даты не выводится — при пересборке пачки дети
@@ -2570,11 +2581,24 @@ function flatSearch(flat, query) {
     const mark = (q.match(/^([-+=])\1*/) || [""])[0];
     const needle = (sub ? q.slice(1) : q.slice(mark.length)).trim().toLowerCase();
     if (!needle && !mark) return [];
-    return String(flat).split(/\r?\n/).filter(line => {
+    const hits = String(flat).split(/\r?\n/).filter(line => {
         const lmark = (line.match(/^([-+=])\1*/) || [""])[0];
         const body = line.slice(lmark.length).toLowerCase();
         if (mark) return lmark === mark && (!needle || body.startsWith(needle));
         return sub ? body.includes(needle) : body.startsWith(needle);
+    });
+    if (sub || mark) return hits;
+    // Префиксный поиск: одна персона теперь рисуется дважды — под свадьбой
+    // (без маркера) и строкой с маркером у родителей. Показываем только
+    // строку с маркером; bare-строку — лишь если с маркером не нашлось
+    return hits.filter(line => {
+        const lm = (line.match(/^([-+=])\1*/) || [""])[0];
+        if (lm) return true;
+        const body = line.toLowerCase();
+        return !hits.some(h => {
+            const m2 = (h.match(/^([-+=])\1*/) || [""])[0];
+            return m2 && h.slice(m2.length).toLowerCase() === body;
+        });
     });
 }
 
@@ -3774,7 +3798,8 @@ async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
         btn("Да", "ged:rep"),
         ...(hasTree ? [btn("Да, с резервом", "ged:bak")] : []),
     ]] });
-    await messagesSend(peerId, "📄 Файл " + name + ": персон " + tree.persons.length
+    await messagesSend(peerId, "📄 Файл " + name + ": персон " + new Set(tree.persons
+        .map(p => p.rec.n + "|" + (p.rec.d ?? ""))).size
         + ", семей " + tree.weddings.length + ", детей " + tree.children.length
         + ". Добавить пачку к дереву чата?", msgId, convMsgId, kb);
 }
