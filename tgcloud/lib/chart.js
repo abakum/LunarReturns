@@ -134,6 +134,7 @@ export function parseTtf(b) {
 export function chartModel(title, rows, links, rel = null) {
     if (!rows.length) throw new Error("chart: персоны пусты");
     const year = d => Number(String(d).slice(0, 4));
+    const TODAY_Y = new Date().getFullYear(); // «сегодня» — гранулярность оси (годы)
     const keyOf = r => r.name + " " + year(r.birth);
     // не более CHART_MAX: берём CHART_MAX МЛАДШИХ (снизу = младшие); связи,
     // где кто-то из персон отсекся, удаляются; список всегда рисуем (без отказа)
@@ -189,6 +190,9 @@ export function chartModel(title, rows, links, rel = null) {
     const allYears = [
         ...people.map(p => p.yr),
         ...people.filter(p => p.dy !== null).map(p => p.dy),
+        // без даты смерти бар ограничен 80 годами или сегодня — ось X должна
+        // их покрыть
+        ...people.filter(p => p.dy === null).map(p => Math.min(p.yr + 80, TODAY_Y)),
         ...links.map(l => year(byKey.get(l.child).birth)),
     ];
     // колонка подписей «Связь год»: под самую длинную строку, все — одной строкой
@@ -282,7 +286,9 @@ export function chartModel(title, rows, links, rel = null) {
         const cy = plotTop + p.y0 + p.h / 2;
         p.cy = cy;
         draws.push({ k: "text", x: KW - 8, y: cy + 3.5, s: p.label, size: 10, fill: "#333333", anchor: "end" });
-        const end = p.dy ?? xMax;
+        // без даты смерти — до 80 лет от рождения, но не дальше сегодня
+        // (прожитая жизнь); «_» в конце — только если 80 лет уже прошли
+        const end = p.dy ?? Math.max(p.yr, Math.min(p.yr + 80, TODAY_Y));
         const x1 = xS(p.yr), x2 = xS(end);
         const bar = p.r.sex === "M" ? BAR_M : p.r.sex === "F" ? BAR_F : BAR_N;
         // выноска («отступ»): тонкая линия от колонки подписей до имени;
@@ -293,6 +299,8 @@ export function chartModel(title, rows, links, rel = null) {
             draws.push({ k: "line", x1: KW - 6, y1: cy, x2: lnEnd, y2: cy, stroke: "#bbbbbb", w: 1 });
         draws.push({ k: "text", x: x1 - 6, y: cy + 3.5, s: p.r.name, size: 10, fill: "#111111", anchor: "end" });
         draws.push({ k: "rrect", x: x1, y: cy - BAR_H / 2, w: Math.max(2, x2 - x1), h: BAR_H, r: 2, fill: bar });
+        if (p.dy === null && p.yr + 80 <= TODAY_Y) // смерть неизвестна и 80 лет прошли — «_»
+            draws.push({ k: "text", x: x2 + 4, y: cy + 3.5, s: "_", size: 10, fill: bar });
     }
     // дуги родитель→ребёнок (в год рождения ребёнка), точки на строках;
     // по родителю — одна точка даже при близнецах; цвет — цвет связи (семьи);
