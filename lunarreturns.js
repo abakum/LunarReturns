@@ -2661,8 +2661,9 @@ const BAR_H = 11;            // высота бара жизни
 const BAR_M = "#5f6b76";
 const BAR_F = "#9aa5b0";
 const BAR_N = "#7f8c8d";
-// связи — цвета спектра
-const FAM_COLORS = ["#e6194b", "#f58231", "#bfa100", "#3cb44b", "#1f77b4", "#0082c8", "#911eb4"];
+// связи — цвета спектра, все семь различимы на глаз: второй синий #0082c8
+// заменён на мадженту — рядом в один год (шаг толщины линии) не спутать
+const FAM_COLORS = ["#e6194b", "#f58231", "#bfa100", "#3cb44b", "#1f77b4", "#f032e6", "#911eb4"];
 const PAGE_W = 842;          // страница A4 landscape, pt
 const PAGE_H = 595;
 
@@ -2757,7 +2758,7 @@ function parseTtf(b) {
 //   линию между супругами в годы их рождения — [{ fam: [супруг, супруг],
 //   years: [год…] }]
 // Вычисляет всю геометрию (без рендера) → модель с примитивами draws
-// (rect/rrect/line/qarc/dot/text) в порядке отрисовки — единая основа для
+// (rect/rrect/line/dot/text) в порядке отрисовки — единая основа для
 // PDF-эммитера
 function chartModel(title, rows, links, rel = null) {
     if (!rows.length) throw new Error("chart: персоны пусты");
@@ -2931,11 +2932,11 @@ function chartModel(title, rows, links, rel = null) {
         if (p.dy !== null) // известная смерть — N прожитых лет за баром
             draws.push({ k: "text", x: x2 + 4, y: cy + 3.5, s: String(p.dy - p.yr), size: 10, fill: bar });
     }
-    // дуги родитель→ребёнок (в год рождения ребёнка), точки на строках;
+    // связи родитель→ребёнок (в год рождения ребёнка), точки на строках;
     // по родителю — одна точка даже при близнецах; цвет — цвет связи (семьи);
-    // радиус пропорционален вертикальному расстоянию родитель→ребёнок —
-    // короткие дуги прижаты к вертикали, длинные шире (пересечений меньше);
-    // плюс сдвиг 14px на каждую семью в этом же году — столбцы не совпадают
+    // близнецы одной семьи — одна вертикаль; несколько семей в один год —
+    // вертикали рядом: каждая следующая на толщину линии правее (детская
+    // точка остаётся в баре), вместе с точками
     const slotOf = new Map();       // «fam\0год» → сдвиг (номер семьи на год)
     const yearCount = new Map();    // год → сколько семей уже заняли столбец
     const famSeen = new Set();
@@ -2964,21 +2965,15 @@ function chartModel(title, rows, links, rel = null) {
         const y = year(byKey.get(l.child).birth);
         const ps = l.parents.map(p => rowOf.get(p)).sort((a, b) => a.cy - b.cy);
         const ch0 = rowOf.get(l.child);
-        const gap = Math.abs(ch0.cy - ps[ps.length - 1].cy);
-        const side = -(14 * slotOf.get(fam + "\0" + y) + 14 * gap / ROW_H);
-        const x = xS(y);
+        // слот семьи в этом году — толщина линии на семью вправо от линии года
+        const x = xS(y) + 1.5 * slotOf.get(fam + "\0" + y);
         const chY = ch0.cy;
-        // прямая между двумя родителями; к ребёнку — дуга, а если в этот год
-        // рождается ребёнок только у одной семьи — просто прямая линия
+        // прямая между двумя родителями и к ребёнку — всегда вертикали на x семьи
         if (ps.length === 2 && ps[0].cy !== ps[1].cy)
             draws.push({ k: "line", x1: x, y1: ps[0].cy, x2: x, y2: ps[1].cy, stroke: col, w: 1.5 });
         const lo = ps[ps.length - 1];
-        if (lo.key !== ch0.key) {
-            if ((yearCount.get(y) || 0) === 1)
-                draws.push({ k: "line", x1: x, y1: lo.cy, x2: x, y2: chY, stroke: col, w: 1.5 });
-            else
-                draws.push({ k: "qarc", x0: x, y0: lo.cy, qx: xS(y) + side, qy: (lo.cy + chY) / 2, x1: x, y1: chY, stroke: col, w: 1.5 });
-        }
+        if (lo.key !== ch0.key)
+            draws.push({ k: "line", x1: x, y1: lo.cy, x2: x, y2: chY, stroke: col, w: 1.5 });
         // точки поверх линий
         for (const p of ps)
             draws.push({ k: "dot", x, y: p.cy, r: 3.5, fill: col });
@@ -2987,11 +2982,12 @@ function chartModel(title, rows, links, rel = null) {
     // фантомные рождения: вертикаль между супругами в год рождения ребёнка
     // (ребёнка в чарте нет), точки на строках супругов — как у связей;
     // вниз линия переходит нижнюю точку на 8px — не спутать с прямой
-    // родитель→ребёнок (у неё точка на одной строке родителей)
+    // родитель→ребёнок (у неё точка на одной строке родителей); сдвиг по
+    // слоту — единый со связями: толщина линии вправо (точка супруга в баре)
     for (const ph of phantom) {
         const col = famColor(ph.fam);
         const kk = ph.fam + "\0" + ph.year;
-        const x = xS(ph.year) - 14 * slotOf.get(kk);
+        const x = xS(ph.year) + 1.5 * slotOf.get(kk);
         const p1 = rowOf.get(ph.a), p2 = rowOf.get(ph.b);
         const yTop = Math.min(p1.cy, p2.cy), yBot = Math.max(p1.cy, p2.cy) + 8;
         if (p1.cy !== p2.cy)
@@ -3057,13 +3053,6 @@ function chartPdf(title, rows, links, fontBytes, rel = null) {
         } else if (d.k === "line") {
             ops.push(n(d.w) + " w " + col(d.stroke) + " RG "
                 + n(d.x1) + " " + n(d.y1) + " m " + n(d.x2) + " " + n(d.y2) + " l S");
-        } else if (d.k === "qarc") {
-            // квадратичная (SVG Q) → кубическая: обе контрольные = P + ⅔(Q−P0)
-            const c1x = d.x0 + 2 / 3 * (d.qx - d.x0), c1y = d.y0 + 2 / 3 * (d.qy - d.y0);
-            const c2x = d.x1 + 2 / 3 * (d.qx - d.x0), c2y = d.y1 + 2 / 3 * (d.qy - d.y0);
-            ops.push(n(d.w) + " w " + col(d.stroke) + " RG "
-                + n(d.x0) + " " + n(d.y0) + " m "
-                + n(c1x) + " " + n(c1y) + " " + n(c2x) + " " + n(c2y) + " " + n(d.x1) + " " + n(d.y1) + " c S");
         } else if (d.k === "dot") {     // точка: заливка цветом семьи + белая обводка
             const k = 0.55228 * d.r;
             ops.push(col(d.fill) + " rg 1 1 1 RG 1 w "

@@ -886,6 +886,49 @@ for (const [t, rows, ln] of [
     cmp('chartModel «' + t + '»', VK.chartModel(t, rows, ln), TGC.chartModel(t, rows, ln));
     cmp('chartPdf «' + t + '» (байты)', VK.chartPdf(t, rows, ln, FONT), TGC.chartPdf(t, rows, ln, FONT));
 }
+// разные пары с детьми в один год (+ фантом в тот же год): вертикали
+// вместо дуг — каждая следующая семья на толщину линии (1.5) правее
+// вместе с точками (детская точка в баре); близнецы одной семьи — одна вертикаль
+const MULTI_ROWS = [
+    { name: 'Пётр I', birth: '1672-06-09', death: '1725-02-08', sex: 'M' },
+    { name: 'Екатерина I', birth: '1684-05-04', death: '1727-05-17', sex: 'F' },
+    { name: 'Иван V', birth: '1666-08-27', death: '1696-02-08', sex: 'M' },
+    { name: 'Прасковья', birth: '1664-10-10', death: '1731-01-01', sex: 'F' },
+    { name: 'Евдокия', birth: '1669-11-06', death: '1731-05-11', sex: 'F' },
+    { name: 'Анна Петровна', birth: '1708-01-27', death: '1728-05-04', sex: 'F' },
+    { name: 'Елизавета Петровна', birth: '1708-06-18', death: '1728-05-04', sex: 'F' },
+    { name: 'Мария Ивановна', birth: '1708-07-31', death: '1733-01-01', sex: 'F' },
+];
+const MULTI_LINKS = [
+    { child: 'Анна Петровна 1708', parents: ['Пётр I 1672', 'Екатерина I 1684'] },
+    { child: 'Елизавета Петровна 1708', parents: ['Пётр I 1672', 'Екатерина I 1684'] }, // близнецы
+    { child: 'Мария Ивановна 1708', parents: ['Иван V 1666', 'Прасковья 1664'] },
+];
+const MULTI_PH = { phantoms: [{ fam: ['Пётр I 1672', 'Евдокия 1669'], years: [1708] }] };
+cmp('chartModel «две семьи, один год»', VK.chartModel('m', MULTI_ROWS, MULTI_LINKS, MULTI_PH),
+    TGC.chartModel('m', MULTI_ROWS, MULTI_LINKS, MULTI_PH));
+cmp('chartPdf «две семьи, один год» (байты)', VK.chartPdf('m', MULTI_ROWS, MULTI_LINKS, FONT, MULTI_PH),
+    TGC.chartPdf('m', MULTI_ROWS, MULTI_LINKS, FONT, MULTI_PH));
+// вертикали без дуг; семья-слот = +1.5px вправо; близнецы — одна вертикаль;
+// детская точка в баре: минимум пучка = x начала баров детей 1708 года
+{
+    const m = VK.chartModel('m', MULTI_ROWS, MULTI_LINKS, MULTI_PH);
+    const vert = m.draws.filter(d => d.k === 'line' && d.w === 1.5);
+    const xs = [...new Set(vert.map(d => d.x1))].sort((a, b) => a - b);
+    if (m.draws.some(d => d.k === 'qarc'))
+        { failed++; console.log('✗ chart: дуга вместо вертикали'); }
+    if (vert.some(d => d.x1 !== d.x2))
+        { failed++; console.log('✗ chart: связь не вертикаль'); }
+    if (xs.length !== 3 || xs.slice(1).some((x, i) => Math.abs(x - xs[i] - 1.5) > 0.01))
+        { failed++; console.log('✗ chart: семьи-год не на толщину линии: ' + xs.join(', ')); }
+    const cnt = new Map();
+    for (const d of m.draws) if (d.k === 'rrect') cnt.set(d.x, (cnt.get(d.x) || 0) + 1);
+    const barX = [...cnt].find(([, n]) => n === 3)?.[0];
+    if (barX === undefined || Math.min(...xs) !== barX || xs.some(x => x < barX))
+        { failed++; console.log('✗ chart: пучок не вправо от линии года (бар ' + barX + ', x ' + xs.join(', ') + ')'); }
+    if (m.draws.filter(d => d.k === 'dot').some(d => !xs.includes(d.x)))
+        { failed++; console.log('✗ chart: точка вне x своей семьи'); }
+}
 // колонка «Связь год» к герою (ярлыки как в 🔔-списке); у героя с rel.range
 // («диапазон» радиуса из кейкапа) — 1 родители-дети, 2 деды-внуки, 4 пра2…
 const REL = {
@@ -942,7 +985,7 @@ const trip = h => [1, 3, 5].map(i => Math.round(parseInt(h.slice(i, i + 2), 16) 
 const famSet = new Set([...twin.matchAll(/1\.5 w ([\d.]+ [\d.]+ [\d.]+) RG/g)].map(m2 => m2[1]));
 if (famSet.size !== 2)
     { failed++; console.log('✗ chartPdf: близнецы-год не различён — вертикали ' + [...famSet].join(' | ')); }
-for (const t of famSet) if (!['#e6194b', '#f58231', '#bfa100', '#3cb44b', '#1f77b4', '#0082c8', '#911eb4'].map(trip).includes(t))
+for (const t of famSet) if (!['#e6194b', '#f58231', '#bfa100', '#3cb44b', '#1f77b4', '#f032e6', '#911eb4'].map(trip).includes(t))
     { failed++; console.log('✗ chartPdf: цвет связи вне палитры: ' + t); }
 // ассерты: 3 родителя, родитель моложе ребёнка, неизвестное имя, неуникальный ключ
 const ASSERTS = [
