@@ -301,7 +301,16 @@ export default async function (message, ctx) {
     if (text.startsWith("/")) {
         const hits = flatSearch(await chatFlatText(chatId), text);
         if (hits.length) {
-            await sendLong(chatId, hits.join("\n"));
+            // частые имена длиннее лимита — sendLong выложит файлом (как ВК);
+            // имя файла — дословно как заголовок в ВК (lunarreturns.js)
+            const q = text.trim();
+            const sub = /^\/\s/.test(q);
+            const mark = (q.slice(1).match(/^([-+=])\1*/) || [""])[0];
+            const needle = (sub ? q.slice(1) : q.slice(1 + mark.length)).trim();
+            const head = "Найдено " + hits.length + " строк "
+                + (needle ? (sub ? "с подстрокой " : "начинающихся с ") + needle
+                          : "с маркером «" + mark + "»");
+            await sendLong(chatId, hits.join("\n"), undefined, head);
             console.log("flat search:", JSON.stringify(text), "->", hits.length, "строк, чат", chatId);
             return;
         }

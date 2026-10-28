@@ -3412,12 +3412,12 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
     const chartHead = head0.replace(/^\d\u20E3\s*/, "");
     const rm = /^(\d)\u20E3/.exec(head0);
     const base = fileBaseOf(head0);
-    let pdf = null, persons = 0;
+    let pdf = null, persons = 0, chartErr = null;
     try {
         const res = chartFor(peerId, keys, chartHead, heroKey, rm ? Number(rm[1]) : null);
         persons = res.persons;
         pdf = res.pdf;
-    } catch (e) { console.error("chart:", e.message); }
+    } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
     try {
         const atts = [await vkUploadDoc(peerId, base + ".ged", g)];
         if (pdf) atts.push(await vkUploadDoc(peerId, base + ".pdf", Buffer.from(pdf, "latin1")));
@@ -3428,6 +3428,7 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
                     attachment: atts.join(","), keyboard: kb
                 });
                 console.log("ged artifacts edited into origin:", base + ".ged", "peer", peerId);
+                if (chartErr) await messagesSend(peerId, "💥 Диаграмма не построена: " + chartErr);
                 return;
             } catch (e) {
                 console.error("editOriginAtts:", e.message, "— отношу файлом");
@@ -3435,9 +3436,11 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
         }
         await messagesSend(peerId, head, msgId, convMsgId, null, atts.join(","));
         console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : ""), "peer", peerId);
+        if (chartErr) await messagesSend(peerId, "💥 Диаграмма не построена: " + chartErr);
         return;
     } catch (e) {
         console.error("doc upload:", e.message);
+        await messagesSend(peerId, "💥 Не удалось выложить файлы — гедком текстом");
     }
     const parts = splitText((head ? head + "\n" : "") + g);
     for (let i = 0; i < parts.length; i++)
@@ -3711,6 +3714,7 @@ async function messagesSend(peerId, text, msgId, convMsgId, keyboard, attachment
     });
     if (keyboard) params.keyboard = keyboard;
     if (attachment) params.attachment = attachment;
+    console.log(params.attachment ? "файл отправлен" : "ответ отправлен", "peer", peerId);
     return queueSend(params);
 }
 
@@ -4062,6 +4066,7 @@ async function sendFocus(peerId, key, msgId, convMsgId, fromId, dd) {
 // replyMsg — msg.reply_message (ответ триггером на триггер = связь)
 async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, payload = "", replyMsg = null) {
     if (process.env.LOG_UPDATES) console.log("msg from", peerId, ":", text);
+    if (text.trim().startsWith("/")) console.log("команда:", JSON.stringify(text.trim()), "peer", peerId);
     if (date) markSeen(date);
     if (isStart(text, payload)) {
         // «/» ответом на триггер — фокус-сообщение с радиусом родни
@@ -4168,10 +4173,27 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     // мужчины глубины 0, /--Иван — глубины 1, /=… — женщины); "/ текст" —
     // подстрока. Пусто — справка. (ТГ: handlers/message.js; логика — flatSearch)
     if (text.trim().startsWith("/")) {
-        const hits = flatSearch(chatFlatText(peerId), text.trim());
+        const q = text.trim();
+        const hits = flatSearch(chatFlatText(peerId), q);
         if (hits.length) {
-            await messagesSend(peerId, hits.join("\n"), msgId, convMsgId);
-            console.log("flat search:", JSON.stringify(text.trim()), "->", hits.length, "строк, peer", peerId);
+            console.log("результат готов:", hits.length, "строк");
+            // частые имена (Андрей) длиннее лимита ВК — файлом, как /links
+            // (ТГ: sendLong делает то же)
+            const found = hits.join("\n");
+            if (found.length >= 4000) {
+                // заголовок и имя файла — дословно как в ТГ (handlers/message.js)
+                const sub = /^\/\s/.test(q);
+                const mark = (q.slice(1).match(/^([-+=])\1*/) || [""])[0];
+                const needle = (sub ? q.slice(1) : q.slice(1 + mark.length)).trim();
+                const head = "Найдено " + hits.length + " строк "
+                    + (needle ? (sub ? "с подстрокой " : "начинающихся с ") + needle
+                              : "с маркером «" + mark + "»");
+                const doc = await vkUploadDoc(peerId, fileBaseOf(head) + ".txt", "\uFEFF" + found);
+                // без текстового заголовка — имя файла уже говорит само
+                await messagesSend(peerId, "", msgId, convMsgId, null, doc);
+            } else {
+                await messagesSend(peerId, found, msgId, convMsgId);
+            }
             return;
         }
         let kb;
@@ -4382,6 +4404,7 @@ async function editOriginDoc(o, name, content, kb) {
 async function handleEvent(o) {
     const p = unpay(o.payload);
     const peerId = o.peer_id;
+    console.log("кнопка:", JSON.stringify(p), "peer", peerId);
     // кнопки фокус-сообщения: радиус родни 1–5, 🔔/🧬 в радиусе, «-+=» ветвь
     if (p && typeof p === "object" && (p.c === "foc" || p.c === "foc:bell" || p.c === "foc:tree" || p.c === "foc:flat")) {
         const key = String(p.k || "");

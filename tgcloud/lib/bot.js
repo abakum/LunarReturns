@@ -1725,13 +1725,13 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
     const chartHead = head0.replace(/^\d\u20E3\s*/, "");
     const rm = /^(\d)\u20E3/.exec(head0);
     const base = fileBaseOf(head0);
-    let pdf = null, persons = 0;
+    let pdf = null, persons = 0, chartErr = null;
     try {
         const res = await chartFor(chatId, keys, chartHead, heroKey, rm ? Number(rm[1]) : null);
         // chartPdf сам отсекает до 50 младших — файл всегда строится
         persons = res.persons;
         pdf = res.pdf;
-    } catch (e) { console.error("chart:", e.message); }
+    } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
     try {
         const enc = new TextEncoder();
         // оба файла — ответом (reply) на сообщение с кнопками/командой
@@ -1748,9 +1748,11 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
             ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
         });
         console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : ""), "chat", chatId);
+        if (chartErr) await api.sendMessage({ chat_id: chatId, text: "💥 Диаграмма не построена: " + chartErr });
         return;
     } catch (e) {
         console.error("sendDocument:", e.message);
+        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось выложить файлы — гедком текстом" });
     }
     await sendLong(chatId, (head ? head + "\n" : "") + g, undefined, head0 || "Гедком-древо");
 }
@@ -1892,7 +1894,7 @@ export async function sendLong(chatId, text, replyMarkup, name) {
         return;
     }
     // BOM — чтобы Windows-редакторы (Блокнот) открывали как UTF-8, а не ANSI
-    const base = fileBaseOf(name || "Ответ") + ".ged.txt";
+    const base = fileBaseOf(name || "Ответ") + ".txt";
     try {
         const enc = new TextEncoder();
         await api.sendDocument({
