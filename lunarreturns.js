@@ -664,7 +664,7 @@ function parseGedcom(text) {
         if (!cur) continue;
         if (lvl === 1) curTag = tag;
         if (lvl === 1) {
-            if (tag === "NAME") cur.name = val.replace(/\/(.*?)\//g, "$1").trim();
+            if (tag === "NAME") cur.name = val.replace(/\/(.*?)\//g, "$1").trim().replace(/\s+/g, " ");
             else if (tag === "SEX") cur.sex = /^F/i.test(val) ? "F" : /^M/i.test(val) ? "M" : null;
             else if (tag === "BIRT") cur.birt = cur.birt || {};
             else if (tag === "DEAT") cur.deat = cur.deat || {};
