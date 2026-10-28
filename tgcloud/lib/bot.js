@@ -1650,11 +1650,11 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
                 anchor.set(a, { yr: Number(sp.birtD.slice(0, 4)), spKey: sp.name + " " + sp.birtD, fam: f.xref });
         }
     }
-    // явные ключи бездатных «Имя якорь»: тот же алгоритм суффиксов, что в
-    // chartModel (rows идут датированные, потом бездатные — коллизия с
-    // ключом датированной тёзки разрешается невидимым « »)
+    // явные ключи бездатных «Имя якорь»: суффиксы « » строит сам chartModel
+    // (ключи датированных — «Имя полная дата», с «Имя якорь» не пересекаются);
+    // taken — для коллизий одноимённых заглушек на одном якорном году
     const taken = new Set();
-    for (const r of persons) taken.add(r.n + " " + Number(r.d.slice(0, 4)));
+    for (const r of persons) taken.add(r.n + " " + r.d);
     const famStubKey = new Map();   // fam.xref → ключ бездатного супруга в чарте
     for (const [x, an] of anchor) {
         if (hasKeys && !keys.includes(an.spKey)) continue;
@@ -1679,13 +1679,14 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
             parentsOf.set(c, arr);
         }
     }
-    // ключ «Имя год» из «Имя ГГГГ-ММ-ДД»
-    const ckey = k => k.slice(0, -11) + " " + keyY(k);
+    // ключи датированных — pkey как есть («Имя ГГГГ-ММ-ДД»); бездатный
+    // супруг под ckey не проходит (свой «Имя якорь»)
+    const ckey = k => k;
     const links = [...parentsOf].filter(([, ps]) => ps.ds.length || ps.sk)
         .map(([c, ps]) => ({ child: ckey(c), parents: [...ps.ds.map(ckey), ...(ps.sk ? [ps.sk] : [])] }));
     // ярлыки родства — как в 🔔-списке (focusListText): linkPairs +
-    // супруги fam-семей + пол; ключи ярлыков — «Имя год»; диапазон героя
-    // rel.range (цифра кейапа заголовка, 4⃣ … → 4) — из sendGedPdf
+    // супруги fam-семей + пол; подписи в чарте всё равно «Связь год»;
+    // диапазон героя rel.range (цифра кейапа заголовка, 4⃣ … → 4) — из sendGedPdf
     const hero = heroKey ? ckey(heroKey) : null;
     const rel = hero ? {
         hero,
@@ -1728,7 +1729,7 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
     let pdf = null, persons = 0, chartErr = null;
     try {
         const res = await chartFor(chatId, keys, chartHead, heroKey, rm ? Number(rm[1]) : null);
-        // chartPdf сам отсекает до 50 младших — файл всегда строится
+        // chartPdf сам отсекает до CHART_MAX младших — файл всегда строится
         persons = res.persons;
         pdf = res.pdf;
     } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }

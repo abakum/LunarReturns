@@ -2728,7 +2728,7 @@ function flatSearch(flat, query) {
 // генерируется dev/font-subset.mjs) как CIDFontType2/Identity-H: TTF кладётся
 // в PDF как есть (FontFile2), из него парсятся только cmap/hmtx/head/OS2.
 
-const CHART_MAX = 150;  // персон (PDF многостраничный, режется по высоте)
+const CHART_MAX = 1000;  // персон (PDF многостраничный, режется по высоте)
 const KIND_W = 170;          // колонка подписей слева (минимум)
 const TITLE_H = 34;          // поле заголовка
 const ROW_H = 16;            // высота строки персоны
@@ -2847,16 +2847,16 @@ function chartModel(title, rows, links, rel = null) {
     const yrOf = r => r.birth != null ? year(r.birth) : (Number.isFinite(r.anchor) ? r.anchor : null);
     rows = rows.filter(r => yrOf(r) !== null);
     const TODAY_Y = new Date().getFullYear(); // «сегодня» — гранулярность оси (годы)
-    // ключи «Имя год»: явный r.k (бездатные из chartFor — «Имя якорь»);
-    // остальным при коллизии — невидимый суффикс (датированные ключи
-    // не трогаем — дубль датированных бросается)
+    // ключи: датированные — «Имя полная дата», бездатные — «Имя якорь»;
+    // коллизии (дубли записей, одноимённые заглушки на одном якоре) —
+    // невидимый суффикс « », диаграмма строится всегда
     const keys = new Map();
     {
         const taken = new Set();
         for (const r of rows) {
             if (r.k != null) { taken.add(r.k); keys.set(r, r.k); continue; }
-            let k = r.name + " " + yrOf(r);
-            while (r.birth == null && taken.has(k)) k += " ";
+            let k = r.name + " " + (r.birth != null ? r.birth : r.anchor);
+            while (taken.has(k)) k += " ";
             taken.add(k);
             keys.set(r, k);
         }
@@ -2871,12 +2871,10 @@ function chartModel(title, rows, links, rel = null) {
         rows = rows.filter(r => keep.has(keyOf(r)));
         links = links.filter(l => keep.has(l.child) && l.parents.every(p => keep.has(p)));
     }
-    const seen = new Set();
-    for (const r of rows) {
-        if (seen.has(keyOf(r))) throw new Error("chart: ключ неуникален " + keyOf(r));
-        if (r.birth != null && r.death && year(r.death) < year(r.birth)) throw new Error("chart: смерть раньше рождения " + keyOf(r));
-        seen.add(keyOf(r));
-    }
+    // «смерть раньше рождения» — ошибка данных, суффиксом не исправляется
+    for (const r of rows)
+        if (r.birth != null && r.death && year(r.death) < year(r.birth))
+            throw new Error("chart: смерть раньше рождения " + keyOf(r));
     const byKey = new Map(rows.map(r => [keyOf(r), r]));
     for (const l of links) {
         if (!byKey.has(l.child)) throw new Error("chart: имя не найдено " + l.child);
@@ -3279,8 +3277,9 @@ function chartFont() {
     return FONT_CACHE;
 }
 
-// ключ «Имя год» из pkey «Имя ГГГГ-ММ-ДД» (имя может содержать пробелы)
-const ckey = k => { const i = k.lastIndexOf(" "); return k.slice(0, i) + " " + Number(k.slice(i + 1, i + 5) || 0); };
+// ключи диаграммы — pkey «Имя ГГГГ-ММ-ДД» без усечения (имя может содержать
+// пробелы; бездатный супруг идёт своим «Имя якорь», мимо ckey)
+const ckey = k => k;
 
 // диаграммные данные чата/фрагмента (как у gedcomText: те же INDI, свадьбы
 // «Имя+Имя» вне; семьи усекаются до персон фрагмента). heroKey — pkey героя
@@ -3305,11 +3304,11 @@ function chartFor(peerId, keys, title, heroKey = null, range = null) {
                 anchor.set(a, { yr: Number(sp.birt_d.slice(0, 4)), spKey: sp.name + " " + sp.birt_d, fam: f.xref });
         }
     }
-    // явные ключи бездатных «Имя якорь»: тот же алгоритм суффиксов, что в
-    // chartModel (rows идут датированные, потом бездатные — коллизия с
-    // ключом датированной тёзки разрешается невидимым « »)
+    // явные ключи бездатных «Имя якорь»: суффиксы « » строит сам chartModel
+    // (ключи датированных — «Имя полная дата», с «Имя якорь» не пересекаются);
+    // taken — для коллизий одноимённых заглушек на одном якорном году
     const taken = new Set();
-    for (const r of recs) taken.add(r.n + " " + Number(r.d.slice(0, 4)));
+    for (const r of recs) taken.add(r.n + " " + r.d);
     const famStubKey = new Map();   // fam.xref → ключ бездатного супруга в чарте
     for (const [x, an] of anchor) {
         if (hasKeys && !keys.includes(an.spKey)) continue;
@@ -3337,8 +3336,8 @@ function chartFor(peerId, keys, title, heroKey = null, range = null) {
     const links = [...parentsOf].filter(([, ps]) => ps.ds.length || ps.sk)
         .map(([c, ps]) => ({ child: ckey(c), parents: [...ps.ds.map(ckey), ...(ps.sk ? [ps.sk] : [])] }));
     // ярлыки родства — как в 🔔-списке (focusListText): linkPairs +
-    // супруги fam-семей + пол; ключи ярлыков — «Имя год»; диапазон героя
-    // rel.range (цифра кейкапа заголовка, 4⃣ … → 4) — из sendGedArtifacts
+    // супруги fam-семей + пол; подписи в чарте всё равно «Связь год»;
+    // диапазон героя rel.range (цифра кейапа заголовка, 4⃣ … → 4) — из sendGedArtifacts
     const hero = heroKey ? ckey(heroKey) : null;
     const rel = hero ? {
         hero,

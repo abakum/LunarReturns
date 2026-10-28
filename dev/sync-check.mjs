@@ -788,8 +788,8 @@ cmp('chartFor бездатный в связях (байты)',
         { name: 'Пётр Бездатный', k: 'Пётр Бездатный 1900', birth: null, anchor: 1900, death: '1970-05-05', sex: 'M' },
         { name: 'Сын Т', birth: '1930-03-05', death: null, sex: 'M' },
     ];
-    const ln = [{ child: 'Сын Т 1930', parents: ['Анна Т 1900', 'Пётр Бездатный 1900'] }];
-    const ph = { phantoms: [{ fam: ['Анна Т 1900', 'Пётр Бездатный 1900'], years: [1935] }] };
+    const ln = [{ child: 'Сын Т 1930-03-05', parents: ['Анна Т 1900-01-01', 'Пётр Бездатный 1900'] }];
+    const ph = { phantoms: [{ fam: ['Анна Т 1900-01-01', 'Пётр Бездатный 1900'], years: [1935] }] };
     cmp('chartModel бездатный в связях', VK.chartModel('l', rows, ln, ph), TGC.chartModel('l', rows, ln, ph));
     cmp('chartPdf бездатный в связях (байты)', VK.chartPdf('l', rows, ln, FONT, ph), TGC.chartPdf('l', rows, ln, FONT, ph));
     const m = VK.chartModel('l', rows, ln, ph);
@@ -816,14 +816,14 @@ cmp('chartFor бездатный в связях (байты)',
             { name: 'Ребёнок', birth: null, anchor: 1910, sex: 'M' }],
             [{ child: 'Ребёнок 1910', parents: ['Муж 1920', 'Жена 1910'] }]);
     } catch (e) { failed++; console.log('✗ chart: якорь посчитан ДР: ' + e.message); }
-    // дубль датированных по-прежнему бросается (явный бездатный ключ этому
-    // не мешает); сама модель без фаномов не бросает
+    // дубль «Имя + полная дата» больше не бросок: вторая строка получает
+    // невидимый суффикс « » и рисуется (две одинаковые строки); явный
+    // бездатный ключ этому не мешает; сама модель без фаномов не бросает
     VK.chartModel('y', rows, ln);
-    let dupE = '';
-    try { VK.chartModel('y', [...rows, { name: 'Сын Т', birth: '1930-03-05', sex: 'M' }], ln); }
-    catch (e) { dupE = e.message; }
-    if (!dupE.includes('неуникален'))
-        { failed++; console.log('✗ chart бездатный: дубль датированных не бросил'); }
+    const dupM = VK.chartModel('y', [...rows, { name: 'Сын Т', birth: '1930-03-05', sex: 'M' }], ln);
+    const dupNames = dupM.draws.filter(d => d.k === 'text' && d.fill === '#111111').map(d => d.s);
+    if (dupNames.filter(s => s === 'Сын Т').length !== 2)
+        { failed++; console.log('✗ chart бездатный: дубль не второй строкой: ' + dupNames.join(' | ')); }
 }
 
 // ==================== 4. связи: reply-флоу, свадьба, каскад ====================
@@ -982,9 +982,9 @@ const CHART_ROWS = [
     { name: 'Без Смерти', birth: '1700-01-01', death: null, sex: null },            // бар до края
 ];
 const CHART_LINKS = [
-    { child: 'Алексей Петрович 1690', parents: ['Пётр I 1672', 'Евдокия 1669'] },
-    { child: 'Елизавета Петровна 1709', parents: ['Пётр I 1672', 'Екатерина I 1684'] },
-    { child: 'Павел Петрович 1691', parents: ['Пётр I 1672'] }, // один родитель
+    { child: 'Алексей Петрович 1690-02-28', parents: ['Пётр I 1672-06-09', 'Евдокия 1669-11-06'] },
+    { child: 'Елизавета Петровна 1709-12-29', parents: ['Пётр I 1672-06-09', 'Екатерина I 1684-05-04'] },
+    { child: 'Павел Петрович 1691-09-13', parents: ['Пётр I 1672-06-09'] }, // один родитель
 ];
 CHART_ROWS.push({ name: 'Евдокия', birth: '1669-11-06', death: '1731-05-11', sex: 'F' });
 // близнецы-год: две семьи, дети родились в один год — вертикали разных цветов
@@ -998,9 +998,9 @@ const TWIN_ROWS = [
     { name: 'Прасковья', birth: '1664-10-10', death: '1731-01-01', sex: 'F' },
 ];
 const TWIN_LINKS = [
-    { child: 'Тест близнецов 1 1710', parents: ['Пётр I 1672', 'Екатерина I 1684'] },
-    { child: 'Тест близнецов 2 1710', parents: ['Пётр I 1672', 'Екатерина I 1684'] },
-    { child: 'Екатерина Ивановна 1691', parents: ['Иван V 1666', 'Прасковья 1664'] },
+    { child: 'Тест близнецов 1 1710-01-01', parents: ['Пётр I 1672-06-09', 'Екатерина I 1684-05-04'] },
+    { child: 'Тест близнецов 2 1710-01-01', parents: ['Пётр I 1672-06-09', 'Екатерина I 1684-05-04'] },
+    { child: 'Екатерина Ивановна 1691-02-02', parents: ['Иван V 1666-08-27', 'Прасковья 1664-10-10'] },
 ];
 for (const [t, rows, ln] of [
     ['Пётр I: линии жизни', CHART_ROWS, CHART_LINKS],
@@ -1023,11 +1023,11 @@ const MULTI_ROWS = [
     { name: 'Мария Ивановна', birth: '1708-07-31', death: '1733-01-01', sex: 'F' },
 ];
 const MULTI_LINKS = [
-    { child: 'Анна Петровна 1708', parents: ['Пётр I 1672', 'Екатерина I 1684'] },
-    { child: 'Елизавета Петровна 1708', parents: ['Пётр I 1672', 'Екатерина I 1684'] }, // близнецы
-    { child: 'Мария Ивановна 1708', parents: ['Иван V 1666', 'Прасковья 1664'] },
+    { child: 'Анна Петровна 1708-01-27', parents: ['Пётр I 1672-06-09', 'Екатерина I 1684-05-04'] },
+    { child: 'Елизавета Петровна 1708-06-18', parents: ['Пётр I 1672-06-09', 'Екатерина I 1684-05-04'] }, // близнецы
+    { child: 'Мария Ивановна 1708-07-31', parents: ['Иван V 1666-08-27', 'Прасковья 1664-10-10'] },
 ];
-const MULTI_PH = { phantoms: [{ fam: ['Пётр I 1672', 'Евдокия 1669'], years: [1708] }] };
+const MULTI_PH = { phantoms: [{ fam: ['Пётр I 1672-06-09', 'Евдокия 1669-11-06'], years: [1708] }] };
 cmp('chartModel «две семьи, один год»', VK.chartModel('m', MULTI_ROWS, MULTI_LINKS, MULTI_PH),
     TGC.chartModel('m', MULTI_ROWS, MULTI_LINKS, MULTI_PH));
 cmp('chartPdf «две семьи, один год» (байты)', VK.chartPdf('m', MULTI_ROWS, MULTI_LINKS, FONT, MULTI_PH),
@@ -1055,20 +1055,20 @@ cmp('chartPdf «две семьи, один год» (байты)', VK.chartPdf(
 // колонка «Связь год» к герою (ярлыки как в 🔔-списке); у героя с rel.range
 // («диапазон» радиуса из кейкапа) — 1 родители-дети, 2 деды-внуки, 4 пра2…
 const REL = {
-    hero: 'Пётр I 1672',
+    hero: 'Пётр I 1672-06-09',
     range: 4,
     pairs: CHART_LINKS.flatMap(l => l.parents.map(p => [p, l.child])),
-    spouses: [['Евдокия 1669', 'Пётр I 1672']],
-    sex: Object.fromEntries(CHART_ROWS.map(r => [r.name + ' ' + Number(r.birth.slice(0, 4)), r.sex || null])),
+    spouses: [['Евдокия 1669-11-06', 'Пётр I 1672-06-09']],
+    sex: Object.fromEntries(CHART_ROWS.map(r => [r.name + ' ' + r.birth, r.sex || null])),
 };
 cmp('chartModel «Пётр I: ярлыки родства»', VK.chartModel('s', CHART_ROWS, CHART_LINKS, REL),
     TGC.chartModel('s', CHART_ROWS, CHART_LINKS, REL));
 cmp('chartPdf rel (байты)', VK.chartPdf('s', CHART_ROWS, CHART_LINKS, FONT, REL),
     TGC.chartPdf('s', CHART_ROWS, CHART_LINKS, FONT, REL));
 // фантомные рождения: дети супругов вне чарта — вертикали между супругами
-const PH = { phantoms: [{ fam: ['Пётр I 1672', 'Екатерина I 1684'], years: [1708, 1712] },
-    { fam: ['Пётр I 1672', 'Екатерина I 1684'], years: [1700] },
-    { fam: ['Пётр I 1672', 'Евдокия 1669'], years: [1695] }] };
+const PH = { phantoms: [{ fam: ['Пётр I 1672-06-09', 'Екатерина I 1684-05-04'], years: [1708, 1712] },
+    { fam: ['Пётр I 1672-06-09', 'Екатерина I 1684-05-04'], years: [1700] },
+    { fam: ['Пётр I 1672-06-09', 'Евдокия 1669-11-06'], years: [1695] }] };
 cmp('chartModel фантомы', VK.chartModel('f', CHART_ROWS, CHART_LINKS, PH),
     TGC.chartModel('f', CHART_ROWS, CHART_LINKS, PH));
 cmp('chartPdf фантомы (байты)', VK.chartPdf('f', CHART_ROWS, CHART_LINKS, FONT, PH),
@@ -1110,12 +1110,12 @@ if (famSet.size !== 2)
     { failed++; console.log('✗ chartPdf: близнецы-год не различён — вертикали ' + [...famSet].join(' | ')); }
 for (const t of famSet) if (!['#e6194b', '#f58231', '#bfa100', '#3cb44b', '#1f77b4', '#f032e6', '#911eb4'].map(trip).includes(t))
     { failed++; console.log('✗ chartPdf: цвет связи вне палитры: ' + t); }
-// ассерты: 3 родителя, родитель моложе ребёнка, неизвестное имя, неуникальный ключ
+// ассерты: 3 родителя, родитель моложе ребёнка, неизвестное имя (точный дубль
+// строки больше не бросок — он проверяется позитивно в разделе 3в)
 const ASSERTS = [
-    ['три родителя', { ...CHART_LINKS[1], parents: [...CHART_LINKS[1].parents, 'Пётр I 1672'] }, CHART_ROWS],
-    ['родитель моложе', { ...CHART_LINKS[0], parents: ['Елизавета Петровна 1709', 'Екатерина I 1684'] }, CHART_ROWS],
-    ['имя не найдено', { ...CHART_LINKS[0], parents: ['Немо 1650', 'Екатерина I 1684'] }, CHART_ROWS],
-    ['ключ неуникален', CHART_LINKS, [...CHART_ROWS, { ...CHART_ROWS[0], sex: 'M' }]],
+    ['три родителя', { ...CHART_LINKS[1], parents: [...CHART_LINKS[1].parents, 'Пётр I 1672-06-09'] }, CHART_ROWS],
+    ['родитель моложе', { ...CHART_LINKS[0], parents: ['Елизавета Петровна 1709-12-29', 'Екатерина I 1684-05-04'] }, CHART_ROWS],
+    ['имя не найдено', { ...CHART_LINKS[0], parents: ['Немо 1650', 'Екатерина I 1684-05-04'] }, CHART_ROWS],
 ];
 for (const [what, ln, rows] of ASSERTS) {
     let vkE = '', tgE = '';
@@ -1126,8 +1126,7 @@ for (const [what, ln, rows] of ASSERTS) {
 }
 // бездатный супруг (birth null + anchor — год ДР супруга): левая колонка
 // пустая, бар от якоря, «лет прожито» не выводится (год чужой); строка без
-// якоря не рисуется; коллизия якоря с датированным ключом — невидимый
-// суффикс (дубль датированных по-прежнему бросается)
+// якоря не рисуется; любые коллизии ключей — невидимый суффикс (без броска)
 const ANCH_ROWS = [
     { name: 'Пётр I', birth: '1672-06-09', death: '1725-02-08', sex: 'M' },
     { name: 'Мария', birth: null, anchor: 1672, death: '1703-01-01', sex: 'F' },
