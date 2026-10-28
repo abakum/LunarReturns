@@ -4785,7 +4785,11 @@ async function findRecordByCmid(peerId, cmid) {
 
 // ============================== ПЛАНИРОВЩИК ==============================
 // Ежедневно в 09:00 МСК: события с сегодняшней датой (МСК) получают список
-// раз в год (sent.last_year — переживает замену дерева).
+// раз в год (sent.last_year — переживает замену дерева). Проверка досылаема
+// в тот же день: checkedDate пишется только в конце полного успеха, поэтому
+// падение отправки/рестарт не теряет день — повторный запуск повторит
+// несостоявшее (юбилеи защищает sent-дедуп с откатом, дайджест —
+// digest:<peer> в meta, пишется после успешной отправки).
 
 function mskNowParts() {
     const t = new Date(Date.now() + TZ_MS);
@@ -4809,8 +4813,10 @@ async function dailyCheck() {
     const n = mskNowParts();
     const today = n.y + "-" + String(n.mo).padStart(2, "0") + "-" + String(n.d).padStart(2, "0");
     const mmdd = String(n.mo).padStart(2, "0") + "-" + String(n.d).padStart(2, "0");
+    // checkedDate — «день полностью отработал»: пишем в конце; в начале только
+    // дешёвый пропуск уже успешного дня. Падение в середине оставляет день
+    // досылаемым при рестарте/следующем запуске в тот же день.
     if ((q1("SELECT v FROM meta WHERE k='checkedDate'") || {}).v === today) return;
-    qr("INSERT OR REPLACE INTO meta(k,v) VALUES('checkedDate',?)", today);
     // годовщины персон и свадеб с сегодняшней датой (МСК); sent — раз в год
     const jobs = [
         ...qa(`SELECT chat, name, birt_d, birt_h, birt_m, deat_d FROM indi
@@ -4850,13 +4856,18 @@ async function dailyCheck() {
         if (!REL_ORDER.some(k => settings[k])) continue;
         const digest = religiousDigest(settings);
         if (!digest) continue;
+        // суточный дедуп дайджеста per-peer: пишется после успешной отправки,
+        // неуспешная — без записи, ретрай при следующем запуске в тот же день
+        if ((q1("SELECT v FROM meta WHERE k=?", "digest:" + peer) || {}).v === today) continue;
         try {
             await messagesSend(peer, digest);
+            qr("INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)", "digest:" + peer, today);
             console.log("digest:", peer);
         } catch (e) {
             console.error("digest send failed:", e.message);
         }
     }
+    qr("INSERT OR REPLACE INTO meta(k,v) VALUES('checkedDate',?)", today);
 }
 
 function scheduleDaily() {
@@ -4977,9 +4988,11 @@ async function main() {
         try { await catchUp(startAt); } catch (e) { console.error("catchUp:", e.message); }
     }
     // стартовая суточная проверка: только если сейчас 09:00 МСК или позже
-    // (иначе сообщение уйдёт сразу после полуночи). dailyCheck сам следит,
-    // что раз в сутки, так что если процесс встал до 09:00 и поднялся
-    // после — догонит; между 00:00 и 09:00 ждём scheduleDaily до 09:00.
+    // (иначе сообщение уйдёт сразу после полуночи). Проверка досылаема в тот
+    // же день: проверка встала/упала до 09:00 — догонит после подъёма,
+    // падение в середине — повторный запуск повторит несостоявшее (дедупы
+    // sent и digest:<peer> не дадут задвоить); между 00:00 и 09:00 ждём
+    // scheduleDaily до 09:00.
     if (mskNowParts().h >= 9) {
         try { await dailyCheck(); } catch (e) { console.error("daily:", e.message); }
     }
