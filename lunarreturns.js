@@ -640,8 +640,10 @@ function gdateToISO(s) {
     return /^\d{4}$/.test(t) ? t + "-01-01" : null;
 }
 
-// валидный гедком → { indis, fams }; иначе null. Берт только BIRT/DEAT/SEX
-// у INDI и HUSB/WIFE/CHIL/MARR/DIV (DATE, PLAC) у FAM
+// валидный гедком → { indis, fams }; иначе null. Берёт только
+// BIRT/DEAT/BURI/SEX (DATE, TIME, PLAC) у INDI и HUSB/WIFE/CHIL/MARR/DIV
+// (DATE, PLAC) у FAM; BURI (похороны) — фолбэк смерти: дата/место заходят
+// в deat, когда своей смерти нет (или нет её места)
 function parseGedcom(text) {
     const lines = String(text).split(/\r?\n/).map(l => l.trim());
     if (!lines.some(l => /^0\s+HEAD\b/i.test(l))) return null;
@@ -655,7 +657,7 @@ function parseGedcom(text) {
         if (lvl === 0) {
             curTag = null;
             cur = null;
-            if (xref && tag === "INDI") { cur = { __xref: xref, name: "", sex: null, birt: null, deat: null, adopFams: [] }; indis.set(xref, cur); }
+            if (xref && tag === "INDI") { cur = { __xref: xref, name: "", sex: null, birt: null, deat: null, buri: null, adopFams: [] }; indis.set(xref, cur); }
             else if (xref && tag === "FAM") { cur = { __xref: xref, husb: null, wife: null, chil: [], adopted: [], marr: null, div: null }; fams.set(xref, cur); }
             continue;
         }
@@ -666,6 +668,7 @@ function parseGedcom(text) {
             else if (tag === "SEX") cur.sex = /^F/i.test(val) ? "F" : /^M/i.test(val) ? "M" : null;
             else if (tag === "BIRT") cur.birt = cur.birt || {};
             else if (tag === "DEAT") cur.deat = cur.deat || {};
+            else if (tag === "BURI") cur.buri = cur.buri || {};
             else if (tag === "MARR") cur.marr = cur.marr || {};
             else if (tag === "DIV") cur.div = cur.div || {};
             else if (tag === "NOTE") cur.note = val;
@@ -688,13 +691,17 @@ function parseGedcom(text) {
             if (!iso) continue;
             if (curTag === "BIRT" && cur.birt) cur.birt.date = iso;
             else if (curTag === "DEAT" && cur.deat) cur.deat.date = iso;
+            else if (curTag === "BURI" && cur.buri) cur.buri.date = iso;
             else if (curTag === "MARR" && cur.marr) cur.marr.date = iso;
             else if (curTag === "DIV" && cur.div) cur.div.date = iso;
         } else if (lvl === 2 && tag === "TIME" && /^\d{1,2}:\d{2}/.test(val)) {
             if (curTag === "BIRT" && cur.birt) cur.birt.time = val.slice(0, 5);
             else if (curTag === "DEAT" && cur.deat) cur.deat.time = val.slice(0, 5);
         } else if (lvl === 2 && tag === "PLAC") {
-            if (curTag === "MARR" && cur.marr) cur.marr.plac = val;
+            if (curTag === "BIRT" && cur.birt) cur.birt.plac = val;
+            else if (curTag === "DEAT" && cur.deat) cur.deat.plac = val;
+            else if (curTag === "BURI" && cur.buri) cur.buri.plac = val;
+            else if (curTag === "MARR" && cur.marr) cur.marr.plac = val;
             else if (curTag === "DIV" && cur.div) cur.div.plac = val;
         } else if (lvl === 2 && (tag === "CONC" || tag === "CONT") && (curTag === "NOTE" || curTag === "TITL")) {
             // продолжение NOTE/TITL: CONC — склейка без пробела, CONT — новая
@@ -703,17 +710,33 @@ function parseGedcom(text) {
             else if (val) cur.note = val;
         }
     }
+    // похороны → смерть: дата/место, когда своей смерти нет (или нет места)
+    for (const ind of indis.values()) {
+        const b = ind.buri;
+        if (!b || (!b.date && !b.plac)) continue;
+        ind.deat = ind.deat || {};
+        if (!ind.deat.date && b.date) ind.deat.date = b.date;
+        if (!ind.deat.plac && b.plac) ind.deat.plac = b.plac;
+    }
     if (!indis.size && !fams.size) return null;
     return { indis: [...indis.values()], fams: [...fams.values()] };
 }
 
 // статистика гедкома для вопроса при дропе файла: сколько импортировалось бы
-// (условия подсчёта — как в importGedcom)
+// (условия подсчёта — как в importGedcom): именованные с датой — всегда,
+// бездатные именованные — только упомянутые в семьях (супруг/ребёнок)
 function gedStats(g) {
+    const famRefs = new Set();
+    for (const f of g.fams) {
+        if (f.husb) famRefs.add(f.husb);
+        if (f.wife) famRefs.add(f.wife);
+        for (const cx of f.chil) famRefs.add(cx);
+    }
     const have = new Set();
     let persons = 0;
     for (const ind of g.indis) {
-        if (!ind.name || !ind.birt || !ind.birt.date) continue;
+        if (!ind.name) continue;
+        if (!(ind.birt && ind.birt.date) && !famRefs.has(ind.__xref)) continue;
         persons++;
         have.add(ind.__xref);
     }
@@ -1279,7 +1302,7 @@ CREATE TABLE IF NOT EXISTS indi(
     chat INTEGER NOT NULL, xref TEXT NOT NULL, name TEXT NOT NULL,
     birt_d TEXT, birt_h INTEGER, birt_m INTEGER, src_h INTEGER, src_m INTEGER,
     deat_d TEXT, deat_h INTEGER, deat_m INTEGER, dsrc_h INTEGER, dsrc_m INTEGER,
-    sex TEXT, plac TEXT, note TEXT, PRIMARY KEY(chat, xref));
+    sex TEXT, plac TEXT, deat_plac TEXT, note TEXT, PRIMARY KEY(chat, xref));
 CREATE TABLE IF NOT EXISTS fam(
     chat INTEGER NOT NULL, xref TEXT NOT NULL, adhoc INTEGER NOT NULL DEFAULT 0,
     husb TEXT, wife TEXT,
@@ -1299,7 +1322,7 @@ CREATE TABLE IF NOT EXISTS settings(
     bud INTEGER NOT NULL DEFAULT 0, cath INTEGER NOT NULL DEFAULT 0, jud INTEGER NOT NULL DEFAULT 0,
     bell INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`);
-    for (const [t, c] of [["indi", "note"], ["fam", "note"]]) {
+    for (const [t, c] of [["indi", "note"], ["fam", "note"], ["indi", "deat_plac"]]) {
         const cols = qa("PRAGMA table_info(" + t + ")");
         if (!cols.some(x => x.name === c)) { try { qr("ALTER TABLE " + t + " ADD COLUMN " + c + " TEXT"); } catch (e) { /* уже есть */ } }
     }
@@ -1335,7 +1358,7 @@ function recordOf(peerId, key) {
 
 // персоны чата (только с датой рождения), порядок вставки
 function personRows(peerId) {
-    return qa(`SELECT xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,note
+    return qa(`SELECT xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note
         FROM indi WHERE chat=? AND birt_d IS NOT NULL ORDER BY rowid`, peerId).map(r => {
         const o = { n: r.name, d: r.birt_d };
         if (r.birt_h !== null) { o.h = r.birt_h; o.m = r.birt_m ?? 0; }
@@ -1345,6 +1368,7 @@ function personRows(peerId) {
             o.dd = r.deat_d;
             if (r.deat_h !== null) { o.dh = r.deat_h; o.dm = r.deat_m ?? 0; }
             if (r.dsrc_h !== null) { o.dsrcH = r.dsrc_h; o.dsrcM = r.dsrc_m ?? 0; }
+            if (r.deat_plac) o.dp = r.deat_plac;
         }
         if (r.plac) o.plac = r.plac;
         if (r.note) o.note = r.note;
@@ -1472,19 +1496,20 @@ function upsertPerson(peerId, rec) {
         } else if (rec.dh !== undefined) { put("deat_h", rec.dh); put("deat_m", rec.dm ?? 0); }
         if (rec.sex !== undefined) put("sex", rec.sex || null);
         if (rec.plac !== undefined) put("plac", rec.plac || null);
+        if (rec.plac2 !== undefined) put("deat_plac", rec.plac2 || null);
         if (rec.note !== undefined) put("note", rec.note || null);
         if (s.length) qr("UPDATE indi SET " + s.join(",") + " WHERE chat=? AND xref=?", ...v, peerId, cur.xref);
         return personRows(peerId).find(r => r.xref === cur.xref) || null;
     }
     const xref = nextIndiXref(peerId, "P");
-    qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,note)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         peerId, xref, rec.n, rec.d,
         rec.h ?? null, rec.h !== undefined ? (rec.m ?? 0) : null,
         rec.srcH ?? null, rec.srcH !== undefined ? (rec.srcM ?? 0) : null,
         rec.dd ?? null, rec.dh ?? null, rec.dh !== undefined ? (rec.dm ?? 0) : null,
         rec.dsrcH ?? null, rec.dsrcH !== undefined ? (rec.dsrcM ?? 0) : null,
-        rec.sex ?? null, rec.plac ?? null, rec.note ?? null);
+        rec.sex ?? null, rec.plac ?? null, rec.plac2 ?? null, rec.note ?? null);
     return personRows(peerId).find(r => r.xref === xref) || null;
 }
 
@@ -2188,27 +2213,42 @@ function linkKeyboard(peerId, link) {
 // заново (слияние больше не делаем — смешивание источников ломало базу).
 // fam — по одному на каждый FAM файла с точными xref'ами (без слипания
 // семей ребёнка); свадьбы живут на fam — точная привязка супругов;
-// возвращает краткий отчёт. Повторный импорт лечит любые старые данные
+// бездатные импортируются, когда упомянуты в семье (супруг/ребёнок), —
+// заглушки-персоны (birt_d NULL), как свадебные половины; безымянные — мимо.
+// Возвращает краткий отчёт. Повторный импорт лечит любые старые данные
 function importGedcom(peerId, g) {
     clearChatTree(peerId);
     const byId = new Map(); // xref файла → xref в базе (совпавшие «Имя Д» — один)
+    const famRefs = new Set(); // xref'ы, упомянутые в семьях (супруги/дети)
+    for (const f of g.fams) {
+        if (f.husb) famRefs.add(f.husb);
+        if (f.wife) famRefs.add(f.wife);
+        for (const cx of f.chil) famRefs.add(cx);
+    }
     let persons = 0;
     for (const ind of g.indis) {
-        if (!ind.name || !ind.birt || !ind.birt.date) continue;
+        const dated = !!(ind.birt && ind.birt.date);
+        if (!ind.name || (!dated && !famRefs.has(ind.__xref))) continue;
         let xref = ind.__xref;
-        const same = q1("SELECT xref FROM indi WHERE chat=? AND name=? AND birt_d=?", peerId, ind.name, ind.birt.date);
-        if (same) xref = same.xref;
-        else qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,note)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-            peerId, xref, ind.name, ind.birt.date,
-            null, null,
-            ind.birt.time ? Number(ind.birt.time.slice(0, 2)) : null,
-            ind.birt.time ? Number(ind.birt.time.slice(3, 5)) : null,
-            ind.deat && ind.deat.date ? ind.deat.date : null,
-            null, null,
-            ind.deat && ind.deat.time ? Number(ind.deat.time.slice(0, 2)) : null,
-            ind.deat && ind.deat.time ? Number(ind.deat.time.slice(3, 5)) : null,
-            ind.sex ?? null, null, ind.note ?? null);
+        if (dated) {
+            const same = q1("SELECT xref FROM indi WHERE chat=? AND name=? AND birt_d=?", peerId, ind.name, ind.birt.date);
+            if (same) xref = same.xref;
+        }
+        if (xref === ind.__xref)
+            qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+                peerId, xref, ind.name, dated ? ind.birt.date : null,
+                null, null,
+                dated && ind.birt.time ? Number(ind.birt.time.slice(0, 2)) : null,
+                dated && ind.birt.time ? Number(ind.birt.time.slice(3, 5)) : null,
+                ind.deat && ind.deat.date ? ind.deat.date : null,
+                null, null,
+                ind.deat && ind.deat.time ? Number(ind.deat.time.slice(0, 2)) : null,
+                ind.deat && ind.deat.time ? Number(ind.deat.time.slice(3, 5)) : null,
+                ind.sex ?? null,
+                ind.birt && ind.birt.plac ? ind.birt.plac : null,
+                ind.deat && ind.deat.plac ? ind.deat.plac : null,
+                ind.note ?? null);
         byId.set(ind.__xref, xref);
         persons++;
     }
@@ -2268,22 +2308,32 @@ function gedcomText(peerId, keys) {
         if (k) adoptedOf.set(k, c.fam);
     }
     // семьи → {fx — список xref (после схлопывания), pkeys — датированные
-    // родители-ключи, stubs — [{xref,name}], children — ключи, marr, div}
+    // родители-ключи, stubs — [{xref,name,deat,dp}] — бездатные супруги,
+    // kstubs — те же дети, children — ключи, marr, div}
     const fams = [];
     for (const f of qa("SELECT * FROM fam WHERE chat=? ORDER BY rowid", peerId)) {
-        const pkeys = [], stubs = [], children = [];
+        const pkeys = [], stubs = [], kstubs = [], children = [];
+        const stubOf = x => {
+            const i = indiOf(peerId, x);
+            if (!i || !i.name) return null;
+            return { xref: x, name: i.name, sex: i.sex || null, deat: i.deat_d || null, dp: i.deat_plac || null };
+        };
         for (const x of [f.husb, f.wife]) {
             if (!x) continue;
             const k = keyOfXref(peerId, x);
             if (k) pkeys.push(k);
             else {
-                const i = indiOf(peerId, x);
-                if (i && !stubs.some(s => s.xref === x)) stubs.push({ xref: x, name: i.name });
+                const st = stubOf(x);
+                if (st && !stubs.some(s => s.xref === x)) stubs.push(st);
             }
         }
         for (const r of qa("SELECT indi FROM chil WHERE chat=? AND fam=? ORDER BY rowid", peerId, f.xref)) {
             const k = keyOfXref(peerId, r.indi);
             if (k) children.push(k);
+            else {
+                const st = stubOf(r.indi);
+                if (st && !kstubs.some(s => s.xref === r.indi)) kstubs.push(st);
+            }
         }
         let marr = f.marr_d ? { d: f.marr_d, ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null;
         let div = f.div_d ? { d: f.div_d, ...(f.div_plac ? { plac: f.div_plac } : {}) } : null;
@@ -2294,24 +2344,30 @@ function gedcomText(peerId, keys) {
             if (!(ps.length && cs.length)) continue;
             pkeys.length = 0; pkeys.push(...ps);
             children.length = 0; children.push(...cs);
-            // фрагмент — только те персоны, что в keys
-        } else if (!pkeys.length && !stubs.length && !children.length) continue;
+            // фрагмент — датированные персоны из keys; заглушки-половины/дети — как есть
+        } else if (!pkeys.length && !stubs.length && !kstubs.length && !children.length) continue;
         const s = pkeys.slice().sort();
         const m = fams.find(x => x.s.length === s.length && x.s.every((p, i) => p === s[i]));
         if (m) {
             m.fx.push(f.xref);
             for (const c of children) if (!m.children.includes(c)) m.children.push(c);
             for (const st of stubs) if (!m.stubs.some(x => x.xref === st.xref)) m.stubs.push(st);
+            for (const st of kstubs) if (!m.kstubs.some(x => x.xref === st.xref)) m.kstubs.push(st);
             if (!m.marr) m.marr = marr;
             if (!m.div) m.div = div;
             if (!m.fnote) m.fnote = fnote;
-        } else fams.push({ s, fx: [f.xref], pkeys, stubs, children, marr, div, fnote });
+        } else fams.push({ s, fx: [f.xref], pkeys, stubs, kstubs, children, marr, div, fnote });
     }
     // заглушкам — X-номера; FAM — по порядку; HUSB/WIFE по полу (без — HUSB)
     let stubN = 0;
-    const stubId = new Map(), stubName = new Map();
-    for (const f of fams) for (const st of f.stubs)
-        if (!stubId.has(st.xref)) { stubId.set(st.xref, "X" + (++stubN)); stubName.set(st.xref, st.name); }
+    const stubId = new Map(), stubInfo = new Map();
+    const addStub = st => {
+        if (!stubId.has(st.xref)) { stubId.set(st.xref, "X" + (++stubN)); stubInfo.set(st.xref, st); }
+    };
+    for (const f of fams) {
+        for (const st of f.stubs) addStub(st);
+        for (const st of f.kstubs) addStub(st);
+    }
     const fidOf = new Map(fams.map((f, i) => [f, "F" + (i + 1)]));
     const adoptedHere = (f, k) => f.fx.some(x => adoptedOf.get(k) === x);
     const out = ["0 HEAD", "1 SOUR LunarReturns", "1 GEDC", "2 VERS 5.5.1", "2 FORM LINEAGE-LINKED", "1 CHAR UTF-8"];
@@ -2321,9 +2377,11 @@ function gedcomText(peerId, keys) {
         if (r.sex) out.push("1 SEX " + r.sex);
         out.push("1 BIRT", "2 DATE " + gdate(r.d));
         if (r.srcH !== undefined) out.push("2 TIME " + String(r.srcH).padStart(2, "0") + ":" + String(r.srcM).padStart(2, "0"));
+        if (r.plac) out.push("2 PLAC " + r.plac);
         if (r.dd) {
             out.push("1 DEAT", "2 DATE " + gdate(r.dd));
             if (r.dsrcH !== undefined) out.push("2 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
+            if (r.dp) out.push("2 PLAC " + r.dp);
         }
         // NOTE с переносами («^») — построчно: 1 NOTE + 2 CONT на строку
         if (r.note) {
@@ -2339,17 +2397,26 @@ function gedcomText(peerId, keys) {
             if (f.pkeys.includes(pkey(r))) out.push("1 FAMS @" + fidOf.get(f) + "@");
         }
     }
-    for (const [x, n] of stubId) {
-        out.push("0 @" + n + "@ INDI");
-        out.push("1 NAME " + stubName.get(x));
-        for (const f of fams) if (f.stubs.some(s => s.xref === x)) out.push("1 FAMS @" + fidOf.get(f) + "@");
+    // заглушки (бездатные супруги/дети): имя + пол + смерть/место, если известны
+    for (const [x, st] of stubInfo) {
+        out.push("0 @" + stubId.get(x) + "@ INDI");
+        out.push("1 NAME " + st.name);
+        if (st.sex) out.push("1 SEX " + st.sex);
+        if (st.deat) {
+            out.push("1 DEAT", "2 DATE " + gdate(st.deat));
+            if (st.dp) out.push("2 PLAC " + st.dp);
+        }
+        for (const f of fams) {
+            if (f.stubs.some(s => s.xref === x)) out.push("1 FAMS @" + fidOf.get(f) + "@");
+            if (f.kstubs.some(s => s.xref === x)) out.push("1 FAMC @" + fidOf.get(f) + "@");
+        }
     }
     for (const f of fams) {
         out.push("0 @" + fidOf.get(f) + "@ FAM");
-        // по практике 5.5.1: сначала HUSB, затем WIFE; заглушки — без пола
+        // по практике 5.5.1: сначала HUSB, затем WIFE; пол заглушек — из записи
         const all = [
             ...f.pkeys.map(k => ({ ref: idOf.get(k), sex: sexOf.get(k) })),
-            ...f.stubs.map(s => ({ ref: stubId.get(s.xref), sex: null })),
+            ...f.stubs.map(s => ({ ref: stubId.get(s.xref), sex: s.sex || null })),
         ];
         for (const x of all.filter(x => x.sex !== "F")) out.push("1 HUSB @" + x.ref + "@");
         for (const x of all.filter(x => x.sex === "F")) out.push("1 WIFE @" + x.ref + "@");
@@ -2357,6 +2424,7 @@ function gedcomText(peerId, keys) {
             out.push("1 CHIL @" + idOf.get(c) + "@");
             if (adoptedHere(f, c)) out.push("2 PEDI adopted");
         }
+        for (const s of f.kstubs) out.push("1 CHIL @" + stubId.get(s.xref) + "@");
         if (f.marr) {
             out.push("1 MARR", "2 DATE " + gdate(f.marr.d));
             if (f.marr.plac) out.push("2 PLAC " + f.marr.plac);
@@ -2391,6 +2459,8 @@ function flatRows(peerId) {
         key: r.xref, name: r.name, sex: r.sex || null,
         d: r.birt_d ?? undefined, dd: r.deat_d ?? undefined,
         h: r.birt_h ?? undefined, m: r.birt_m ?? undefined,
+        srcH: r.src_h ?? undefined, srcM: r.src_m ?? undefined,
+        plac: r.plac ?? undefined, dp: r.deat_plac ?? undefined,
         note: r.note ?? undefined, nameOnly: r.birt_d == null,
     }));
     const fams = [];
@@ -2524,11 +2594,18 @@ function flatTreeText(persons, fams) {
     };
     const pad = v => String(v).padStart(2, "0");
     // note выводится с маркером «^»: при обратном разборе всё после первого
-    // «^» — примечание дословно (дата в его начале — не дата смерти)
+    // «^» — примечание дословно (дата в его начале — не дата смерти).
+    // Место — в скобках за своей датой (рождения/смерти): грамматика пачки
+    // трактует время как местное в месте, поэтому с местом выводится
+    // исходное время (если было), без места — московское, как прежде
     const tail = r => [
         r.d,
-        r.h !== undefined && r.h !== null ? pad(r.h) + ":" + pad(r.m ?? 0) : null,
-        r.dd, r.note ? "^" + r.note : null,
+        r.plac
+            ? (r.srcH !== undefined && r.srcH !== null ? pad(r.srcH) + ":" + pad(r.srcM ?? 0) : null)
+            : (r.h !== undefined && r.h !== null ? pad(r.h) + ":" + pad(r.m ?? 0) : null),
+        r.plac ? "(" + r.plac + ")" : null,
+        r.dd, r.dp ? "(" + r.dp + ")" : null,
+        r.note ? "^" + r.note : null,
     ].filter(Boolean).join(" ");
     const out = [], printed = new Set(), famsDone = new Set();
     // строка персоны: bare — вторая половина «+»-свадьбы (без маркера), иначе
@@ -2748,6 +2825,8 @@ function parseTtf(b) {
 }
 
 // rows — [{ name, birth: "ГГГГ-ММ-…", death: "…"/null, sex: "M"/"F"/null }];
+// бездатный супруг — { name, birth: null, anchor: <год ДР супруга>, death,
+// sex }: левая колонка пустая, бар от якорного года; без якоря не рисуется.
 // links — [{ child: <ключ «Имя год»>, parents: [ключ, …] }]. rel — данные
 // родства к герою (не задан — колонка «Год» без ярлыков):
 //   { hero: <ключ «Имя год»>, pairs: [[родитель, ребёнок], …] } — в колонке
@@ -2763,12 +2842,30 @@ function parseTtf(b) {
 function chartModel(title, rows, links, rel = null) {
     if (!rows.length) throw new Error("chart: персоны пусты");
     const year = d => Number(String(d).slice(0, 4));
+    // бездатные (birth null): год — якорь от ДР супруга (левая колонка пустая,
+    // бар от якоря); без якоря строка не рисуется
+    const yrOf = r => r.birth != null ? year(r.birth) : (Number.isFinite(r.anchor) ? r.anchor : null);
+    rows = rows.filter(r => yrOf(r) !== null);
     const TODAY_Y = new Date().getFullYear(); // «сегодня» — гранулярность оси (годы)
-    const keyOf = r => r.name + " " + year(r.birth);
+    // ключи «Имя год»: явный r.k (бездатные из chartFor — «Имя якорь»);
+    // остальным при коллизии — невидимый суффикс (датированные ключи
+    // не трогаем — дубль датированных бросается)
+    const keys = new Map();
+    {
+        const taken = new Set();
+        for (const r of rows) {
+            if (r.k != null) { taken.add(r.k); keys.set(r, r.k); continue; }
+            let k = r.name + " " + yrOf(r);
+            while (r.birth == null && taken.has(k)) k += " ";
+            taken.add(k);
+            keys.set(r, k);
+        }
+    }
+    const keyOf = r => keys.get(r);
     // не более CHART_MAX: берём CHART_MAX МЛАДШИХ (снизу = младшие); связи,
     // где кто-то из персон отсекся, удаляются; список всегда рисуем (без отказа)
     if (rows.length > CHART_MAX) {
-        const sorted = [...rows].sort((a, b) => year(a.birth) - year(b.birth)
+        const sorted = [...rows].sort((a, b) => yrOf(a) - yrOf(b)
             || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
         const keep = new Set(sorted.slice(-CHART_MAX).map(keyOf));
         rows = rows.filter(r => keep.has(keyOf(r)));
@@ -2777,7 +2874,7 @@ function chartModel(title, rows, links, rel = null) {
     const seen = new Set();
     for (const r of rows) {
         if (seen.has(keyOf(r))) throw new Error("chart: ключ неуникален " + keyOf(r));
-        if (r.death && year(r.death) < year(r.birth)) throw new Error("chart: смерть раньше рождения " + keyOf(r));
+        if (r.birth != null && r.death && year(r.death) < year(r.birth)) throw new Error("chart: смерть раньше рождения " + keyOf(r));
         seen.add(keyOf(r));
     }
     const byKey = new Map(rows.map(r => [keyOf(r), r]));
@@ -2786,7 +2883,8 @@ function chartModel(title, rows, links, rel = null) {
         if (!l.parents.length || l.parents.length > 2) throw new Error("chart: родителей не 1–2 " + l.child);
         for (const p of l.parents) {
             if (!byKey.has(p)) throw new Error("chart: имя не найдено " + p);
-            if (year(byKey.get(p).birth) > year(byKey.get(l.child).birth))
+            // якорь бездатного — не его ДР: «старше ребёнка» не проверяем
+            if (byKey.get(p).birth != null && yrOf(byKey.get(p)) > yrOf(byKey.get(l.child)))
                 throw new Error("chart: родитель не старше ребёнка " + p);
         }
     }
@@ -2798,14 +2896,14 @@ function chartModel(title, rows, links, rel = null) {
             : c >= "0" && c <= "9" ? 6.4
             : c === c.toUpperCase() && c !== c.toLowerCase() ? 7.7
             : 6.3), 0);
-    // порядок строк: (год рождения, имя) — ключи «Имя год»
-    const people = [...rows].sort((a, b) => year(a.birth) - year(b.birth)
+    // порядок строк: (год рождения/якорь, имя) — ключи «Имя год»
+    const people = [...rows].sort((a, b) => yrOf(a) - yrOf(b)
         || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-        .map(r => ({ r, key: keyOf(r), yr: year(r.birth), dy: r.death ? year(r.death) : null, row: 0 }));
+        .map(r => ({ r, key: keyOf(r), yr: yrOf(r), dy: r.death ? year(r.death) : null, row: 0 }));
     // у героя в колонке — «диапазон» радиуса (уровень из кейкапа заголовка,
     // rel.range — rangeLevel(L)); у остальных строк — прежние индивидуальные
     // ярлыки родства (как в 🔔-списке); у героя и вне родни (без героя/
-    // диапазона) — подпись «Год»
+    // диапазона) — подпись «Год»; бездатным год неизвестен — колонка пустая
     const kin = rel && rel.hero
         ? new Map(people.map(p =>
             [p.key, kinLabel(rel.pairs || [], rel.spouses || [], k2 => (rel.sex || {})[k2] ?? null, rel.hero, p.key)]))
@@ -2813,7 +2911,7 @@ function chartModel(title, rows, links, rel = null) {
     if (kin && rel.range) kin.set(rel.hero, rangeLevel(rel.range));
     people.forEach((p, i) => {
         p.row = i;
-        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + p.yr; })();
+        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + (p.r.birth != null ? p.yr : ""); })();
     });
     const rowOf = new Map(people.map(p => [p.key, p]));
     const allYears = [
@@ -2822,7 +2920,7 @@ function chartModel(title, rows, links, rel = null) {
         // без даты смерти бар ограничен 80 годами или сегодня — ось X должна
         // их покрыть
         ...people.filter(p => p.dy === null).map(p => Math.min(p.yr + 80, TODAY_Y)),
-        ...links.map(l => year(byKey.get(l.child).birth)),
+        ...links.map(l => yrOf(byKey.get(l.child))),
     ];
     // колонка подписей «Связь год»: под самую длинную строку, все — одной строкой
     const KW = Math.max(KIND_W, Math.ceil(Math.max(...people.map(p => textW(p.label))) + 12));
@@ -2842,7 +2940,7 @@ function chartModel(title, rows, links, rel = null) {
     const famStr = l => [...l.parents].sort().join(" и ");
     for (const l of links) {
         const fam = famStr(l);
-        const y = year(byKey.get(l.child).birth);
+        const y = yrOf(byKey.get(l.child));
         if (!famOf.has(fam)) { famOf.set(fam, famOf.size); famYears.set(fam, new Set()); }
         famYears.get(fam).add(y);
     }
@@ -2929,7 +3027,7 @@ function chartModel(title, rows, links, rel = null) {
             draws.push({ k: "line", x1: KW - 6, y1: cy, x2: lnEnd, y2: cy, stroke: "#bbbbbb", w: 1 });
         draws.push({ k: "text", x: x1 - 6, y: cy + 3.5, s: p.r.name, size: 10, fill: "#111111", anchor: "end" });
         draws.push({ k: "rrect", x: x1, y: cy - BAR_H / 2, w: Math.max(2, x2 - x1), h: BAR_H, r: 2, fill: bar });
-        if (p.dy !== null) // известная смерть — N прожитых лет за баром
+        if (p.dy !== null && p.r.birth != null) // известная смерть — N прожитых лет за баром
             draws.push({ k: "text", x: x2 + 4, y: cy + 3.5, s: String(p.dy - p.yr), size: 10, fill: bar });
     }
     // связи родитель→ребёнок (в год рождения ребёнка), точки на строках;
@@ -2941,7 +3039,7 @@ function chartModel(title, rows, links, rel = null) {
     const yearCount = new Map();    // год → сколько семей уже заняли столбец
     const famSeen = new Set();
     for (const l of links) {
-        const y = year(byKey.get(l.child).birth);
+        const y = yrOf(byKey.get(l.child));
         const kk = famStr(l) + "\0" + y;
         if (!famSeen.has(kk)) {
             famSeen.add(kk);
@@ -2962,7 +3060,7 @@ function chartModel(title, rows, links, rel = null) {
     for (const l of links) {
         const fam = famStr(l);
         const col = famColor(fam);
-        const y = year(byKey.get(l.child).birth);
+        const y = yrOf(byKey.get(l.child));
         const ps = l.parents.map(p => rowOf.get(p)).sort((a, b) => a.cy - b.cy);
         const ch0 = rowOf.get(l.child);
         // слот семьи в этом году — толщина линии на семью вправо от линии года
@@ -3187,24 +3285,57 @@ const ckey = k => { const i = k.lastIndexOf(" "); return k.slice(0, i) + " " + N
 // диаграммные данные чата/фрагмента (как у gedcomText: те же INDI, свадьбы
 // «Имя+Имя» вне; семьи усекаются до персон фрагмента). heroKey — pkey героя
 // (персона фокуса): ярлыки родства «Связь год» в колонке подписей; без героя
-// — просто «Год» (древо чата)
+// — просто «Год» (древо чата). Бездатные именованные супруги датированных
+// персон — строками с якорем (бар от года ДР супруга, колонка года пустая);
+// без датированного супруга — не рисуются
 function chartFor(peerId, keys, title, heroKey = null, range = null) {
     const hasKeys = Array.isArray(keys) && keys.length > 0;
     const recs = personRows(peerId).filter(r => !hasKeys || keys.includes(pkey(r)));
     const keySet = new Set(recs.map(r => pkey(r)));
     const rows = recs.map(r => ({ name: r.n, birth: r.d, death: r.dd || null, sex: r.sex || null }));
-    const parentsOf = new Map();
+    // якоря бездатных: год ДР датированного супруга (первой семьи по порядку)
+    const stubs = qa("SELECT xref,name,deat_d,sex FROM indi WHERE chat=? AND birt_d IS NULL AND name!=''", peerId);
+    const stubOf = new Map(stubs.map(r => [r.xref, r]));
+    const anchor = new Map(); // xref бездатного → { yr, spKey, fam }
+    for (const f of qa("SELECT xref,husb,wife FROM fam WHERE chat=? ORDER BY rowid", peerId)) {
+        for (const [a, b] of [[f.husb, f.wife], [f.wife, f.husb]]) {
+            if (!a || !b || !stubOf.has(a) || anchor.has(a)) continue;
+            const sp = indiOf(peerId, b);
+            if (sp && sp.birt_d)
+                anchor.set(a, { yr: Number(sp.birt_d.slice(0, 4)), spKey: sp.name + " " + sp.birt_d, fam: f.xref });
+        }
+    }
+    // явные ключи бездатных «Имя якорь»: тот же алгоритм суффиксов, что в
+    // chartModel (rows идут датированные, потом бездатные — коллизия с
+    // ключом датированной тёзки разрешается невидимым « »)
+    const taken = new Set();
+    for (const r of recs) taken.add(r.n + " " + Number(r.d.slice(0, 4)));
+    const famStubKey = new Map();   // fam.xref → ключ бездатного супруга в чарте
+    for (const [x, an] of anchor) {
+        if (hasKeys && !keys.includes(an.spKey)) continue;
+        const s = stubOf.get(x);
+        let k = s.name + " " + an.yr;
+        while (taken.has(k)) k += " ";
+        taken.add(k);
+        if (!famStubKey.has(an.fam)) famStubKey.set(an.fam, k);
+        rows.push({ name: s.name, k, birth: null, anchor: an.yr, death: s.deat_d || null, sex: s.sex || null });
+    }
+    // родители ребёнка: датированные, вошедшие в чарт + бездатный супруг
+    // (свой ключ «Имя якорь»); fill ds/sk, ключ бездатного не под ckey
+    const parentsOf = new Map();    // ребёнок (ключ «Имя ГГГГ-…») → { ds, sk }
     for (const f of famList(peerId)) {
         const ps = f.parents.filter(p => keySet.has(p));
+        const sk = famStubKey.get(f.xref) || null;
         for (const c of f.children) {
             if (!keySet.has(c)) continue;
-            const arr = parentsOf.get(c) || [];
-            for (const p of ps) if (!arr.includes(p)) arr.push(p);
+            const arr = parentsOf.get(c) || { ds: [], sk: null };
+            for (const p of ps) if (!arr.ds.includes(p)) arr.ds.push(p);
+            if (sk && !arr.sk) arr.sk = sk;
             parentsOf.set(c, arr);
         }
     }
-    const links = [...parentsOf].filter(([, ps]) => ps.length)
-        .map(([c, ps]) => ({ child: ckey(c), parents: ps.map(ckey) }));
+    const links = [...parentsOf].filter(([, ps]) => ps.ds.length || ps.sk)
+        .map(([c, ps]) => ({ child: ckey(c), parents: [...ps.ds.map(ckey), ...(ps.sk ? [ps.sk] : [])] }));
     // ярлыки родства — как в 🔔-списке (focusListText): linkPairs +
     // супруги fam-семей + пол; ключи ярлыков — «Имя год»; диапазон героя
     // rel.range (цифра кейкапа заголовка, 4⃣ … → 4) — из sendGedArtifacts
@@ -3218,17 +3349,22 @@ function chartFor(peerId, keys, title, heroKey = null, range = null) {
     } : null;
     // дети супругов вне фрагмента/радиуса: годы их рождения — вертикалью
     // между супругами (дата рождения берётся из всех персон чата;
-    // заглушки без даты — пропускаются)
+    // заглушки без даты — пропускаются). Пара: обе датированные — как
+    // прежде; датированный + бездатный в чарте — ключ бездатного («Имя
+    // якорь»); бездатный не в чарте (вне фрагмента) — вертикали нет
     const bornOf = new Map(personRows(peerId).map(r => [pkey(r), r.d]));
     const phantoms = [];
     for (const f of famList(peerId)) {
         const ps = f.parents.filter(p => keySet.has(p));
-        if (ps.length !== 2) continue;
+        const sk = famStubKey.get(f.xref) || null;
+        const pair = ps.length === 2 ? ps.map(ckey)
+            : ps.length === 1 && sk ? [ckey(ps[0]), sk] : null;
+        if (!pair) continue;
         const yrs = [...new Set(f.children.filter(c => !keySet.has(c) && bornOf.has(c))
             .map(c => Number(bornOf.get(c).slice(0, 4))))].sort((a, b) => a - b);
-        if (yrs.length) phantoms.push({ fam: ps.map(ckey), years: yrs });
+        if (yrs.length) phantoms.push({ fam: pair, years: yrs });
     }
-    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }), persons: Math.min(recs.length, CHART_MAX) };
+    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }), persons: Math.min(rows.length, CHART_MAX) };
 }
 
 // загрузка документа на серверы VK (docs… — файлы любого типа); сервер загрузки

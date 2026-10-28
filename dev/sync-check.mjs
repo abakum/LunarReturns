@@ -46,6 +46,10 @@ process.env.LR_DEV_DB = path.join(TMP, 'tg-db.json');
 fs.cpSync(path.join(ROOT, 'dev', 'sdk-mock'), path.join(ROOT, 'node_modules', 'sdk'), { recursive: true });
 const TG = await import(path.join(ROOT, 'tgcloud', 'lib', 'bot.js'));
 const TGP = await import(path.join(ROOT, 'tgcloud', 'lib', 'parse.js'));
+// chart нужен уже в блоке 3в (бездатные в связях) — грузим сразу;
+// шрифт — единственный источник tgcloud/lib/font-cyr.js (ВК читает его же)
+const TGC = await import(path.join(ROOT, 'tgcloud', 'lib', 'chart.js'));
+const FONT = TGC.chartFont();
 
 // ============================== 1. parseTrigger ==============================
 const TRIGGERS = [
@@ -700,6 +704,128 @@ if (!VK.gedcomText(1).includes('1 NOTE 1960 год уточняется')
     if (gNosex.indis[0].sex !== null) { failed++; console.log('✗ SEX unknown → null, получил ' + gNosex.indis[0].sex); }
 }
 
+// ==================== 3б. бездатные супруги, места, похороны ====================
+// бездатная персона импортируется при упоминании в семье (супруг/ребёнок);
+// места рождения/смерти читаются из PLAC, похороны (BURI) — фолбэк смерти;
+// пачка выводит места в скобках за своей датой, .ged пишет PLAC и заглушкам
+const GED_STUB = ['0 HEAD',
+    '0 @I1@ INDI', '1 NAME Иван /Г/', '1 SEX M', '1 BIRT', '2 DATE 10 MAY 1960', '2 PLAC Пермь',
+    '1 BURI', '2 DATE 5 MAY 2020', '2 PLAC Пермь',
+    '0 @I2@ INDI', '1 NAME Мария /С/', '1 SEX F', '1 BIRT', '2 PLAC Сарапул',
+    '1 DEAT', '2 DATE 3 FEB 2020', '2 PLAC Курск',
+    '0 @I3@ INDI', '1 BIRT', '2 DATE 1 JAN 1900',                       // безымянный — мимо
+    '0 @I4@ INDI', '1 NAME Сирота /Бездатная/',                          // бездатный вне семей — мимо
+    '0 @I5@ INDI', '1 NAME Сын /Бездатный/', '1 BURI', '2 DATE 5 MAY 1990', '2 PLAC Москва',
+    '0 @I6@ INDI', '1 NAME Ольга /Д/', '1 SEX F', '1 BIRT', '2 DATE 1 MAR 1955',
+    '1 DEAT', '2 DATE 1 JAN 2001', '1 BURI', '2 DATE 2 JAN 2001', '2 PLAC Кладбище',
+    '0 @F1@ FAM', '1 HUSB @I1@', '1 WIFE @I2@', '1 CHIL @I5@', '1 MARR', '2 DATE 4 JUN 1983',
+    '0 TRLR'].join('\n');
+const gStub = VK.parseGedcom(GED_STUB);
+cmp('parseGedcom бездатные/места/похороны', gStub, TGP.parseGedcom(GED_STUB));
+cmp('gedStats бездатные/места', VK.gedStats(gStub), TGP.gedStats(TGP.parseGedcom(GED_STUB)));
+if (VK.gedStats(gStub).persons !== 4 || VK.gedStats(gStub).links !== 1)
+    { failed++; console.log('✗ gedStats бездатные: ' + JSON.stringify(VK.gedStats(gStub))); }
+const GS_CH = 13;
+VK.clearChatTree(GS_CH);
+await TG.clearChatTree(GS_CH);
+cmp('importGedcom бездатные отчёт',
+    VK.importGedcom(GS_CH, gStub), await TG.importGedcom(GS_CH, TGP.parseGedcom(GED_STUB)));
+cmp('importGedcom бездатные пачка', VK.chatFlatText(GS_CH), await TG.chatFlatText(GS_CH));
+cmp('importGedcom бездатные свадьбы', VK.weddingRows(GS_CH), await TG.weddingRows(GS_CH));
+cmp('importGedcom бездатные гедком', VK.gedcomText(GS_CH), await TG.gedcomText(GS_CH));
+const stubFlat = VK.chatFlatText(GS_CH);
+const STUB_FLAT_EXPECT = '-Иван Г 1960-05-10 (Пермь) 2020-05-05 (Пермь)\n'
+    + '+1983-06-04\n'
+    + 'Мария С\n'
+    + '--Сын Бездатный\n'
+    + '=Ольга Д 1955-03-01 2001-01-01 (Кладбище)';
+if (stubFlat !== STUB_FLAT_EXPECT)
+    { failed++; console.log('✗ пачка бездатные/места:\n  ' + stubFlat); }
+// похороны: у Ивана (без DEAT) — deat от BURI; у Ольги (DEAT без места) —
+// дата смерти своя, место от BURI
+if (!VK.gedcomText(GS_CH).includes('2 DATE 5 MAY 2020') || !VK.gedcomText(GS_CH).includes('2 PLAC Кладбище'))
+    { failed++; console.log('✗ BURI → DEAT в экспорте:\n  ' + VK.gedcomText(GS_CH)); }
+// заглушка-супруга с датой смерти и местом; бездатный ребёнок — CHIL/FAMC
+if (!VK.gedcomText(GS_CH).includes('1 NAME Мария С') || !VK.gedcomText(GS_CH).includes('1 NAME Сын Бездатный'))
+    { failed++; console.log('✗ бездатные заглушки в экспорте:\n  ' + VK.gedcomText(GS_CH)); }
+// round-trip: реимпорт выведенной пачки идемпотентен (места на месте)
+VK.applyTree(GS_CH, VK.parseTree(stubFlat));
+await TG.applyTree(GS_CH, TGP.parseTree(stubFlat));
+cmp('round-trip пачка бездатные/места', VK.chatFlatText(GS_CH), await TG.chatFlatText(GS_CH));
+if (VK.chatFlatText(GS_CH) !== STUB_FLAT_EXPECT)
+    { failed++; console.log('✗ round-trip пачка бездатные/места:\n  ' + VK.chatFlatText(GS_CH)); }
+// round-trip: экспорт .ged → импорт → та же пачка (заглушки с датами смерти
+// возвращаются: BURI/DEAT у бездатных переживают цикл)
+VK.importGedcom(GS_CH, VK.parseGedcom(VK.gedcomText(GS_CH)));
+await TG.importGedcom(GS_CH, TGP.parseGedcom(await TG.gedcomText(GS_CH)));
+cmp('round-trip .ged бездатные', VK.chatFlatText(GS_CH), await TG.chatFlatText(GS_CH));
+
+// ==================== 3в. бездатный в диаграмме: точка/вертикали ========
+// бездатный муж с датированной женой: связь ребёнка — точки на всех трёх
+// (вертикаль мужа «Имя якорь» ↔ жена ↔ ребёнок), фантом между супругами
+// за ребёнка вне чарта; явный ключ бездатного не под ckey
+const GED_LINK = ['0 HEAD',
+    '0 @I1@ INDI', '1 NAME Анна /Т/', '1 SEX F', '1 BIRT', '2 DATE 1 JAN 1900',
+    '0 @I2@ INDI', '1 NAME Пётр /Бездатный/', '1 SEX M', '1 DEAT', '2 DATE 5 MAY 1970',
+    '0 @I3@ INDI', '1 NAME Сын /Т/', '1 SEX M', '1 BIRT', '2 DATE 5 MAR 1930',
+    '0 @I4@ INDI', '1 NAME Дочь /ВнеЧарта/', '1 SEX F', '1 BIRT', '2 DATE 6 JUN 1935',
+    '0 @F1@ FAM', '1 HUSB @I2@', '1 WIFE @I1@', '1 CHIL @I3@', '1 CHIL @I4@',
+    '0 TRLR'].join('\n');
+const GL_CH = 14;
+VK.clearChatTree(GL_CH);
+await TG.clearChatTree(GL_CH);
+VK.importGedcom(GL_CH, VK.parseGedcom(GED_LINK));
+await TG.importGedcom(GL_CH, TGP.parseGedcom(GED_LINK));
+// фрагмент: жена+сын; муж-бездатный в строке от якоря = год жены, дочь вне
+// чарта — фантом-вертикаль между супругами (точки на строках обоих)
+const LINK_KEYS = ['Анна Т 1900-01-01', 'Сын Т 1930-03-05'];
+cmp('chartFor бездатный в связях (байты)',
+    VK.chartFor(GL_CH, LINK_KEYS, 't'),
+    await TG.chartFor(GL_CH, LINK_KEYS, 't'));
+{
+    const rows = [
+        { name: 'Анна Т', birth: '1900-01-01', death: null, sex: 'F' },
+        { name: 'Пётр Бездатный', k: 'Пётр Бездатный 1900', birth: null, anchor: 1900, death: '1970-05-05', sex: 'M' },
+        { name: 'Сын Т', birth: '1930-03-05', death: null, sex: 'M' },
+    ];
+    const ln = [{ child: 'Сын Т 1930', parents: ['Анна Т 1900', 'Пётр Бездатный 1900'] }];
+    const ph = { phantoms: [{ fam: ['Анна Т 1900', 'Пётр Бездатный 1900'], years: [1935] }] };
+    cmp('chartModel бездатный в связях', VK.chartModel('l', rows, ln, ph), TGC.chartModel('l', rows, ln, ph));
+    cmp('chartPdf бездатный в связях (байты)', VK.chartPdf('l', rows, ln, FONT, ph), TGC.chartPdf('l', rows, ln, FONT, ph));
+    const m = VK.chartModel('l', rows, ln, ph);
+    const dots = m.draws.filter(d => d.k === 'dot');
+    if (dots.length !== 5) // ребёнок + два родителя на вертикали 1930 и фантом-пара 1935
+        { failed++; console.log('✗ chart бездатный: точек ' + dots.length + ', ожидается 5'); }
+    const xs = [...new Set(dots.map(d => d.x))].sort((a, b) => a - b);
+    // по одной семье в каждом году → слот 0: связь на линии 1930, фантом на 1935;
+    // столбца у связи два: 3 точки (родители+сын) и 2 точки (супруги)
+    if (xs.length !== 2)
+        { failed++; console.log('✗ chart бездатный: столбцов точек не 2: ' + xs.join(', ')); }
+    if (xs.length === 2) {
+        const n0 = dots.filter(d => d.x === xs[0]).length, n1 = dots.filter(d => d.x === xs[1]).length;
+        if (n0 !== 3 || n1 !== 2)
+            { failed++; console.log('✗ chart бездатный: точки не 3+2 по столбцам: ' + dots.map(d => d.x).join(', ')); }
+    }
+    // вертикали: родители➝родители и родитель➝сын (1930) + фантом супругов (1935)
+    if (m.draws.filter(d => d.k === 'line' && d.w === 1.5).length !== 3)
+        { failed++; console.log('✗ chart бездатный: вертикалей не 3'); }
+    // якорь бездатного не признаётся «ДР» — «старше ребёнка» не бросает
+    try {
+        VK.chartModel('x', [{ name: 'Муж', birth: null, anchor: 1920, sex: 'M' },
+            { name: 'Жена', birth: null, anchor: 1910, sex: 'F' },
+            { name: 'Ребёнок', birth: null, anchor: 1910, sex: 'M' }],
+            [{ child: 'Ребёнок 1910', parents: ['Муж 1920', 'Жена 1910'] }]);
+    } catch (e) { failed++; console.log('✗ chart: якорь посчитан ДР: ' + e.message); }
+    // дубль датированных по-прежнему бросается (явный бездатный ключ этому
+    // не мешает); сама модель без фаномов не бросает
+    VK.chartModel('y', rows, ln);
+    let dupE = '';
+    try { VK.chartModel('y', [...rows, { name: 'Сын Т', birth: '1930-03-05', sex: 'M' }], ln); }
+    catch (e) { dupE = e.message; }
+    if (!dupE.includes('неуникален'))
+        { failed++; console.log('✗ chart бездатный: дубль датированных не бросил'); }
+}
+
 // ==================== 4. связи: reply-флоу, свадьба, каскад ====================
 const CH = 2; // VK peerId = TG chatId
 const persons = [
@@ -824,9 +950,6 @@ if (VK.famList(CH2).length !== 2) { failed++; console.log('✗ две FAMC: fams
 cmp('две FAMC: гедком', VK.gedcomText(CH2), await TG.gedcomText(CH2));
 
 // ==================== 9. chartPdf: гедком-древо → PDF ====================
-const TGC = await import(path.join(ROOT, 'tgcloud', 'lib', 'chart.js'));
-// шрифт — единственный источник tgcloud/lib/font-cyr.js (ВК читает его же)
-const FONT = TGC.chartFont();
 cmp('b64ToBytes (префикс с «=» и переносом)',
     [...VK.b64ToBytes('QUJDREVG//4=')].join(','),
     [...TGC.b64ToBytes('QUJDREVG//4=')].join(','));
@@ -1000,6 +1123,39 @@ for (const [what, ln, rows] of ASSERTS) {
     try { TGC.chartPdf('ассерты', rows, Array.isArray(ln) ? ln : [ln], FONT); } catch (e) { tgE = e.message; }
     cmp('chartPdf assert «' + what + '»', vkE, tgE);
     if (!vkE) { failed++; console.log('✗ chartPdf assert «' + what + '»: не бросил ошибку'); }
+}
+// бездатный супруг (birth null + anchor — год ДР супруга): левая колонка
+// пустая, бар от якоря, «лет прожито» не выводится (год чужой); строка без
+// якоря не рисуется; коллизия якоря с датированным ключом — невидимый
+// суффикс (дубль датированных по-прежнему бросается)
+const ANCH_ROWS = [
+    { name: 'Пётр I', birth: '1672-06-09', death: '1725-02-08', sex: 'M' },
+    { name: 'Мария', birth: null, anchor: 1672, death: '1703-01-01', sex: 'F' },
+    { name: 'Без якоря', birth: null, death: '1700-01-01', sex: 'F' },
+];
+cmp('chartModel бездатный супруг', VK.chartModel('a', ANCH_ROWS, []), TGC.chartModel('a', ANCH_ROWS, []));
+cmp('chartPdf бездатный супруг (байты)', VK.chartPdf('a', ANCH_ROWS, [], FONT), TGC.chartPdf('a', ANCH_ROWS, [], FONT));
+{
+    const m = VK.chartModel('a', ANCH_ROWS, []);
+    const left = m.draws.filter(d => d.k === 'text' && d.fill === '#333333' && d.anchor === 'end').map(d => d.s);
+    if (left.join('|') !== '|1672')
+        { failed++; console.log('✗ chart бездатный: колонка не «пустая|1672»: ' + left.join('|')); }
+    if (m.draws.some(d => d.k === 'text' && d.s === '31'))
+        { failed++; console.log('✗ chart бездатный: «лет прожито» от якоря (' + 1703 + '-' + 1672 + ')'); }
+    const bars = m.draws.filter(d => d.k === 'rrect').map(d => d.x);
+    if (bars.length !== 2 || bars[0] !== bars[1])
+        { failed++; console.log('✗ chart бездатный: бары не от якорного года: ' + bars.join(', ')); }
+}
+cmp('chartModel бездатный тёзка-якорь',
+    VK.chartModel('d', [...ANCH_ROWS, { name: 'Мария', birth: null, anchor: 1672, death: null, sex: 'F' }], []),
+    TGC.chartModel('d', [...ANCH_ROWS, { name: 'Мария', birth: null, anchor: 1672, death: null, sex: 'F' }], []));
+{
+    // чарт по импорту бездатных: chartFor даёт строку с якорем (VK/TG равны
+    // через модель) — бездатная Мария (GS_CH) стоит от 1960 года Ивана
+    const rows = [ { name: 'Иван Г', birth: '1960-05-10', death: '2020-05-05', sex: 'M' },
+        { name: 'Мария С', birth: null, anchor: 1960, death: '2020-02-03', sex: 'F' },
+        { name: 'Ольга Д', birth: '1955-03-01', death: '2001-01-01', sex: 'F' } ];
+    cmp('chartModel импорт бездатных', VK.chartModel('c', rows, []), TGC.chartModel('c', rows, []));
 }
 
 if (failed) { console.log('\n✗ расхождений: ' + failed); process.exit(1); }

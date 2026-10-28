@@ -21,6 +21,7 @@ export const indi = table('indi', {
   dsrcH: integer('dsrc_h'), dsrcM: integer('dsrc_m'),
   sex: text('sex'),               // 'M'|'F'|null
   plac: text('plac'),             // город из скобок (BIRT PLAC)
+  deatPlac: text('deat_plac'),    // место смерти/похорон (DEAT/BURI PLAC)
   note: text('note'),             // примечание (хвост строки целиком; 1 NOTE)
 }, (t) => ({
   uq: uniqueIndex('uq_indi_xref').on(t.chatId, t.xref),

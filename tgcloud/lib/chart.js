@@ -120,6 +120,8 @@ export function parseTtf(b) {
 }
 
 // rows — [{ name, birth: "ГГГГ-ММ-…", death: "…"/null, sex: "M"/"F"/null }];
+// бездатный супруг — { name, birth: null, anchor: <год ДР супруга>, death,
+// sex }: левая колонка пустая, бар от якорного года; без якоря не рисуется.
 // links — [{ child: <ключ «Имя год»>, parents: [ключ, …] }]. rel — данные
 // родства к герою (не задан — колонка «Год» без ярлыков):
 //   { hero: <ключ «Имя год»>, pairs: [[родитель, ребёнок], …] } — в колонке
@@ -135,12 +137,30 @@ export function parseTtf(b) {
 export function chartModel(title, rows, links, rel = null) {
     if (!rows.length) throw new Error("chart: персоны пусты");
     const year = d => Number(String(d).slice(0, 4));
+    // бездатные (birth null): год — якорь от ДР супруга (левая колонка пустая,
+    // бар от якоря); без якоря строка не рисуется
+    const yrOf = r => r.birth != null ? year(r.birth) : (Number.isFinite(r.anchor) ? r.anchor : null);
+    rows = rows.filter(r => yrOf(r) !== null);
     const TODAY_Y = new Date().getFullYear(); // «сегодня» — гранулярность оси (годы)
-    const keyOf = r => r.name + " " + year(r.birth);
+    // ключи «Имя год»: явный r.k (бездатные из chartFor — «Имя якорь»);
+    // остальным при коллизии — невидимый суффикс (датированные ключи
+    // не трогаем — дубль датированных бросается)
+    const keys = new Map();
+    {
+        const taken = new Set();
+        for (const r of rows) {
+            if (r.k != null) { taken.add(r.k); keys.set(r, r.k); continue; }
+            let k = r.name + " " + yrOf(r);
+            while (r.birth == null && taken.has(k)) k += " ";
+            taken.add(k);
+            keys.set(r, k);
+        }
+    }
+    const keyOf = r => keys.get(r);
     // не более CHART_MAX: берём CHART_MAX МЛАДШИХ (снизу = младшие); связи,
     // где кто-то из персон отсекся, удаляются; список всегда рисуем (без отказа)
     if (rows.length > CHART_MAX) {
-        const sorted = [...rows].sort((a, b) => year(a.birth) - year(b.birth)
+        const sorted = [...rows].sort((a, b) => yrOf(a) - yrOf(b)
             || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
         const keep = new Set(sorted.slice(-CHART_MAX).map(keyOf));
         rows = rows.filter(r => keep.has(keyOf(r)));
@@ -149,7 +169,7 @@ export function chartModel(title, rows, links, rel = null) {
     const seen = new Set();
     for (const r of rows) {
         if (seen.has(keyOf(r))) throw new Error("chart: ключ неуникален " + keyOf(r));
-        if (r.death && year(r.death) < year(r.birth)) throw new Error("chart: смерть раньше рождения " + keyOf(r));
+        if (r.birth != null && r.death && year(r.death) < year(r.birth)) throw new Error("chart: смерть раньше рождения " + keyOf(r));
         seen.add(keyOf(r));
     }
     const byKey = new Map(rows.map(r => [keyOf(r), r]));
@@ -158,7 +178,8 @@ export function chartModel(title, rows, links, rel = null) {
         if (!l.parents.length || l.parents.length > 2) throw new Error("chart: родителей не 1–2 " + l.child);
         for (const p of l.parents) {
             if (!byKey.has(p)) throw new Error("chart: имя не найдено " + p);
-            if (year(byKey.get(p).birth) > year(byKey.get(l.child).birth))
+            // якорь бездатного — не его ДР: «старше ребёнка» не проверяем
+            if (byKey.get(p).birth != null && yrOf(byKey.get(p)) > yrOf(byKey.get(l.child)))
                 throw new Error("chart: родитель не старше ребёнка " + p);
         }
     }
@@ -170,14 +191,14 @@ export function chartModel(title, rows, links, rel = null) {
             : c >= "0" && c <= "9" ? 6.4
             : c === c.toUpperCase() && c !== c.toLowerCase() ? 7.7
             : 6.3), 0);
-    // порядок строк: (год рождения, имя) — ключи «Имя год»
-    const people = [...rows].sort((a, b) => year(a.birth) - year(b.birth)
+    // порядок строк: (год рождения/якорь, имя) — ключи «Имя год»
+    const people = [...rows].sort((a, b) => yrOf(a) - yrOf(b)
         || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-        .map(r => ({ r, key: keyOf(r), yr: year(r.birth), dy: r.death ? year(r.death) : null, row: 0 }));
+        .map(r => ({ r, key: keyOf(r), yr: yrOf(r), dy: r.death ? year(r.death) : null, row: 0 }));
     // у героя в колонке — «диапазон» радиуса (уровень из кейкапа заголовка,
     // rel.range — rangeLevel(L)); у остальных строк — прежние индивидуальные
     // ярлыки родства (как в 🔔-списке); у героя и вне родни (без героя/
-    // диапазона) — подпись «Год»
+    // диапазона) — подпись «Год»; бездатным год неизвестен — колонка пустая
     const kin = rel && rel.hero
         ? new Map(people.map(p =>
             [p.key, kinLabel(rel.pairs || [], rel.spouses || [], k2 => (rel.sex || {})[k2] ?? null, rel.hero, p.key)]))
@@ -185,7 +206,7 @@ export function chartModel(title, rows, links, rel = null) {
     if (kin && rel.range) kin.set(rel.hero, rangeLevel(rel.range));
     people.forEach((p, i) => {
         p.row = i;
-        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + p.yr; })();
+        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + (p.r.birth != null ? p.yr : ""); })();
     });
     const rowOf = new Map(people.map(p => [p.key, p]));
     const allYears = [
@@ -194,7 +215,7 @@ export function chartModel(title, rows, links, rel = null) {
         // без даты смерти бар ограничен 80 годами или сегодня — ось X должна
         // их покрыть
         ...people.filter(p => p.dy === null).map(p => Math.min(p.yr + 80, TODAY_Y)),
-        ...links.map(l => year(byKey.get(l.child).birth)),
+        ...links.map(l => yrOf(byKey.get(l.child))),
     ];
     // колонка подписей «Связь год»: под самую длинную строку, все — одной строкой
     const KW = Math.max(KIND_W, Math.ceil(Math.max(...people.map(p => textW(p.label))) + 12));
@@ -214,7 +235,7 @@ export function chartModel(title, rows, links, rel = null) {
     const famStr = l => [...l.parents].sort().join(" и ");
     for (const l of links) {
         const fam = famStr(l);
-        const y = year(byKey.get(l.child).birth);
+        const y = yrOf(byKey.get(l.child));
         if (!famOf.has(fam)) { famOf.set(fam, famOf.size); famYears.set(fam, new Set()); }
         famYears.get(fam).add(y);
     }
@@ -301,7 +322,7 @@ export function chartModel(title, rows, links, rel = null) {
             draws.push({ k: "line", x1: KW - 6, y1: cy, x2: lnEnd, y2: cy, stroke: "#bbbbbb", w: 1 });
         draws.push({ k: "text", x: x1 - 6, y: cy + 3.5, s: p.r.name, size: 10, fill: "#111111", anchor: "end" });
         draws.push({ k: "rrect", x: x1, y: cy - BAR_H / 2, w: Math.max(2, x2 - x1), h: BAR_H, r: 2, fill: bar });
-        if (p.dy !== null) // известная смерть — N прожитых лет за баром
+        if (p.dy !== null && p.r.birth != null) // известная смерть — N прожитых лет за баром
             draws.push({ k: "text", x: x2 + 4, y: cy + 3.5, s: String(p.dy - p.yr), size: 10, fill: bar });
     }
     // связи родитель→ребёнок (в год рождения ребёнка), точки на строках;
@@ -313,7 +334,7 @@ export function chartModel(title, rows, links, rel = null) {
     const yearCount = new Map();    // год → сколько семей уже заняли столбец
     const famSeen = new Set();
     for (const l of links) {
-        const y = year(byKey.get(l.child).birth);
+        const y = yrOf(byKey.get(l.child));
         const kk = famStr(l) + "\0" + y;
         if (!famSeen.has(kk)) {
             famSeen.add(kk);
@@ -334,7 +355,7 @@ export function chartModel(title, rows, links, rel = null) {
     for (const l of links) {
         const fam = famStr(l);
         const col = famColor(fam);
-        const y = year(byKey.get(l.child).birth);
+        const y = yrOf(byKey.get(l.child));
         const ps = l.parents.map(p => rowOf.get(p)).sort((a, b) => a.cy - b.cy);
         const ch0 = rowOf.get(l.child);
         // слот семьи в этом году — толщина линии на семью вправо от линии года

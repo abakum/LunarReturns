@@ -8,3 +8,4 @@ db.json
 node_modules/
 dev/db.json
 dev/vk-db.db*
+dev/vk-repl.db*

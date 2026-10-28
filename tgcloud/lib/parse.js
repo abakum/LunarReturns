@@ -173,8 +173,10 @@ function gdateToISO(s) {
     return /^\d{4}$/.test(t) ? t + "-01-01" : null;
 }
 
-// валидный гедком → { indis, fams }; иначе null. Берт только BIRT/DEAT/SEX
-// у INDI и HUSB/WIFE/CHIL/MARR/DIV (DATE, PLAC) у FAM
+// валидный гедком → { indis, fams }; иначе null. Берёт только
+// BIRT/DEAT/BURI/SEX (DATE, TIME, PLAC) у INDI и HUSB/WIFE/CHIL/MARR/DIV
+// (DATE, PLAC) у FAM; BURI (похороны) — фолбэк смерти: дата/место заходят
+// в deat, когда своей смерти нет (или нет её места)
 function parseGedcom(text) {
     const lines = String(text).split(/\r?\n/).map(l => l.trim());
     if (!lines.some(l => /^0\s+HEAD\b/i.test(l))) return null;
@@ -188,7 +190,7 @@ function parseGedcom(text) {
         if (lvl === 0) {
             curTag = null;
             cur = null;
-            if (xref && tag === "INDI") { cur = { __xref: xref, name: "", sex: null, birt: null, deat: null, adopFams: [] }; indis.set(xref, cur); }
+            if (xref && tag === "INDI") { cur = { __xref: xref, name: "", sex: null, birt: null, deat: null, buri: null, adopFams: [] }; indis.set(xref, cur); }
             else if (xref && tag === "FAM") { cur = { __xref: xref, husb: null, wife: null, chil: [], adopted: [], marr: null, div: null }; fams.set(xref, cur); }
             continue;
         }
@@ -199,6 +201,7 @@ function parseGedcom(text) {
             else if (tag === "SEX") cur.sex = /^F/i.test(val) ? "F" : /^M/i.test(val) ? "M" : null;
             else if (tag === "BIRT") cur.birt = cur.birt || {};
             else if (tag === "DEAT") cur.deat = cur.deat || {};
+            else if (tag === "BURI") cur.buri = cur.buri || {};
             else if (tag === "MARR") cur.marr = cur.marr || {};
             else if (tag === "DIV") cur.div = cur.div || {};
             else if (tag === "NOTE") cur.note = val;
@@ -221,13 +224,17 @@ function parseGedcom(text) {
             if (!iso) continue;
             if (curTag === "BIRT" && cur.birt) cur.birt.date = iso;
             else if (curTag === "DEAT" && cur.deat) cur.deat.date = iso;
+            else if (curTag === "BURI" && cur.buri) cur.buri.date = iso;
             else if (curTag === "MARR" && cur.marr) cur.marr.date = iso;
             else if (curTag === "DIV" && cur.div) cur.div.date = iso;
         } else if (lvl === 2 && tag === "TIME" && /^\d{1,2}:\d{2}/.test(val)) {
             if (curTag === "BIRT" && cur.birt) cur.birt.time = val.slice(0, 5);
             else if (curTag === "DEAT" && cur.deat) cur.deat.time = val.slice(0, 5);
         } else if (lvl === 2 && tag === "PLAC") {
-            if (curTag === "MARR" && cur.marr) cur.marr.plac = val;
+            if (curTag === "BIRT" && cur.birt) cur.birt.plac = val;
+            else if (curTag === "DEAT" && cur.deat) cur.deat.plac = val;
+            else if (curTag === "BURI" && cur.buri) cur.buri.plac = val;
+            else if (curTag === "MARR" && cur.marr) cur.marr.plac = val;
             else if (curTag === "DIV" && cur.div) cur.div.plac = val;
         } else if (lvl === 2 && (tag === "CONC" || tag === "CONT") && (curTag === "NOTE" || curTag === "TITL")) {
             // продолжение NOTE/TITL: CONC — склейка без пробела, CONT — новая
@@ -236,17 +243,33 @@ function parseGedcom(text) {
             else if (val) cur.note = val;
         }
     }
+    // похороны → смерть: дата/место, когда своей смерти нет (или нет места)
+    for (const ind of indis.values()) {
+        const b = ind.buri;
+        if (!b || (!b.date && !b.plac)) continue;
+        ind.deat = ind.deat || {};
+        if (!ind.deat.date && b.date) ind.deat.date = b.date;
+        if (!ind.deat.plac && b.plac) ind.deat.plac = b.plac;
+    }
     if (!indis.size && !fams.size) return null;
     return { indis: [...indis.values()], fams: [...fams.values()] };
 }
 
 // статистика гедкома для вопроса при дропе файла: сколько импортировалось бы
-// (условия подсчёта — как в importGedcom)
+// (условия подсчёта — как в importGedcom): именованные с датой — всегда,
+// бездатные именованные — только упомянутые в семьях (супруг/ребёнок)
 function gedStats(g) {
+    const famRefs = new Set();
+    for (const f of g.fams) {
+        if (f.husb) famRefs.add(f.husb);
+        if (f.wife) famRefs.add(f.wife);
+        for (const cx of f.chil) famRefs.add(cx);
+    }
     const have = new Set();
     let persons = 0;
     for (const ind of g.indis) {
-        if (!ind.name || !ind.birt || !ind.birt.date) continue;
+        if (!ind.name) continue;
+        if (!(ind.birt && ind.birt.date) && !famRefs.has(ind.__xref)) continue;
         persons++;
         have.add(ind.__xref);
     }
