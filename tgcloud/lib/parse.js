@@ -22,22 +22,28 @@ function explicitZoneMinutes(s) {
 }
 
 // 1: имя; 2-4: дата рождения (месяц/день могут отсутствовать: «1663» →
-// 1663-01-01, «1663-07» → 1663-07-01), 5-6: время, 7: место/зона в скобках,
-// 8: место/зона без скобок (* см. ниже); 9-15: то же для смерти — необязательный
-// второй хвост; 16: хвост строки — примечание целиком (титулы не выделяем).
+// 1663-01-01, «1663-07» → 1663-07-01), 5: «~» — признак примерной даты,
+// 6-7: время, 8: место/зона в скобках,
+// 9: место/зона без скобок (* см. ниже); 10-17: то же для смерти —
+// необязательный второй хвост; 18: хвост строки — примечание целиком (титулы
+// не выделяем). Неполная дата или «~» за датой — примерная (abt 1/2/3 —
+// год/месяц/день): юбилеи по ней не оповещаются; «1954» без «~» — примерный
+// сам по себе.
 // Скобки сразу за датой/временем — место (PLAC): известный город — время
 // пересчитывается по его зоне, неизвестный — время московское; без времени —
 // 12:00. «МСК+2»/«UTC+5» (в скобках) — смещение, не место: время корректируется
 // без PLAC. Скобки в хвосте (неразу за датой) — примечание.
 // «^» — маркер примечания: разбор идёт до первого «^», всё после него —
 // примечание дословно (дата в его начале — не дата смерти).
-const DATE_TAIL = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?(?:\\s+(\\d{1,2})(?:[:.\\u0433](\\d{2}))?)?\\s*(?:\\(\\s*([^)]+?)\\s*\\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\\s*[+-]\\s*\\d{1,2}))?";
+const DATE_TAIL = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?(~)?(?:\\s+(\\d{1,2})(?:[:.\\u0433](\\d{2}))?)?\\s*(?:\\(\\s*([^)]+?)\\s*\\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\\s*[+-]\\s*\\d{1,2}))?";
 const TRIGGER_RE = new RegExp("^(.+?)\\s+" + DATE_TAIL + "(?:\\s+" + DATE_TAIL + ")?(?:\\s+(.+))?\\s*$", "iu");
 // строка свадьбы плоского древа: «дата [дата развода] (место) [прим]» — без
-// времени/зоны (свадьбе оно не нужно); пара в скобках — место, голый хвост —
-// примечание (вывод — тем же порядком: даты, место в скобках, примечание);
+// времени/зоны (свадьбе оно не нужно); «~» за датой — примерная (как в
+// TRIGGER_RE); гранулярность abt (1 год / 2 месяц / 3 день~);
+// пара в скобках — место, голый хвост — примечание (вывод — тем
+// же порядком: даты, место в скобках, примечание);
 // «^» — маркер примечания (как в TRIGGER_RE): после него — дословно
-const WDATE = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?";
+const WDATE = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?(~)?";
 const WEDDING_RE = new RegExp("^" + WDATE + "(?:\\s+" + WDATE + ")?(?:\\s*\\(([^)]*)\\))?(?:\\s+(.+))?\\s*$", "iu");
 
 // ГГГГММДД[ ЧЧ:ММ][ зона] → дата/время в МСК; без времени и зоны — только d
@@ -62,23 +68,26 @@ function dateTimeToMsk(y, mo, dd, hh, mm, givenTime, diffMin, hasZone) {
     return rec;
 }
 
-// разобрать одну группу «дата [время] [зона]» из групп m[gi..gi+6]; месяц/день
-// могут отсутствовать («1663» → 1663-01-01, «1663-07» → 1663-07-01)
+// разобрать одну группу «дата [~] [время] [зона]» из групп m[gi..gi+7];
+// месяц/день могут отсутствовать («1663» → 1663-01-01, «1663-07» → 1663-07-01);
+// abt — гранулярность примерности: 1 — только год, 2 — год+месяц,
+// 3 — полный день с «~»; точная дата — undefined (юБилеи по abt не оповещаются)
 function parseDateGroups(m, gi, what) {
     const hasMo = m[gi + 1] !== undefined, hasDd = m[gi + 2] !== undefined;
+    const abt = !hasMo ? 1 : !hasDd ? 2 : m[gi + 3] === "~" ? 3 : undefined;
     const y = Number(m[gi]), mo = hasMo ? Number(m[gi + 1]) : 1, dd = hasDd ? Number(m[gi + 2]) : 1;
     if (y < 1000 || y > 9999) return { error: "некорректный год" + what + ": " + m[gi] };
     if (mo < 1 || mo > 12 || dd < 1 || dd > 31)
         return { error: "некорректная дата" + what + ": " + m[gi] + (m[gi + 1] ?? "") + (m[gi + 2] ?? "") };
-    const givenTime = m[gi + 3] !== undefined;
+    const givenTime = m[gi + 4] !== undefined;
     let hh = 12, mm = 0;
     if (givenTime) {
-        hh = Number(m[gi + 3]);
-        mm = m[gi + 4] !== undefined ? Number(m[gi + 4]) : 0;
-        if (hh > 23 || mm > 59) return { error: "некорректное время" + what + ": " + m[gi + 3] + (m[gi + 4] || "") };
+        hh = Number(m[gi + 4]);
+        mm = m[gi + 5] !== undefined ? Number(m[gi + 5]) : 0;
+        if (hh > 23 || mm > 59) return { error: "некорректное время" + what + ": " + m[gi + 4] + (m[gi + 5] || "") };
     }
-    const zoneParens = m[gi + 5] !== undefined;
-    const zone = (zoneParens ? m[gi + 5] : m[gi + 6] || "").trim();
+    const zoneParens = m[gi + 6] !== undefined;
+    const zone = (zoneParens ? m[gi + 6] : m[gi + 7] || "").trim();
     const hasZone = !!zone;
     let diffMin = 0; // неизвестное место — время московское (без пересчёта)
     let zoneLabel = "";
@@ -110,17 +119,21 @@ function parseDateGroups(m, gi, what) {
         : "";
     // исходное местное время — для гедкома (2 TIME); без введённого времени — нет
     const src = givenTime ? { srcH: hh, srcM: mm } : {};
-    return { rec: Object.assign(rec, src), note, city, tailNote: "" };
+    return { rec: Object.assign(rec, src), abt, note, city, tailNote: "" };
 }
 
 // 1: имя; 2-4: дата рождения, 5-6: время, 7-8: зона; 9-15: хвост смерти; 16:
 // хвост строки — примечание целиком.
 // «ГГГГММДД» (8 цифр без разделителей) → «ГГГГ-ММ-ДД» — компактная форма
-// триггера; только правдоподобные даты (месяц 01–12, день 01–31), остальное
-// число не трогаем; вокруг не должно быть цифр и разделителей дат/времени
+// триггера; «ГГГГММ» (6 цифр) → «ГГГГ-ММ» (месяц примерной даты); только
+// правдоподобные даты (месяц 01–12, день 01–31), остальное число не трогаем;
+// вокруг не должно быть цифр и разделителей дат/времени
 function compactDates(s) {
-    return s.replace(/(?<![\d./:-])(\d{4})(\d{2})(\d{2})(?![\d./:-])/g, (all, y, mo, dd) =>
-        "01" <= mo && mo <= "12" && "01" <= dd && dd <= "31" ? y + "-" + mo + "-" + dd : all);
+    return s
+        .replace(/(?<![\d./:-])(\d{4})(\d{2})(\d{2})(?![\d./:-])/g, (all, y, mo, dd) =>
+            "01" <= mo && mo <= "12" && "01" <= dd && dd <= "31" ? y + "-" + mo + "-" + dd : all)
+        .replace(/(?<![\d./:-])(\d{4})(\d{2})(?![\d./:-])/g, (all, y, mo) =>
+            "01" <= mo && mo <= "12" ? y + "-" + mo : all);
 }
 
 function parseTrigger(text) {
@@ -137,40 +150,47 @@ function parseTrigger(text) {
     const b = parseDateGroups(m, 2, "");
     if (b.error) return { n, error: b.error };
     const rec = Object.assign({ n }, b.rec);
+    if (b.abt) rec.abt = b.abt; // примерная ДР (гранулярность 1/2/3) — юбилеи не оповещаются
     if (b.city) rec.plac = b.city; // место — только для гедком (PLAC)
     let tailNote = (b.tailNote || ""); // скобки после даты рождения
     let note = b.note;
-    if (m[9] !== undefined) { // хвост смерти — только для гедком (DEAT),
+    if (m[10] !== undefined) { // хвост смерти — только для гедком (DEAT),
         // результат события (юбилеи) не меняет
-        const s = parseDateGroups(m, 9, " смерти");
+        const s = parseDateGroups(m, 10, " смерти");
         if (s.error) return { n, error: s.error };
         rec.dd = s.rec.d;
+        if (s.abt) rec.dabt = s.abt;
         if (s.rec.h !== undefined) { rec.dh = s.rec.h; rec.dm = s.rec.m; }
         if (s.rec.srcH !== undefined) { rec.dsrcH = s.rec.srcH; rec.dsrcM = s.rec.srcM; }
         if (s.city) rec.plac2 = s.city; // место хвоста: развод для «Иван+Мария»
         if (s.tailNote) tailNote = (tailNote ? tailNote + " " : "") + s.tailNote;
     }
-    if (m[16] || tailNote) tailNote = (tailNote + " " + (m[16] || "")).trim();
+    if (m[18] || tailNote) tailNote = (tailNote + " " + (m[18] || "")).trim();
     if (hat) tailNote = (tailNote ? tailNote + " " : "") + hat;
     return { rec, note, tail: tailNote };
 }
 
 // ============================== ГЕДКОМ-ИМПОРТ ==============================
-// «10 MAY 1985» → «1985-05-10»; «MAR 1985» → «1985-03-01»; «1985» → «1985-01-01»
-// (неполная дата — первым числом известного месяца/года; квалификаторы ABT/EST/
-// CAL/BEF/AFT срезаются — иначе null)
+// «10 MAY 1985» → {iso:"1985-05-10"}; «MAR 1985» → {iso:"1985-03-01", abt:2};
+// «1985» → {iso:"1985-01-01", abt:1} (неполная дата — первым числом известного
+// месяца/года); квалификаторы ABT/EST/CAL/BEF/AFT срезаются и дают abt:3 на
+// полной дате — примерная дата, юбилеи не оповещаются. abt — гранулярность:
+// 1 год, 2 месяц, 3 день (у год/месяц-дат квалификатор ничего не меняет)
 const GED_MONTHS = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 };
 function gdateToISO(s) {
-    const t = String(s).trim().replace(/^(?:abt|est|cal|bef|aft)\s+/i, "");
+    const t0 = String(s).trim();
+    const mq = t0.match(/^(?:abt|est|cal|bef|aft)\s+/i);
+    const t = mq ? t0.slice(mq[0].length) : t0;
+    const qabt = mq ? 3 : undefined;
     let m = t.match(/(\d{1,2})\s+([A-Za-z]{3})\.?\s+(\d{4})/);
     if (m) {
         const mo = GED_MONTHS[m[2].toUpperCase()];
-        return mo ? m[3] + "-" + String(mo).padStart(2, "0") + "-" + String(m[1]).padStart(2, "0") : null;
+        return mo ? { iso: m[3] + "-" + String(mo).padStart(2, "0") + "-" + String(m[1]).padStart(2, "0"), abt: qabt } : null;
     }
     m = t.match(/^([A-Za-z]{3})\.?\s+(\d{4})$/);
     const mo = m && GED_MONTHS[m[1].toUpperCase()];
-    if (mo) return m[2] + "-" + String(mo).padStart(2, "0") + "-01";
-    return /^\d{4}$/.test(t) ? t + "-01-01" : null;
+    if (mo) return { iso: m[2] + "-" + String(mo).padStart(2, "0") + "-01", abt: 2 };
+    return /^\d{4}$/.test(t) ? { iso: t + "-01-01", abt: 1 } : null;
 }
 
 // валидный гедком → { indis, fams }; иначе null. Берёт только
@@ -220,13 +240,13 @@ function parseGedcom(text) {
             const r = val.match(/@([^@]+)@/);
             if (r && cur.adopFams && !cur.adopFams.includes(r[1])) cur.adopFams.push(r[1]);
         } else if (lvl === 2 && tag === "DATE") {
-            const iso = gdateToISO(val);
-            if (!iso) continue;
-            if (curTag === "BIRT" && cur.birt) cur.birt.date = iso;
-            else if (curTag === "DEAT" && cur.deat) cur.deat.date = iso;
-            else if (curTag === "BURI" && cur.buri) cur.buri.date = iso;
-            else if (curTag === "MARR" && cur.marr) cur.marr.date = iso;
-            else if (curTag === "DIV" && cur.div) cur.div.date = iso;
+            const g = gdateToISO(val);
+            if (!g) continue;
+            if (curTag === "BIRT" && cur.birt) { cur.birt.date = g.iso; if (g.abt) cur.birt.abt = g.abt; }
+            else if (curTag === "DEAT" && cur.deat) { cur.deat.date = g.iso; if (g.abt) cur.deat.abt = g.abt; }
+            else if (curTag === "BURI" && cur.buri) { cur.buri.date = g.iso; if (g.abt) cur.buri.abt = g.abt; }
+            else if (curTag === "MARR" && cur.marr) { cur.marr.date = g.iso; if (g.abt) cur.marr.abt = g.abt; }
+            else if (curTag === "DIV" && cur.div) { cur.div.date = g.iso; if (g.abt) cur.div.abt = g.abt; }
         } else if (lvl === 2 && tag === "TIME" && /^\d{1,2}:\d{2}/.test(val)) {
             if (curTag === "BIRT" && cur.birt) cur.birt.time = val.slice(0, 5);
             else if (curTag === "DEAT" && cur.deat) cur.deat.time = val.slice(0, 5);
@@ -248,7 +268,10 @@ function parseGedcom(text) {
         const b = ind.buri;
         if (!b || (!b.date && !b.plac)) continue;
         ind.deat = ind.deat || {};
-        if (!ind.deat.date && b.date) ind.deat.date = b.date;
+        if (!ind.deat.date && b.date) {
+            ind.deat.date = b.date;
+            if (b.abt) ind.deat.abt = b.abt;
+        }
         if (!ind.deat.plac && b.plac) ind.deat.plac = b.plac;
     }
     if (!indis.size && !fams.size) return null;
@@ -338,18 +361,20 @@ function parseTreeLine(line) {
 
 // разбор дат свадьбы (WEDDING_RE) → {rec:{d,plac,dd,plac2},note} | {err}
 // группа 1: дата свадьбы 2: дата развода 3: место (пара в скобках)
-// 4: примечание; место принадлежит свадьбе; «^» — маркер примечания
-// (хвост после него — дословно, дата в начале — не развод)
+// 4: примечание; место принадлежит свадьбе; «~» за датой — примерная (abt в
+// rec); «^» — маркер примечания (хвост после него — дословно, дата в начале —
+// не развод)
 const wdate = (m, gi, what) => {
     const y = Number(m[gi]), mo = Number(m[gi + 1] ?? "01"), dd = Number(m[gi + 2] ?? "01");
     if (y < 1000 || y > 9999) return { error: "некорректный год" + what + ": " + m[gi] };
     if (mo < 1 || mo > 12 || dd < 1 || dd > 31)
         return { error: "некорректная дата" + what + ": " + m[gi] + (m[gi + 1] ?? "") + (m[gi + 2] ?? "") };
     const pad = (x) => String(x).padStart(2, "0");
-    return { d: y + "-" + pad(mo) + "-" + pad(dd) };
+    const abt = m[gi + 1] === undefined ? 1 : m[gi + 2] === undefined ? 2 : m[gi + 3] === "~" ? 3 : undefined;
+    return { d: y + "-" + pad(mo) + "-" + pad(dd), abt };
 };
 function weddingRecOf(s) {
-    // «^» — маркер примечания: разбор до первого «^», после — дословно
+    // «^» — маркер примечания: разбор до первого «^», после него — дословно
     let hat = "";
     let t = s;
     const hi = t.indexOf("^");
@@ -359,13 +384,15 @@ function weddingRecOf(s) {
     const b = wdate(wm, 1, " свадьбы");
     if (b.error) return { err: b.error };
     const rec = { d: b.d };
-    if (wm[7] !== undefined) rec.plac = wm[7].trim();
-    if (wm[4] !== undefined) {
-        const b2 = wdate(wm, 4, " развода");
+    if (b.abt) rec.abt = b.abt;
+    if (wm[9] !== undefined) rec.plac = wm[9].trim();
+    if (wm[5] !== undefined) {
+        const b2 = wdate(wm, 5, " развода");
         if (b2.error) return { err: b2.error };
         rec.dd = b2.d;
+        if (b2.abt) rec.dabt = b2.abt;
     }
-    const note = wm[8] ? wm[8].trim() : "";
+    const note = wm[10] ? wm[10].trim() : "";
     return { rec, note: note && hat ? note + " " + hat : (note || hat) };
 }
 

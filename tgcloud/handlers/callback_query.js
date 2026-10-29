@@ -139,8 +139,10 @@ export default async function (cq, ctx) {
         (await db.select().from(focusView).where(eq(focusView.chatId, chatId)).all())
             .find(r => r.messageId === cq.message?.message_id);
 
-    // события чата записями {n,d,h,m,dd} (персоны + свадьбы)
+    // события чата записями {n,d,h,m,dd} (персоны + свадьбы);
+    // 🔔-ветки (bell/focbell) — без примерных дат (список оповещений)
     const items = async () => [...await personRows(chatId), ...await weddingRows(chatId)];
+    const bellItems = async () => (await items()).filter(r => !r.abt && !r.dabt && !r.mabt);
     // пол по ключу «Имя Д» (ярлыки родства)
     const sexOf = async () => (rows => k => (rows.find(r => r.n + " " + r.d === k) || {}).sex ?? null)
         (await personRows(chatId));
@@ -366,7 +368,7 @@ export default async function (cq, ctx) {
         if (bell) {
             const pairs = await linkPairs(chatId);
             const spPairs = await focusSpousePairs(chatId);
-            body = focusListText(await items(), keys, row.pkey, pairs, spPairs, await sexOf(), byFull, mmddToday())
+            body = focusListText(await bellItems(), keys, row.pkey, pairs, spPairs, await sexOf(), byFull, mmddToday())
                 || "(в радиусе нет событий)";
         }
         const full = head + (body ? "\n" + body : "");

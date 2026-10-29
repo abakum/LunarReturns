@@ -486,27 +486,32 @@ function explicitZoneMinutes(s) {
     return (base + (m[2] === "+" ? 1 : -1) * Number(m[3])) * 60;
 }
 
-// 1: имя, 2-4: дата, 5-6: время, 7: зона в скобках, 8: зона без скобок.
+// 1: имя, 2-4: дата, 5: «~» примерной, 6-7: время, 8: зона в скобках, 9: зона
+// без скобок.
 // Без \b вокруг группы зоны: в юникод-режиме \b ASCII-only и не срабатывает
 // на кириллице («МСК+2» без скобок не разбиралось).
 // 1: имя; 2-4: дата рождения (месяц/день могут отсутствовать: «1663» →
-// 1663-01-01, «1663-07» → 1663-07-01), 5-6: время, 7: место/зона в скобках,
-// 8: место/зона без скобок; 9-15: то же для смерти — необязательный второй
-// хвост; 16: хвост строки — примечание целиком.
+// 1663-01-01, «1663-07» → 1663-07-01), 5: «~» — примерная дата, 6-7: время,
+// 8: место/зона в скобках,
+// 9: место/зона без скобок; 10-17: то же для смерти — необязательный второй
+// хвост; 18: хвост строки — примечание целиком.
+// Неполная дата или «~» за датой — примерная (abt 1/2/3 — год/месяц/день):
+// юбилеи по ней не оповещаются; «1954» без «~» — примерный сам по себе.
 // Скобки сразу за датой/временем — место (PLAC): известный город — время
 // пересчитывается по его зоне, неизвестный — время московское; без времени —
 // 12:00. «МСК+2»/«UTC+5» (в скобках) — смещение, не место: время корректируется
 // без PLAC. Скобки в хвосте (не сразу за датой) — примечание.
 // «^» — маркер примечания: разбор идёт до первого «^», всё после него —
 // примечание дословно (дата в его начале — не дата смерти).
-const DATE_TAIL = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?(?:\\s+(\\d{1,2})(?:[:.\\u0433](\\d{2}))?)?\\s*(?:\\(\\s*([^)]+?)\\s*\\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\\s*[+-]\\s*\\d{1,2}))?";
+const DATE_TAIL = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?(~)?(?:\\s+(\\d{1,2})(?:[:.\\u0433](\\d{2}))?)?\\s*(?:\\(\\s*([^)]+?)\\s*\\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\\s*[+-]\\s*\\d{1,2}))?";
 const TRIGGER_RE = new RegExp("^(.+?)\\s+" + DATE_TAIL + "(?:\\s+" + DATE_TAIL + ")?(?:\\s+(.+))?\\s*$", "iu");
 // строка свадьбы плоского древа — только даты: «дата [дата развода] [прим]»
 // строка свадьбы плоского древа: «дата [дата развода] (место) [прим]» — без
-// времени/зоны (свадьбе оно не нужно); пара в скобках — место, голый хвост —
+// времени/зоны (свадьбе оно не нужно); «~» за датой — примерная (как в
+// TRIGGER_RE); пара в скобках — место, голый хвост —
 // примечание (вывод — тем же порядком: даты, место в скобках, примечание);
 // «^» — маркер примечания (как в TRIGGER_RE): после него — дословно
-const WDATE = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?";
+const WDATE = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?(~)?";
 const WEDDING_RE = new RegExp("^" + WDATE + "(?:\\s+" + WDATE + ")?(?:\\s*\\(([^)]*)\\))?(?:\\s+(.+))?\\s*$", "iu");
 
 // ГГГГММДД[ ЧЧ:ММ][ зона] → дата/время в МСК; без времени и зоны — только d
@@ -531,23 +536,26 @@ function dateTimeToMsk(y, mo, dd, hh, mm, givenTime, diffMin, hasZone) {
     return rec;
 }
 
-// разобрать одну группу «дата [время] [зона]» из групп m[gi..gi+6]; месяц/день
-// могут отсутствовать («1663» → 1663-01-01, «1663-07» → 1663-07-01)
+// разобрать одну группу «дата [~] [время] [зона]» из групп m[gi..gi+7];
+// месяц/день могут отсутствовать («1663» → 1663-01-01, «1663-07» → 1663-07-01);
+// abt — гранулярность примерности: 1 — только год, 2 — год+месяц,
+// 3 — полный день с «~»; точная дата — undefined (юбилеи по abt не оповещаются)
 function parseDateGroups(m, gi, what) {
     const hasMo = m[gi + 1] !== undefined, hasDd = m[gi + 2] !== undefined;
+    const abt = !hasMo ? 1 : !hasDd ? 2 : m[gi + 3] === "~" ? 3 : undefined;
     const y = Number(m[gi]), mo = hasMo ? Number(m[gi + 1]) : 1, dd = hasDd ? Number(m[gi + 2]) : 1;
     if (y < 1000 || y > 9999) return { error: "некорректный год" + what + ": " + m[gi] };
     if (mo < 1 || mo > 12 || dd < 1 || dd > 31)
         return { error: "некорректная дата" + what + ": " + m[gi] + (m[gi + 1] ?? "") + (m[gi + 2] ?? "") };
-    const givenTime = m[gi + 3] !== undefined;
+    const givenTime = m[gi + 4] !== undefined;
     let hh = 12, mm = 0;
     if (givenTime) {
-        hh = Number(m[gi + 3]);
-        mm = m[gi + 4] !== undefined ? Number(m[gi + 4]) : 0;
-        if (hh > 23 || mm > 59) return { error: "некорректное время" + what + ": " + m[gi + 3] + (m[gi + 4] || "") };
+        hh = Number(m[gi + 4]);
+        mm = m[gi + 5] !== undefined ? Number(m[gi + 5]) : 0;
+        if (hh > 23 || mm > 59) return { error: "некорректное время" + what + ": " + m[gi + 4] + (m[gi + 5] || "") };
     }
-    const zoneParens = m[gi + 5] !== undefined;
-    const zone = (zoneParens ? m[gi + 5] : m[gi + 6] || "").trim();
+    const zoneParens = m[gi + 6] !== undefined;
+    const zone = (zoneParens ? m[gi + 6] : m[gi + 7] || "").trim();
     const hasZone = !!zone;
     let diffMin = 0; // неизвестное место — время московское (без пересчёта)
     let zoneLabel = "";
@@ -579,15 +587,19 @@ function parseDateGroups(m, gi, what) {
         : "";
     // исходное местное время — для гедкома (2 TIME); без введённого времени — нет
     const src = givenTime ? { srcH: hh, srcM: mm } : {};
-    return { rec: Object.assign(rec, src), note, city, tailNote: "" };
+    return { rec: Object.assign(rec, src), abt, note, city, tailNote: "" };
 }
 
 // «ГГГГММДД» (8 цифр без разделителей) → «ГГГГ-ММ-ДД» — компактная форма
-// триггера; только правдоподобные даты (месяц 01–12, день 01–31), остальное
-// число не трогаем; вокруг не должно быть цифр и разделителей дат/времени
+// триггера; «ГГГГММ» (6 цифр) → «ГГГГ-ММ» (месяц примерной даты); только
+// правдоподобные даты (месяц 01–12, день 01–31), остальное число не трогаем;
+// вокруг не должно быть цифр и разделителей дат/времени
 function compactDates(s) {
-    return s.replace(/(?<![\d./:-])(\d{4})(\d{2})(\d{2})(?![\d./:-])/g, (all, y, mo, dd) =>
-        "01" <= mo && mo <= "12" && "01" <= dd && dd <= "31" ? y + "-" + mo + "-" + dd : all);
+    return s
+        .replace(/(?<![\d./:-])(\d{4})(\d{2})(\d{2})(?![\d./:-])/g, (all, y, mo, dd) =>
+            "01" <= mo && mo <= "12" && "01" <= dd && dd <= "31" ? y + "-" + mo + "-" + dd : all)
+        .replace(/(?<![\d./:-])(\d{4})(\d{2})(?![\d./:-])/g, (all, y, mo) =>
+            "01" <= mo && mo <= "12" ? y + "-" + mo : all);
 }
 
 function parseTrigger(text) {
@@ -604,40 +616,47 @@ function parseTrigger(text) {
     const b = parseDateGroups(m, 2, "");
     if (b.error) return { n, error: b.error };
     const rec = Object.assign({ n }, b.rec);
+    if (b.abt) rec.abt = b.abt; // примерная ДР (гранулярность 1/2/3) — юбилеи не оповещаются
     if (b.city) rec.plac = b.city; // место — только для гедком (PLAC)
     let tailNote = (b.tailNote || ""); // скобки после даты рождения
     let note = b.note;
-    if (m[9] !== undefined) { // хвост смерти — только для гедком (DEAT),
+    if (m[10] !== undefined) { // хвост смерти — только для гедком (DEAT),
         // результат события (юбилеи) не меняет
-        const s = parseDateGroups(m, 9, " смерти");
+        const s = parseDateGroups(m, 10, " смерти");
         if (s.error) return { n, error: s.error };
         rec.dd = s.rec.d;
+        if (s.abt) rec.dabt = s.abt;
         if (s.rec.h !== undefined) { rec.dh = s.rec.h; rec.dm = s.rec.m; }
         if (s.rec.srcH !== undefined) { rec.dsrcH = s.rec.srcH; rec.dsrcM = s.rec.srcM; }
         if (s.city) rec.plac2 = s.city; // место хвоста: развод для «Иван+Мария»
         if (s.tailNote) tailNote = (tailNote ? tailNote + " " : "") + s.tailNote;
     }
-    if (m[16] || tailNote) tailNote = (tailNote + " " + (m[16] || "")).trim();
+    if (m[18] || tailNote) tailNote = (tailNote + " " + (m[18] || "")).trim();
     if (hat) tailNote = (tailNote ? tailNote + " " : "") + hat;
     return { rec, note, tail: tailNote };
 }
 
 // ============================== ГЕДКОМ-ИМПОРТ ==============================
-// «10 MAY 1985» → «1985-05-10»; «MAR 1985» → «1985-03-01»; «1985» → «1985-01-01»
-// (неполная дата — первым числом известного месяца/года; квалификаторы ABT/EST/
-// CAL/BEF/AFT срезаются — иначе null)
+// «10 MAY 1985» → {iso:"1985-05-10"}; «MAR 1985» → {iso:"1985-03-01", abt:2};
+// «1985» → {iso:"1985-01-01", abt:1} (неполная дата — первым числом известного
+// месяца/года); квалификаторы ABT/EST/CAL/BEF/AFT срезаются и дают abt:3 на
+// полной дате — примерная дата, юбилеи не оповещаются. abt — гранулярность:
+// 1 год, 2 месяц, 3 день (у год/месяц-дат квалификатор ничего не меняет)
 const GED_MONTHS = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 };
 function gdateToISO(s) {
-    const t = String(s).trim().replace(/^(?:abt|est|cal|bef|aft)\s+/i, "");
+    const t0 = String(s).trim();
+    const mq = t0.match(/^(?:abt|est|cal|bef|aft)\s+/i);
+    const t = mq ? t0.slice(mq[0].length) : t0;
+    const qabt = mq ? 3 : undefined;
     let m = t.match(/(\d{1,2})\s+([A-Za-z]{3})\.?\s+(\d{4})/);
     if (m) {
         const mo = GED_MONTHS[m[2].toUpperCase()];
-        return mo ? m[3] + "-" + String(mo).padStart(2, "0") + "-" + String(m[1]).padStart(2, "0") : null;
+        return mo ? { iso: m[3] + "-" + String(mo).padStart(2, "0") + "-" + String(m[1]).padStart(2, "0"), abt: qabt } : null;
     }
     m = t.match(/^([A-Za-z]{3})\.?\s+(\d{4})$/);
     const mo = m && GED_MONTHS[m[1].toUpperCase()];
-    if (mo) return m[2] + "-" + String(mo).padStart(2, "0") + "-01";
-    return /^\d{4}$/.test(t) ? t + "-01-01" : null;
+    if (mo) return { iso: m[2] + "-" + String(mo).padStart(2, "0") + "-01", abt: 2 };
+    return /^\d{4}$/.test(t) ? { iso: t + "-01-01", abt: 1 } : null;
 }
 
 // валидный гедком → { indis, fams }; иначе null. Берёт только
@@ -687,13 +706,13 @@ function parseGedcom(text) {
             const r = val.match(/@([^@]+)@/);
             if (r && cur.adopFams && !cur.adopFams.includes(r[1])) cur.adopFams.push(r[1]);
         } else if (lvl === 2 && tag === "DATE") {
-            const iso = gdateToISO(val);
-            if (!iso) continue;
-            if (curTag === "BIRT" && cur.birt) cur.birt.date = iso;
-            else if (curTag === "DEAT" && cur.deat) cur.deat.date = iso;
-            else if (curTag === "BURI" && cur.buri) cur.buri.date = iso;
-            else if (curTag === "MARR" && cur.marr) cur.marr.date = iso;
-            else if (curTag === "DIV" && cur.div) cur.div.date = iso;
+            const g = gdateToISO(val);
+            if (!g) continue;
+            if (curTag === "BIRT" && cur.birt) { cur.birt.date = g.iso; if (g.abt) cur.birt.abt = g.abt; }
+            else if (curTag === "DEAT" && cur.deat) { cur.deat.date = g.iso; if (g.abt) cur.deat.abt = g.abt; }
+            else if (curTag === "BURI" && cur.buri) { cur.buri.date = g.iso; if (g.abt) cur.buri.abt = g.abt; }
+            else if (curTag === "MARR" && cur.marr) { cur.marr.date = g.iso; if (g.abt) cur.marr.abt = g.abt; }
+            else if (curTag === "DIV" && cur.div) { cur.div.date = g.iso; if (g.abt) cur.div.abt = g.abt; }
         } else if (lvl === 2 && tag === "TIME" && /^\d{1,2}:\d{2}/.test(val)) {
             if (curTag === "BIRT" && cur.birt) cur.birt.time = val.slice(0, 5);
             else if (curTag === "DEAT" && cur.deat) cur.deat.time = val.slice(0, 5);
@@ -715,7 +734,10 @@ function parseGedcom(text) {
         const b = ind.buri;
         if (!b || (!b.date && !b.plac)) continue;
         ind.deat = ind.deat || {};
-        if (!ind.deat.date && b.date) ind.deat.date = b.date;
+        if (!ind.deat.date && b.date) {
+            ind.deat.date = b.date;
+            if (b.abt) ind.deat.abt = b.abt;
+        }
         if (!ind.deat.plac && b.plac) ind.deat.plac = b.plac;
     }
     if (!indis.size && !fams.size) return null;
@@ -807,18 +829,20 @@ function parseTreeLine(line) {
 
 // разбор дат свадьбы (WEDDING_RE) → {rec:{d,plac,dd,plac2},note} | {err}
 // группа 1: дата свадьбы 2: дата развода 3: место (пара в скобках)
-// 4: примечание; место принадлежит свадьбе; «^» — маркер примечания
-// (хвост после него — дословно, дата в начале — не развод)
+// 4: примечание; место принадлежит свадьбе; abt — гранулярность примерности
+// (1 год / 2 месяц / 3 день с «~») — в rec; «^» — маркер примечания (хвост после
+// него — дословно, дата в начале — не развод)
 const wdate = (m, gi, what) => {
     const y = Number(m[gi]), mo = Number(m[gi + 1] ?? "01"), dd = Number(m[gi + 2] ?? "01");
     if (y < 1000 || y > 9999) return { error: "некорректный год" + what + ": " + m[gi] };
     if (mo < 1 || mo > 12 || dd < 1 || dd > 31)
         return { error: "некорректная дата" + what + ": " + m[gi] + (m[gi + 1] ?? "") + (m[gi + 2] ?? "") };
     const pad = (x) => String(x).padStart(2, "0");
-    return { d: y + "-" + pad(mo) + "-" + pad(dd) };
+    const abt = m[gi + 1] === undefined ? 1 : m[gi + 2] === undefined ? 2 : m[gi + 3] === "~" ? 3 : undefined;
+    return { d: y + "-" + pad(mo) + "-" + pad(dd), abt };
 };
 function weddingRecOf(s) {
-    // «^» — маркер примечания: разбор до первого «^», после — дословно
+    // «^» — маркер примечания: разбор до первого «^», после него — дословно
     let hat = "";
     let t = s;
     const hi = t.indexOf("^");
@@ -828,13 +852,15 @@ function weddingRecOf(s) {
     const b = wdate(wm, 1, " свадьбы");
     if (b.error) return { err: b.error };
     const rec = { d: b.d };
-    if (wm[7] !== undefined) rec.plac = wm[7].trim();
-    if (wm[4] !== undefined) {
-        const b2 = wdate(wm, 4, " развода");
+    if (b.abt) rec.abt = b.abt;
+    if (wm[9] !== undefined) rec.plac = wm[9].trim();
+    if (wm[5] !== undefined) {
+        const b2 = wdate(wm, 5, " развода");
         if (b2.error) return { err: b2.error };
         rec.dd = b2.d;
+        if (b2.abt) rec.dabt = b2.abt;
     }
-    const note = wm[8] ? wm[8].trim() : "";
+    const note = wm[10] ? wm[10].trim() : "";
     return { rec, note: note && hat ? note + " " + hat : (note || hat) };
 }
 
@@ -1322,9 +1348,13 @@ CREATE TABLE IF NOT EXISTS settings(
     bud INTEGER NOT NULL DEFAULT 0, cath INTEGER NOT NULL DEFAULT 0, jud INTEGER NOT NULL DEFAULT 0,
     bell INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`);
-    for (const [t, c] of [["indi", "note"], ["fam", "note"], ["indi", "deat_plac"]]) {
+    for (const [t, c, ty] of [["indi", "note", "TEXT"], ["fam", "note", "TEXT"],
+        ["indi", "deat_plac", "TEXT"],
+        // признаки примерных дат (юбилеи по ним не оповещаются)
+        ["indi", "birt_abt", "INTEGER"], ["indi", "deat_abt", "INTEGER"],
+        ["fam", "marr_abt", "INTEGER"], ["fam", "div_abt", "INTEGER"]]) {
         const cols = qa("PRAGMA table_info(" + t + ")");
-        if (!cols.some(x => x.name === c)) { try { qr("ALTER TABLE " + t + " ADD COLUMN " + c + " TEXT"); } catch (e) { /* уже есть */ } }
+        if (!cols.some(x => x.name === c)) { try { qr("ALTER TABLE " + t + " ADD COLUMN " + c + " " + ty); } catch (e) { /* уже есть */ } }
     }
     convertOldDb();
     return sdb;
@@ -1358,9 +1388,11 @@ function recordOf(peerId, key) {
 
 // персоны чата (только с датой рождения), порядок вставки
 function personRows(peerId) {
-    return qa(`SELECT xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note
+    return qa(`SELECT xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note,birt_abt,deat_abt
         FROM indi WHERE chat=? AND birt_d IS NOT NULL ORDER BY rowid`, peerId).map(r => {
         const o = { n: r.name, d: r.birt_d };
+        if (r.birt_abt) o.abt = r.birt_abt;
+        if (r.deat_abt) o.dabt = r.deat_abt;
         if (r.birt_h !== null) { o.h = r.birt_h; o.m = r.birt_m ?? 0; }
         if (r.src_h !== null) { o.srcH = r.src_h; o.srcM = r.src_m ?? 0; }
         if (r.sex) o.sex = r.sex;
@@ -1382,12 +1414,13 @@ function personRows(peerId) {
 // та же пара+дата у второй семьи (после confirmPair) — один раз
 function weddingRows(peerId) {
     const out = [], seen = new Set();
-    for (const r of qa(`SELECT f.xref AS fx, f.marr_d AS d, f.marr_plac AS plac, f.div_d AS dd, f.div_plac AS plac2, f.note AS note,
+    for (const r of qa(`SELECT f.xref AS fx, f.marr_d AS d, f.marr_abt AS mabt, f.marr_plac AS plac, f.div_d AS dd, f.div_abt AS dabt, f.div_plac AS plac2, f.note AS note,
         (SELECT name FROM indi WHERE chat=f.chat AND xref=f.husb) AS hn,
         (SELECT name FROM indi WHERE chat=f.chat AND xref=f.wife) AS wn
         FROM fam f WHERE f.chat=? AND f.marr_d IS NOT NULL ORDER BY f.rowid`, peerId)) {
         if (!r.hn && !r.wn) continue;
         const o = { n: (r.hn || "Муж") + "+" + (r.wn || "Жена"), d: r.d };
+        if (r.mabt) o.mabt = r.mabt;
         if (seen.has(pkey(o))) continue;
         seen.add(pkey(o));
         if (r.plac) o.plac = r.plac;
@@ -1437,8 +1470,8 @@ function famView(peerId, fx) {
         parents: [f.husb, f.wife].filter(Boolean).map(x => keyOfXref(peerId, x)).filter(Boolean),
         children: qa("SELECT indi FROM chil WHERE chat=? AND fam=? ORDER BY rowid", peerId, f.xref)
             .map(r => keyOfXref(peerId, r.indi)).filter(Boolean),
-        marr: f.marr_d ? { d: f.marr_d, ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null,
-        div: f.div_d ? { d: f.div_d, ...(f.div_plac ? { plac: f.div_plac } : {}) } : null,
+        marr: f.marr_d ? { d: f.marr_d, ...(f.marr_abt ? { abt: 1 } : {}), ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null,
+        div: f.div_d ? { d: f.div_d, ...(f.div_abt ? { abt: 1 } : {}), ...(f.div_plac ? { plac: f.div_plac } : {}) } : null,
     };
 }
 function famList(peerId) {
@@ -1498,18 +1531,21 @@ function upsertPerson(peerId, rec) {
         if (rec.plac !== undefined) put("plac", rec.plac || null);
         if (rec.plac2 !== undefined) put("deat_plac", rec.plac2 || null);
         if (rec.note !== undefined) put("note", rec.note || null);
+        if (rec.abt !== undefined) put("birt_abt", rec.abt || 0);
+        if (rec.dabt !== undefined) put("deat_abt", rec.dabt || 0);
         if (s.length) qr("UPDATE indi SET " + s.join(",") + " WHERE chat=? AND xref=?", ...v, peerId, cur.xref);
         return personRows(peerId).find(r => r.xref === cur.xref) || null;
     }
     const xref = nextIndiXref(peerId, "P");
-    qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note,birt_abt,deat_abt)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         peerId, xref, rec.n, rec.d,
         rec.h ?? null, rec.h !== undefined ? (rec.m ?? 0) : null,
         rec.srcH ?? null, rec.srcH !== undefined ? (rec.srcM ?? 0) : null,
         rec.dd ?? null, rec.dh ?? null, rec.dh !== undefined ? (rec.dm ?? 0) : null,
         rec.dsrcH ?? null, rec.dsrcH !== undefined ? (rec.dsrcM ?? 0) : null,
-        rec.sex ?? null, rec.plac ?? null, rec.plac2 ?? null, rec.note ?? null);
+        rec.sex ?? null, rec.plac ?? null, rec.plac2 ?? null, rec.note ?? null,
+        rec.abt ?? 0, rec.dabt ?? 0);
     return personRows(peerId).find(r => r.xref === xref) || null;
 }
 
@@ -1533,9 +1569,10 @@ function upsertWedding(peerId, rec) {
         const wn = (r.wife ? indiOf(peerId, r.wife) : null) || {};
         if ((hn.name === a && wn.name === b) || (hn.name === b && wn.name === a)) {
             const s = ["marr_d=?"], v = [rec.d];
+            s.push("marr_abt=?"); v.push(rec.abt ?? 0);
             if (rec.plac !== undefined) { s.push("marr_plac=?"); v.push(rec.plac || null); }
             if (rec.note !== undefined) { s.push("note=?"); v.push(rec.note || null); }
-            if (rec.dd !== undefined) { s.push("div_d=?"); v.push(rec.dd || null); }
+            if (rec.dd !== undefined) { s.push("div_d=?"); v.push(rec.dd || null); s.push("div_abt=?"); v.push(rec.dabt ?? 0); }
             if (rec.plac2 !== undefined) { s.push("div_plac=?"); v.push(rec.plac2 || null); }
             qr("UPDATE fam SET " + s.join(",") + " WHERE chat=? AND xref=?", ...v, peerId, r.xref);
             return weddingByFx(peerId, r.xref);
@@ -1543,8 +1580,8 @@ function upsertWedding(peerId, rec) {
     }
     const ha = stubOf(peerId, a), hb = stubOf(peerId, b);
     const fx = nextFamXref(peerId, "W");
-    qr(`INSERT INTO fam(chat,xref,adhoc,husb,wife,marr_d,marr_plac,note,div_d,div_plac) VALUES(?,?,1,?,?,?,?,?,?,?)`,
-        peerId, fx, ha, hb, rec.d, rec.plac ?? null, rec.note ?? null, rec.dd ?? null, rec.plac2 ?? null);
+    qr(`INSERT INTO fam(chat,xref,adhoc,husb,wife,marr_d,marr_abt,marr_plac,note,div_d,div_abt,div_plac) VALUES(?,?,1,?,?,?,?,?,?,?,?,?)`,
+        peerId, fx, ha, hb, rec.d, rec.abt ?? 0, rec.plac ?? null, rec.note ?? null, rec.dd ?? null, rec.dabt ?? 0, rec.plac2 ?? null);
     return weddingByFx(peerId, fx);
 }
 
@@ -1598,8 +1635,9 @@ function applyTree(peerId, tree) {
         const mx = w.m !== null ? xr[w.m] : null, fx = w.f !== null ? xr[w.f] : null;
         if (!mx && !fx) continue;
         const fxx = famForPair(mx, fx, w.rec.d);
-        qr("UPDATE fam SET marr_d=?, marr_plac=?, note=?, div_d=?, div_plac=? WHERE chat=? AND xref=?",
-            w.rec.d ?? null, w.rec.plac ?? null, w.note || null, w.rec.dd ?? null, w.rec.plac2 ?? null, peerId, fxx);
+        qr("UPDATE fam SET marr_d=?, marr_abt=?, marr_plac=?, note=?, div_d=?, div_abt=?, div_plac=? WHERE chat=? AND xref=?",
+            w.rec.d ?? null, w.rec.abt ?? 0, w.rec.plac ?? null, w.note || null,
+            w.rec.dd ?? null, w.rec.dabt ?? 0, w.rec.plac2 ?? null, peerId, fxx);
     }
     for (const ch of tree.children) {
         const cx = xr[ch.c];
@@ -1663,7 +1701,11 @@ function setPersonByXref(peerId, xref, rec, full = false) {
         put("dsrc_h", rec.dsrcH ?? null); put("dsrc_m", rec.dsrcH !== undefined ? (rec.dsrcM ?? 0) : null);
         put("plac", rec.plac ?? null);
         put("note", rec.note ?? null);
+        put("birt_abt", rec.abt ?? 0);
+        put("deat_abt", rec.dabt ?? 0);
     } else {
+        if (rec.abt !== undefined) put("birt_abt", rec.abt || 0);
+        if (rec.dabt !== undefined) put("deat_abt", rec.dabt || 0);
         if (rec.h !== undefined) { put("birt_h", rec.h); put("birt_m", rec.m ?? 0); }
         if (rec.srcH !== undefined) { put("src_h", rec.srcH); put("src_m", rec.srcM ?? 0); }
         if (rec.dd !== undefined) {
@@ -1877,9 +1919,27 @@ function treeReport(rep) {
     if (rep.cut !== undefined)
         body = (rep.cut ? "✂️ ветвь срезана: " + rep.cut + " персон, " + rep.famsCut + " семей\n" : "✂️ ветвь обновлена\n")
             + body;
+    if (rep.dups && rep.dups.length)
+        body += "\n" + rep.dups.map(d => "♻️ дубль: " + d.from + " → " + d.to).join("\n");
     if (rep.errors.length)
         body += "\n" + rep.errors.map(e => "💥 стр " + e.line + ": " + e.msg).join("\n");
     return body;
+}
+
+// уникальный ключ «Имя Д»: занят — примерная дата (approx) сдвигается на день
+// («ГГГГ-ММ-01»+1 → «1964-01-02»; арифметика Date UTC); точная — «~»-хвост
+// к имени («Иван 1954~» → новый ключ «Иван~ 1954»)
+// (ТГ-копия: tgcloud/lib/bot.js, uniqueKeyOf)
+function uniqueKeyOf(peerId, name, birtD, approx) {
+    while (true) {
+        const same = q1("SELECT xref FROM indi WHERE chat=? AND name=? AND birt_d=?", peerId, name, birtD);
+        if (!same) return { name, birtD };
+        if (approx) {
+            const dt = new Date(birtD + "T00:00:00Z");
+            dt.setUTCDate(dt.getUTCDate() + 1);
+            birtD = dt.toISOString().slice(0, 10);
+        } else name += "~";
+    }
 }
 
 // добавить связь родитель→ребёнок; who — кто из двоих пришёл новым триггером.
@@ -2006,16 +2066,16 @@ function confirmPair(peerId, link, cand) {
             f.xref = w.xref;
         } else if (wKids === 0) {
             // пара-заглушка (или бездетная пара): marr/div переезжает, fam уходит
-            qr("UPDATE fam SET marr_d=?, marr_plac=?, div_d=?, div_plac=? WHERE chat=? AND xref=?",
-                w.marr_d, w.marr_plac, w.div_d, w.div_plac, peerId, f.xref);
+            qr("UPDATE fam SET marr_d=?, marr_abt=?, marr_plac=?, div_d=?, div_abt=?, div_plac=? WHERE chat=? AND xref=?",
+                w.marr_d, w.marr_abt ?? 0, w.marr_plac, w.div_d, w.div_abt ?? 0, w.div_plac, peerId, f.xref);
             qr("DELETE FROM chil WHERE chat=? AND fam=?", peerId, w.xref);
             qr("UPDATE links SET fam=NULL WHERE chat=? AND fam=?", peerId, w.xref);
             qr("DELETE FROM fam WHERE chat=? AND xref=?", peerId, w.xref);
             for (const x of wps) dropStubIfOrphan(peerId, x);
         } else {
             // семья с детьми (напр., из гедкома): копируем marr, её не трогаем
-            qr("UPDATE fam SET marr_d=?, marr_plac=?, div_d=?, div_plac=? WHERE chat=? AND xref=?",
-                w.marr_d, w.marr_plac, w.div_d, w.div_plac, peerId, f.xref);
+            qr("UPDATE fam SET marr_d=?, marr_abt=?, marr_plac=?, div_d=?, div_abt=?, div_plac=? WHERE chat=? AND xref=?",
+                w.marr_d, w.marr_abt ?? 0, w.marr_plac, w.div_d, w.div_abt ?? 0, w.div_plac, peerId, f.xref);
         }
     }
     const [n1, n2] = cand.pair.slice(0, -11).split("+");
@@ -2154,7 +2214,7 @@ function deleteEventCascade(peerId, key) {
         for (const f of qa("SELECT xref FROM fam WHERE chat=? AND marr_d=?", peerId, d)) {
             const nm = famNames(peerId, f.xref);
             if (nm.hn === n1 || nm.hn === n2 || nm.wn === n1 || nm.wn === n2)
-                qr("UPDATE fam SET marr_d=NULL, marr_plac=NULL, div_d=NULL, div_plac=NULL WHERE chat=? AND xref=?",
+                qr("UPDATE fam SET marr_d=NULL, marr_abt=0, marr_plac=NULL, div_d=NULL, div_abt=0, div_plac=NULL WHERE chat=? AND xref=?",
                     peerId, f.xref);
         }
     }
@@ -2226,21 +2286,51 @@ function importGedcom(peerId, g) {
         for (const cx of f.chil) famRefs.add(cx);
     }
     let persons = 0;
+    const dups = []; // разруленные коллизии ключа «Имя Д»
     for (const ind of g.indis) {
-        const dated = !!(ind.birt && ind.birt.date);
-        if (!ind.name || (!dated && !famRefs.has(ind.__xref))) continue;
-        let xref = ind.__xref;
-        if (dated) {
-            const same = q1("SELECT xref FROM indi WHERE chat=? AND name=? AND birt_d=?", peerId, ind.name, ind.birt.date);
-            if (same) xref = same.xref;
+        if (!ind.name || !(ind.birt && ind.birt.date)) continue;
+        const approx = !!ind.birt.abt;
+        const u = uniqueKeyOf(peerId, ind.name, ind.birt.date, approx);
+        if (u.name !== ind.name || u.birtD !== ind.birt.date)
+            dups.push({ from: ind.name + " " + ind.birt.date, to: u.name + " " + u.birtD });
+        qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note,birt_abt,deat_abt)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            peerId, ind.__xref, u.name, u.birtD,
+            null, null,
+            ind.birt.time ? Number(ind.birt.time.slice(0, 2)) : null,
+            ind.birt.time ? Number(ind.birt.time.slice(3, 5)) : null,
+            ind.deat && ind.deat.date ? ind.deat.date : null,
+            null, null,
+            ind.deat && ind.deat.time ? Number(ind.deat.time.slice(0, 2)) : null,
+            ind.deat && ind.deat.time ? Number(ind.deat.time.slice(3, 5)) : null,
+            ind.sex ?? null,
+            ind.birt && ind.birt.plac ? ind.birt.plac : null,
+            ind.deat && ind.deat.plac ? ind.deat.plac : null,
+            ind.note ?? null,
+            ind.birt.abt || 0,
+            (ind.deat && ind.deat.abt) || 0);
+        byId.set(ind.__xref, ind.__xref);
+        persons++;
+    }
+    // второй проход: бездатные супруги — ДР от супруга (год того, -01-01,
+    // примерная birt_abt); коллизия — +1 день (как прочие примерные даты);
+    // бездатные дети и безымянные — мимо
+    for (const ind of g.indis) {
+        if (!ind.name || (ind.birt && ind.birt.date)) continue;
+        if (!famRefs.has(ind.__xref)) continue;
+        let year = null;
+        for (const f of g.fams) {
+            if (f.husb !== ind.__xref && f.wife !== ind.__xref) continue;
+            const sx = f.husb === ind.__xref ? f.wife : f.husb;
+            const sp = sx && g.indis.find(i => i.__xref === sx);
+            if (sp && sp.birt && sp.birt.date) { year = sp.birt.date.slice(0, 4); break; }
         }
-        if (xref === ind.__xref)
-            qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-                peerId, xref, ind.name, dated ? ind.birt.date : null,
-                null, null,
-                dated && ind.birt.time ? Number(ind.birt.time.slice(0, 2)) : null,
-                dated && ind.birt.time ? Number(ind.birt.time.slice(3, 5)) : null,
+        if (year === null) {
+            // бездатный ребёнок/супруг бездатного — заглушка (birt_d NULL), как раньше
+            qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note,birt_abt,deat_abt)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+                peerId, ind.__xref, ind.name, null,
+                null, null, null, null,
                 ind.deat && ind.deat.date ? ind.deat.date : null,
                 null, null,
                 ind.deat && ind.deat.time ? Number(ind.deat.time.slice(0, 2)) : null,
@@ -2248,19 +2338,42 @@ function importGedcom(peerId, g) {
                 ind.sex ?? null,
                 ind.birt && ind.birt.plac ? ind.birt.plac : null,
                 ind.deat && ind.deat.plac ? ind.deat.plac : null,
-                ind.note ?? null);
-        byId.set(ind.__xref, xref);
+                ind.note ?? null,
+                0,
+                (ind.deat && ind.deat.abt) || 0);
+            byId.set(ind.__xref, ind.__xref);
+            persons++;
+            continue;
+        }
+        const u = uniqueKeyOf(peerId, ind.name, year + "-01-01", true);
+        if (u.name !== ind.name || u.birtD !== year + "-01-01")
+            dups.push({ from: ind.name, to: u.name + " " + u.birtD });
+        qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note,birt_abt,deat_abt)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            peerId, ind.__xref, u.name, u.birtD,
+            null, null, null, null,
+            ind.deat && ind.deat.date ? ind.deat.date : null,
+            null, null,
+            ind.deat && ind.deat.time ? Number(ind.deat.time.slice(0, 2)) : null,
+            ind.deat && ind.deat.time ? Number(ind.deat.time.slice(3, 5)) : null,
+            ind.sex ?? null,
+            ind.birt && ind.birt.plac ? ind.birt.plac : null,
+            ind.deat && ind.deat.plac ? ind.deat.plac : null,
+            ind.note ?? null,
+            1,
+            (ind.deat && ind.deat.abt) || 0);
+        byId.set(ind.__xref, ind.__xref);
         persons++;
     }
     let famCount = 0, childCount = 0;
     for (const f of g.fams) {
         const h = f.husb && byId.get(f.husb), w = f.wife && byId.get(f.wife);
         const hasMarr = f.marr && f.marr.date;
-        const insF = qr(`INSERT OR IGNORE INTO fam(chat,xref,adhoc,husb,wife,marr_d,marr_plac,note,div_d,div_plac) VALUES(?,?,0,?,?,?,?,?,?,?)`,
+        const insF = qr(`INSERT OR IGNORE INTO fam(chat,xref,adhoc,husb,wife,marr_d,marr_abt,marr_plac,note,div_d,div_abt,div_plac) VALUES(?,?,0,?,?,?,?,?,?,?,?,?)`,
             peerId, f.__xref, h ?? null, w ?? null,
-            hasMarr ? f.marr.date : null, hasMarr && f.marr.plac ? f.marr.plac : null,
+            hasMarr ? f.marr.date : null, (hasMarr && f.marr.abt) || 0, hasMarr && f.marr.plac ? f.marr.plac : null,
             f.note ?? null,
-            f.div && f.div.date ? f.div.date : null, f.div && f.div.plac ? f.div.plac : null);
+            f.div && f.div.date ? f.div.date : null, (f.div && f.div.abt) || 0, f.div && f.div.plac ? f.div.plac : null);
         if (insF.changes) famCount++;
         for (const cx of f.chil) {
             const c = byId.get(cx);
@@ -2286,7 +2399,7 @@ function importGedcom(peerId, g) {
             if (famRaw(peerId, fx))
                 qr("UPDATE chil SET adopted=1 WHERE chat=? AND fam=? AND indi=?", peerId, fx, c);
     }
-    return { persons, fams: famCount, links: childCount, errors: [] };
+    return { persons, fams: famCount, links: childCount, errors: [], dups };
 }
 
 // GEDCOM 5.5.1 по чату — выгрузка дерева: INDI из персон (плюс заглушки-
@@ -2307,6 +2420,12 @@ function gedcomText(peerId, keys) {
         const k = keyOfXref(peerId, c.indi);
         if (k) adoptedOf.set(k, c.fam);
     }
+    // примерная дата: год-only (abt 1) — «ГГГГ», месяц-only (abt 2) — «JUN 1987»,
+    // примерный день (abt 3) — «ABT <гедком>»
+    const gdateAbt = (d, abt) => abt === 1 ? d.slice(0, 4)
+        : abt === 2 ? MON[Number(d.slice(5, 7)) - 1] + " " + d.slice(0, 4)
+        : abt === 3 ? "ABT " + gdate(d)
+        : gdate(d);
     // семьи → {fx — список xref (после схлопывания), pkeys — датированные
     // родители-ключи, stubs — [{xref,name,deat,dp}] — бездатные супруги,
     // kstubs — те же дети, children — ключи, marr, div}
@@ -2316,7 +2435,8 @@ function gedcomText(peerId, keys) {
         const stubOf = x => {
             const i = indiOf(peerId, x);
             if (!i || !i.name) return null;
-            return { xref: x, name: i.name, sex: i.sex || null, deat: i.deat_d || null, dp: i.deat_plac || null };
+            return { xref: x, name: i.name, sex: i.sex || null, deat: i.deat_d || null, dp: i.deat_plac || null,
+                dabt: i.deat_d ? i.deat_abt || 0 : 0 };
         };
         for (const x of [f.husb, f.wife]) {
             if (!x) continue;
@@ -2335,8 +2455,8 @@ function gedcomText(peerId, keys) {
                 if (st && !kstubs.some(s => s.xref === r.indi)) kstubs.push(st);
             }
         }
-        let marr = f.marr_d ? { d: f.marr_d, ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null;
-        let div = f.div_d ? { d: f.div_d, ...(f.div_plac ? { plac: f.div_plac } : {}) } : null;
+        let marr = f.marr_d ? { d: f.marr_d, ...(f.marr_abt ? { abt: 1 } : {}), ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null;
+        let div = f.div_d ? { d: f.div_d, ...(f.div_abt ? { abt: 1 } : {}), ...(f.div_plac ? { plac: f.div_plac } : {}) } : null;
         const fnote = f.note || null;
         if (hasKeys) {
             const ps = pkeys.filter(p => keys.includes(p));
@@ -2375,11 +2495,11 @@ function gedcomText(peerId, keys) {
         out.push("0 @" + idOf.get(pkey(r)) + "@ INDI");
         out.push("1 NAME " + r.n);
         if (r.sex) out.push("1 SEX " + r.sex);
-        out.push("1 BIRT", "2 DATE " + gdate(r.d));
+        out.push("1 BIRT", "2 DATE " + gdateAbt(r.d, r.abt));
         if (r.srcH !== undefined) out.push("2 TIME " + String(r.srcH).padStart(2, "0") + ":" + String(r.srcM).padStart(2, "0"));
         if (r.plac) out.push("2 PLAC " + r.plac);
         if (r.dd) {
-            out.push("1 DEAT", "2 DATE " + gdate(r.dd));
+            out.push("1 DEAT", "2 DATE " + gdateAbt(r.dd, r.dabt));
             if (r.dsrcH !== undefined) out.push("2 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
             if (r.dp) out.push("2 PLAC " + r.dp);
         }
@@ -2403,7 +2523,7 @@ function gedcomText(peerId, keys) {
         out.push("1 NAME " + st.name);
         if (st.sex) out.push("1 SEX " + st.sex);
         if (st.deat) {
-            out.push("1 DEAT", "2 DATE " + gdate(st.deat));
+            out.push("1 DEAT", "2 DATE " + gdateAbt(st.deat, st.dabt));
             if (st.dp) out.push("2 PLAC " + st.dp);
         }
         for (const f of fams) {
@@ -2426,11 +2546,11 @@ function gedcomText(peerId, keys) {
         }
         for (const s of f.kstubs) out.push("1 CHIL @" + stubId.get(s.xref) + "@");
         if (f.marr) {
-            out.push("1 MARR", "2 DATE " + gdate(f.marr.d));
+            out.push("1 MARR", "2 DATE " + gdateAbt(f.marr.d, f.marr.abt));
             if (f.marr.plac) out.push("2 PLAC " + f.marr.plac);
         }
         if (f.div) {
-            out.push("1 DIV", "2 DATE " + gdate(f.div.d));
+            out.push("1 DIV", "2 DATE " + gdateAbt(f.div.d, f.div.abt));
             if (f.div.plac) out.push("2 PLAC " + f.div.plac);
         }
         // NOTE с переносами — построчно (как у персон)
@@ -2462,6 +2582,7 @@ function flatRows(peerId) {
         srcH: r.src_h ?? undefined, srcM: r.src_m ?? undefined,
         plac: r.plac ?? undefined, dp: r.deat_plac ?? undefined,
         note: r.note ?? undefined, nameOnly: r.birt_d == null,
+        abt: r.birt_abt ?? undefined, dabt: r.deat_abt || undefined,
     }));
     const fams = [];
     for (const f of qa("SELECT * FROM fam WHERE chat=? ORDER BY rowid", peerId)) {
@@ -2478,8 +2599,8 @@ function flatRows(peerId) {
         for (const r of qa("SELECT indi FROM chil WHERE chat=? AND fam=? ORDER BY rowid", peerId, f.xref)) {
             if (indiOf(peerId, r.indi)) F.children.push(r.indi);
         }
-        F.marr = f.marr_d ? { d: f.marr_d, ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null;
-        F.div = f.div_d ? { d: f.div_d, ...(f.div_plac ? { plac: f.div_plac } : {}) } : null;
+        F.marr = f.marr_d ? { d: f.marr_d, ...(f.marr_abt ? { abt: f.marr_abt } : {}), ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null;
+        F.div = f.div_d ? { d: f.div_d, ...(f.div_abt ? { abt: f.div_abt } : {}), ...(f.div_plac ? { plac: f.div_plac } : {}) } : null;
         const s = [F.hKey, F.wKey].filter(k => k != null).sort();
         const m = fams.find(x => x.s.length === s.length && x.s.every((k, i) => k === s[i]));
         if (m) {
@@ -2598,13 +2719,16 @@ function flatTreeText(persons, fams) {
     // Место — в скобках за своей датой (рождения/смерти): грамматика пачки
     // трактует время как местное в месте, поэтому с местом выводится
     // исходное время (если было), без места — московское, как прежде
+    // примерная дата — гранулярно: abt 1 — год-онли («ГГГГ»), 2 — месяц
+    // («ГГГГ-ММ»), 3 — «~»-хвост за полной датой
+    const dOut = (d, abt) => abt === 1 ? d.slice(0, 4) : abt === 2 ? d.slice(0, 7) : d + (abt ? "~" : "");
     const tail = r => [
-        r.d,
+        r.d !== undefined ? dOut(r.d, r.abt) : undefined,
         r.plac
             ? (r.srcH !== undefined && r.srcH !== null ? pad(r.srcH) + ":" + pad(r.srcM ?? 0) : null)
             : (r.h !== undefined && r.h !== null ? pad(r.h) + ":" + pad(r.m ?? 0) : null),
         r.plac ? "(" + r.plac + ")" : null,
-        r.dd, r.dp ? "(" + r.dp + ")" : null,
+        r.dd !== undefined ? dOut(r.dd, r.dabt) : undefined, r.dp ? "(" + r.dp + ")" : null,
         r.note ? "^" + r.note : null,
     ].filter(Boolean).join(" ");
     const out = [], printed = new Set(), famsDone = new Set();
@@ -2619,8 +2743,8 @@ function flatTreeText(persons, fams) {
     // строка свадьбы «+»×(d+1) + даты: вторая дата = развод; место/примечание
     // (примечание — с маркером «^», как у персон)
     const wedPlus = f => {
-        const bits = [f.marr.d];
-        if (f.div) bits.push(f.div.d);
+        const bits = [dOut(f.marr.d, f.marr.abt)];
+        if (f.div) bits.push(dOut(f.div.d, f.div.abt));
         if (f.marr.plac) bits.push("(" + f.marr.plac + ")");
         if (f.note) bits.push("^" + f.note);
         return bits.join(" ");
@@ -2909,7 +3033,7 @@ function chartModel(title, rows, links, rel = null) {
     if (kin && rel.range) kin.set(rel.hero, rangeLevel(rel.range));
     people.forEach((p, i) => {
         p.row = i;
-        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + (p.r.birth != null ? p.yr : ""); })();
+        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + (p.r.birth != null && !p.r.abt ? p.yr : ""); })();
     });
     const rowOf = new Map(people.map(p => [p.key, p]));
     const allYears = [
@@ -3291,7 +3415,7 @@ function chartFor(peerId, keys, title, heroKey = null, range = null) {
     const hasKeys = Array.isArray(keys) && keys.length > 0;
     const recs = personRows(peerId).filter(r => !hasKeys || keys.includes(pkey(r)));
     const keySet = new Set(recs.map(r => pkey(r)));
-    const rows = recs.map(r => ({ name: r.n, birth: r.d, death: r.dd || null, sex: r.sex || null }));
+    const rows = recs.map(r => ({ name: r.n, birth: r.d, death: r.dd || null, sex: r.sex || null, abt: r.abt ?? 0 }));
     // якоря бездатных: год ДР датированного супруга (первой семьи по порядку)
     const stubs = qa("SELECT xref,name,deat_d,sex FROM indi WHERE chat=? AND birt_d IS NULL AND name!=''", peerId);
     const stubOf = new Map(stubs.map(r => [r.xref, r]));
@@ -4042,12 +4166,14 @@ function focusText(peerId, key, radius, bell, dd, byFull = false) {
     const spPairs = focusSpousePairs(peerId);
     const keys = focusWithSpouses(focusKeys(pairs, key, radius), spPairs);
     const items = [...personRows(peerId), ...weddingRows(peerId)];
+    // 🔔-список — без примерных дат (список оповещений); гедком/дамп — как есть
+    const bellItems = byFull ? items : items.filter(r => !r.abt && !r.dabt && !r.mabt);
     const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
     // круговой порядок «от сегодня» (МСК) — ось сортировки списка; MM-DD
     const { mo, d: dToday } = mskNowParts();
     const mmdd = String(mo).padStart(2, "0") + "-" + String(dToday).padStart(2, "0");
     const body = bell
-        ? (focusListText(items, keys, key, pairs, spPairs, k => sexMap.get(k) ?? null, byFull, mmdd)
+        ? (focusListText(bellItems, keys, key, pairs, spPairs, k => sexMap.get(k) ?? null, byFull, mmdd)
             || "(в радиусе нет событий)")
         : gedcomText(peerId, keys);
     return focusHead(key, radius, dd) + "\n" + body;
@@ -4330,6 +4456,7 @@ function upcomingEvents(peerId, byFullDate = false, mmddNow = "") {
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : ""))
         .join("\n");
     let rows = [...personRows(peerId), ...weddingRows(peerId)];
+    if (!byFullDate) rows = rows.filter(r => !r.abt && !r.dabt && !r.mabt); // примерные — мимо оповещений
     const key = r => r.d + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
     if (byFullDate) return map(rows.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0)));
     // круговой порядок по ММ-ДД от сегодняшнего MM-DD
@@ -4820,14 +4947,14 @@ async function dailyCheck() {
     // годовщины персон и свадеб с сегодняшней датой (МСК); sent — раз в год
     const jobs = [
         ...qa(`SELECT chat, name, birt_d, birt_h, birt_m, deat_d FROM indi
-            WHERE birt_d IS NOT NULL AND substr(birt_d, 6, 5) = ?`, mmdd)
+            WHERE birt_d IS NOT NULL AND (birt_abt IS NULL OR birt_abt=0) AND substr(birt_d, 6, 5) = ?`, mmdd)
             .map(r => ({
                 chat: r.chat, key: r.name + " " + r.birt_d,
                 rec: { n: r.name, d: r.birt_d, ...(r.birt_h !== null ? { h: r.birt_h, m: r.birt_m } : {}), ...(r.deat_d ? { dd: r.deat_d } : {}) },
             })),
         ...qa(`SELECT f.chat, (SELECT name FROM indi i WHERE i.chat=f.chat AND i.xref=f.husb) AS hn,
             (SELECT name FROM indi i WHERE i.chat=f.chat AND i.xref=f.wife) AS wn,
-            f.marr_d, f.div_d FROM fam f WHERE f.marr_d IS NOT NULL AND substr(f.marr_d, 6, 5) = ?`, mmdd)
+            f.marr_d, f.div_d FROM fam f WHERE f.marr_d IS NOT NULL AND (f.marr_abt IS NULL OR f.marr_abt=0) AND substr(f.marr_d, 6, 5) = ?`, mmdd)
             .filter(r => r.hn && r.wn)
             .map(r => ({
                 chat: r.chat, key: r.hn + "+" + r.wn + " " + r.marr_d,
@@ -5023,5 +5150,5 @@ module.exports.__test = {
     clearChatTree, recordOf, recordAnyOf, chartPdf, chartModel, chartFor, fileBaseOf, b64ToBytes, parseTtf,
     gedcomText, importGedcom, jubileeText, setLinkCand, setLinkCmid, weddingByFx, upsertWedding, linkRowOf,
     chatFlatText, flatTreeText, branchFlatText, subsetBranch, flatRows, flatSearch,
-    cutAndGraft, setPersonByXref, editTrigger, rootOf,
+    cutAndGraft, setPersonByXref, editTrigger, rootOf, uniqueKeyOf, upcomingEvents,
 };

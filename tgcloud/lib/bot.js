@@ -127,8 +127,12 @@ async function nextFamXref(chatId, pref) {
 // ---- виды: «Имя Д» и «Имя+Имя Д» — выборка из дерева ----
 
 // строка indi (с birt_d) в виде записи-события {n,d,h,m,srcH,srcM,dd,dh,dm,dsrcH,dsrcM,sex,plac,xref}
+// abt/dabt — гранулярность примерности ДР/смерти (1 год/2 месяц/3 «~»):
+// юбилеи по ним не оповещаются
 const recOfIndi = r => {
     const o = { n: r.name, d: r.birtD };
+    if (r.birtAbt) o.abt = r.birtAbt;
+    if (r.deatAbt) o.dabt = r.deatAbt;
     if (r.birtH !== null && r.birtH !== undefined) { o.h = r.birtH; o.m = r.birtM ?? 0; }
     if (r.srcH !== null && r.srcH !== undefined) { o.srcH = r.srcH; o.srcM = r.srcM ?? 0; }
     if (r.sex) o.sex = r.sex;
@@ -164,11 +168,12 @@ export async function weddingRows(chatId) {
         const wn = f.wife ? nameOf.get(f.wife) || null : null;
         if (!hn && !wn) continue;
         const o = { n: (hn || "Муж") + "+" + (wn || "Жена"), d: f.marrD };
+        if (f.marrAbt) o.mabt = f.marrAbt;
         if (seen.has(pkey(o))) continue;
         seen.add(pkey(o));
         if (f.marrPlac) o.plac = f.marrPlac;
         if (f.note) o.note = f.note;
-        if (f.divD) { o.dd = f.divD; if (f.divPlac) o.plac2 = f.divPlac; }
+        if (f.divD) { o.dd = f.divD; if (f.divAbt) o.dabt = f.divAbt; if (f.divPlac) o.plac2 = f.divPlac; }
         o.fx = f.xref;
         out.push(o);
     }
@@ -213,8 +218,8 @@ export async function famView(chatId, fx) {
             (await db.select().from(chil).where(and(eq(chil.chatId, chatId), eq(chil.fam, fx))).all())
                 .sort((a, b) => a.id - b.id)
                 .map(r => keyOfXref(chatId, r.indi)))).filter(Boolean),
-        marr: f.marrD ? { d: f.marrD, ...(f.marrPlac ? { plac: f.marrPlac } : {}) } : null,
-        div: f.divD ? { d: f.divD, ...(f.divPlac ? { plac: f.divPlac } : {}) } : null,
+        marr: f.marrD ? { d: f.marrD, ...(f.marrAbt ? { abt: f.marrAbt } : {}), ...(f.marrPlac ? { plac: f.marrPlac } : {}) } : null,
+        div: f.divD ? { d: f.divD, ...(f.divAbt ? { abt: f.divAbt } : {}), ...(f.divPlac ? { plac: f.divPlac } : {}) } : null,
     };
 }
 export async function famList(chatId) {
@@ -274,6 +279,8 @@ export async function upsertPerson(chatId, rec) {
         if (rec.plac !== undefined) set.plac = rec.plac || null;
         if (rec.plac2 !== undefined) set.deatPlac = rec.plac2 || null;
         if (rec.note !== undefined) set.note = rec.note || null;
+        if (rec.abt !== undefined) set.birtAbt = rec.abt || 0;
+        if (rec.dabt !== undefined) set.deatAbt = rec.dabt || 0;
         if (Object.keys(set).length)
             await db.update(indi).set(set)
                 .where(and(eq(indi.chatId, chatId), eq(indi.xref, existing.xref))).run();
@@ -287,6 +294,7 @@ export async function upsertPerson(chatId, rec) {
         deatD: rec.dd ?? null, deatH: rec.dh ?? null, deatM: rec.dh !== undefined ? (rec.dm ?? 0) : null,
         dsrcH: rec.dsrcH ?? null, dsrcM: rec.dsrcH !== undefined ? (rec.dsrcM ?? 0) : null,
         sex: rec.sex ?? null, plac: rec.plac ?? null, deatPlac: rec.plac2 ?? null, note: rec.note ?? null,
+        birtAbt: rec.abt ?? 0, deatAbt: rec.dabt ?? 0,
     }).run();
     return (await personRows(chatId)).find(r => r.xref === xref) || null;
 }
@@ -313,9 +321,10 @@ async function upsertWedding(chatId, rec) {
         if ((hn === a && wn === b) || (hn === b && wn === a)) {
             await db.update(fam).set({
                 marrD: rec.d,
+                marrAbt: rec.abt ?? 0,
                 ...(rec.plac !== undefined ? { marrPlac: rec.plac || null } : {}),
                 ...(rec.note !== undefined ? { note: rec.note || null } : {}),
-                ...(rec.dd !== undefined ? { divD: rec.dd || null } : {}),
+                ...(rec.dd !== undefined ? { divD: rec.dd || null, divAbt: rec.dabt ?? 0 } : {}),
                 ...(rec.plac2 !== undefined ? { divPlac: rec.plac2 || null } : {}),
             }).where(and(eq(fam.chatId, chatId), eq(fam.xref, f.xref))).run();
             return weddingByFx(chatId, f.xref);
@@ -325,8 +334,8 @@ async function upsertWedding(chatId, rec) {
     const xref = await nextFamXref(chatId, "W");
     await db.insert(fam).values({
         chatId, xref, adhoc: true, husb: ha, wife: hb,
-        marrD: rec.d, marrPlac: rec.plac ?? null, note: rec.note ?? null,
-        divD: rec.dd ?? null, divPlac: rec.plac2 ?? null,
+        marrD: rec.d, marrAbt: rec.abt ?? 0, marrPlac: rec.plac ?? null, note: rec.note ?? null,
+        divD: rec.dd ?? null, divAbt: rec.dabt ?? 0, divPlac: rec.plac2 ?? null,
     }).run();
     return weddingByFx(chatId, xref);
 }
@@ -382,8 +391,8 @@ export async function applyTree(chatId, tree) {
         if (!mx && !fx) continue;
     const fxx = await famForPair(mx, fx, w.rec.d);
         await db.update(fam).set({
-            marrD: w.rec.d, marrPlac: w.rec.plac ?? null, note: w.note || null,
-            divD: w.rec.dd ?? null, divPlac: w.rec.plac2 ?? null,
+            marrD: w.rec.d, marrAbt: w.rec.abt ?? 0, marrPlac: w.rec.plac ?? null, note: w.note || null,
+            divD: w.rec.dd ?? null, divAbt: w.rec.dabt ?? 0, divPlac: w.rec.plac2 ?? null,
         }).where(and(eq(fam.chatId, chatId), eq(fam.xref, fxx))).run();
     }
     for (const ch of tree.children) {
@@ -449,7 +458,11 @@ export async function setPersonByXref(chatId, xref, rec, full = false) {
         set.dsrcH = rec.dsrcH ?? null; set.dsrcM = rec.dsrcH !== undefined ? (rec.dsrcM ?? 0) : null;
         set.plac = rec.plac ?? null;
         set.note = rec.note ?? null;
+        set.birtAbt = rec.abt ?? 0;
+        set.deatAbt = rec.dabt ?? 0;
     } else {
+        if (rec.abt !== undefined) set.birtAbt = rec.abt || 0;
+        if (rec.dabt !== undefined) set.deatAbt = rec.dabt || 0;
         if (rec.h !== undefined) { set.birtH = rec.h; set.birtM = rec.m ?? 0; }
         if (rec.srcH !== undefined) { set.srcH = rec.srcH; set.srcM = rec.srcM ?? 0; }
         if (rec.dd !== undefined) {
@@ -827,7 +840,7 @@ export async function confirmPair(chatId, link, cand) {
             f.xref = w.xref;
         } else if (wKids === 0) {
             // пара-заглушка (или бездетная пара): marr/div переезжает, fam уходит
-            await db.update(fam).set({ marrD: w.marrD, marrPlac: w.marrPlac, divD: w.divD, divPlac: w.divPlac })
+            await db.update(fam).set({ marrD: w.marrD, marrAbt: w.marrAbt ?? 0, marrPlac: w.marrPlac, divD: w.divD, divAbt: w.divAbt ?? 0, divPlac: w.divPlac })
                 .where(and(eq(fam.chatId, chatId), eq(fam.xref, f.xref))).run();
             await db.delete(chil).where(and(eq(chil.chatId, chatId), eq(chil.fam, w.xref))).run();
             for (const e of (await edgeRows(chatId)).filter(e => e.famXref === w.xref))
@@ -836,7 +849,7 @@ export async function confirmPair(chatId, link, cand) {
             for (const x of wps) await dropStubIfOrphan(chatId, x);
         } else {
             // семья с детьми (напр., из гедкома): копируем marr, её не трогаем
-            await db.update(fam).set({ marrD: w.marrD, marrPlac: w.marrPlac, divD: w.divD, divPlac: w.divPlac })
+            await db.update(fam).set({ marrD: w.marrD, marrAbt: w.marrAbt ?? 0, marrPlac: w.marrPlac, divD: w.divD, divAbt: w.divAbt ?? 0, divPlac: w.divPlac })
                 .where(and(eq(fam.chatId, chatId), eq(fam.xref, f.xref))).run();
         }
     }
@@ -887,7 +900,7 @@ export async function deleteEventCascade(chatId, key) {
             const hn = f.husb ? nameOf.get(f.husb) : null;
             const wn = f.wife ? nameOf.get(f.wife) : null;
             if (hn === n1 || hn === n2 || wn === n1 || wn === n2)
-                await db.update(fam).set({ marrD: null, marrPlac: null, divD: null, divPlac: null })
+                await db.update(fam).set({ marrD: null, marrAbt: 0, marrPlac: null, divD: null, divAbt: 0, divPlac: null })
                     .where(and(eq(fam.chatId, chatId), eq(fam.xref, f.xref))).run();
         }
     }
@@ -964,7 +977,7 @@ export async function todayText(chatId) {
     const [, mo, d] = mskToday();
     const mmdd = String(mo).padStart(2, "0") + "-" + String(d).padStart(2, "0");
     const rows = [...await personRows(chatId), ...await weddingRows(chatId)]
-        .filter(r => r.d.slice(5) === mmdd);
+        .filter(r => r.d.slice(5) === mmdd && !r.abt && !r.mabt);
     const parts = rows.map(r => jubileeText(r, ""));
     const digest = religiousDigest(await getSettings(chatId));
     if (digest) parts.push(digest);
@@ -977,6 +990,7 @@ export async function todayText(chatId) {
 // true — все события по полной дате ГГГГ-ММ-ДД (подтверждение удаления)
 export async function upcomingText(chatId, byFullDate = false, mmddNow = "") {
     let rows = [...await personRows(chatId), ...await weddingRows(chatId)];
+    if (!byFullDate) rows = rows.filter(r => !r.abt && !r.dabt && !r.mabt); // примерные — мимо оповещений
     const map = rs => rs
         .map(r => r.n + " " + r.d
             + (r.dd !== undefined ? " " + r.dd : "")
@@ -1202,6 +1216,12 @@ export function splitText(text, MAX = 4000) {
 export async function gedcomText(chatId, keys) {
     const MON = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
     const gdate = d => { const [y, mo, dd] = d.split("-").map(Number); return dd + " " + MON[mo - 1] + " " + y; };
+    // примерная дата: год-only (abt 1) — «ГГГГ», месяц-only (abt 2) — «JUN 1987»,
+    // примерный день (abt 3) — «ABT <гедком>»
+    const gdateAbt = (d, abt) => abt === 1 ? d.slice(0, 4)
+        : abt === 2 ? MON[Number(d.slice(5, 7)) - 1] + " " + d.slice(0, 4)
+        : abt === 3 ? "ABT " + gdate(d)
+        : gdate(d);
     const hasKeys = Array.isArray(keys) && keys.length > 0;
     const persons = (await personRows(chatId)).filter(r => !hasKeys || keys.includes(pkey(r)));
     const idOf = new Map(persons.map((r, i) => [pkey(r), "I" + (i + 1)]));
@@ -1220,7 +1240,8 @@ export async function gedcomText(chatId, keys) {
         const stubOfX = async x => {
             const i = await getIndi(chatId, x);
             if (!i || !i.name) return null;
-            return { xref: x, name: i.name, sex: i.sex || null, deat: i.deatD || null, dp: i.deatPlac || null };
+            return { xref: x, name: i.name, sex: i.sex || null, deat: i.deatD || null, dp: i.deatPlac || null,
+                dabt: i.deatD ? i.deatAbt || 0 : 0 };
         };
         for (const x of [f.husb, f.wife]) {
             if (!x) continue;
@@ -1239,8 +1260,8 @@ export async function gedcomText(chatId, keys) {
                 if (st && !kstubs.some(s => s.xref === r.indi)) kstubs.push(st);
             }
         }
-        const marr = f.marrD ? { d: f.marrD, ...(f.marrPlac ? { plac: f.marrPlac } : {}) } : null;
-        const div = f.divD ? { d: f.divD, ...(f.divPlac ? { plac: f.divPlac } : {}) } : null;
+        const marr = f.marrD ? { d: f.marrD, ...(f.marrAbt ? { abt: f.marrAbt } : {}), ...(f.marrPlac ? { plac: f.marrPlac } : {}) } : null;
+        const div = f.divD ? { d: f.divD, ...(f.divAbt ? { abt: f.divAbt } : {}), ...(f.divPlac ? { plac: f.divPlac } : {}) } : null;
         const fnote = f.note || null;
         if (hasKeys) {
             const ps = pkeys.filter(p => keys.includes(p));
@@ -1279,11 +1300,11 @@ export async function gedcomText(chatId, keys) {
         out.push("0 @" + idOf.get(pkey(r)) + "@ INDI");
         out.push("1 NAME " + r.n);
         if (r.sex) out.push("1 SEX " + r.sex);
-        out.push("1 BIRT", "2 DATE " + gdate(r.d));
+        out.push("1 BIRT", "2 DATE " + gdateAbt(r.d, r.abt));
         if (r.srcH !== undefined) out.push("2 TIME " + String(r.srcH).padStart(2, "0") + ":" + String(r.srcM).padStart(2, "0"));
         if (r.plac) out.push("2 PLAC " + r.plac);
         if (r.dd) {
-            out.push("1 DEAT", "2 DATE " + gdate(r.dd));
+            out.push("1 DEAT", "2 DATE " + gdateAbt(r.dd, r.dabt));
             if (r.dsrcH !== undefined) out.push("2 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
             if (r.dp) out.push("2 PLAC " + r.dp);
         }
@@ -1307,7 +1328,7 @@ export async function gedcomText(chatId, keys) {
         out.push("1 NAME " + st.name);
         if (st.sex) out.push("1 SEX " + st.sex);
         if (st.deat) {
-            out.push("1 DEAT", "2 DATE " + gdate(st.deat));
+            out.push("1 DEAT", "2 DATE " + gdateAbt(st.deat, st.dabt));
             if (st.dp) out.push("2 PLAC " + st.dp);
         }
         for (const f of fams) {
@@ -1330,11 +1351,11 @@ export async function gedcomText(chatId, keys) {
         }
         for (const s of f.kstubs) out.push("1 CHIL @" + stubId.get(s.xref) + "@");
         if (f.marr) {
-            out.push("1 MARR", "2 DATE " + gdate(f.marr.d));
+            out.push("1 MARR", "2 DATE " + gdateAbt(f.marr.d, f.marr.abt));
             if (f.marr.plac) out.push("2 PLAC " + f.marr.plac);
         }
         if (f.div) {
-            out.push("1 DIV", "2 DATE " + gdate(f.div.d));
+            out.push("1 DIV", "2 DATE " + gdateAbt(f.div.d, f.div.abt));
             if (f.div.plac) out.push("2 PLAC " + f.div.plac);
         }
         // NOTE с переносами — построчно (как у персон)
@@ -1369,6 +1390,7 @@ async function flatRows(chatId) {
         srcH: r.srcH ?? undefined, srcM: r.srcM ?? undefined,
         plac: r.plac ?? undefined, dp: r.deatPlac ?? undefined,
         note: r.note ?? undefined, nameOnly: r.birtD == null,
+        abt: r.birtAbt ?? undefined, dabt: r.deatAbt || undefined,
     }));
     const fams = [];
     for (const f of (await famRowsOf(chatId)).sort((a, b) => a.id - b.id)) {
@@ -1386,8 +1408,8 @@ async function flatRows(chatId) {
             const i = await getIndi(chatId, r.indi);
             if (i) F.children.push(r.indi);
         }
-        F.marr = f.marrD ? { d: f.marrD, ...(f.marrPlac ? { plac: f.marrPlac } : {}) } : null;
-        F.div = f.divD ? { d: f.divD, ...(f.divPlac ? { plac: f.divPlac } : {}) } : null;
+        F.marr = f.marrD ? { d: f.marrD, ...(f.marrAbt ? { abt: f.marrAbt } : {}), ...(f.marrPlac ? { plac: f.marrPlac } : {}) } : null;
+        F.div = f.divD ? { d: f.divD, ...(f.divAbt ? { abt: f.divAbt } : {}), ...(f.divPlac ? { plac: f.divPlac } : {}) } : null;
         const s = [F.hKey, F.wKey].filter(k => k != null).sort();
         const m = fams.find(x => x.s.length === s.length && x.s.every((k, i) => k === s[i]));
         if (m) {
@@ -1507,13 +1529,16 @@ export function flatTreeText(persons, fams) {
     // Место — в скобках за своей датой (рождения/смерти): грамматика пачки
     // трактует время как местное в месте, поэтому с местом выводится
     // исходное время (если было), без места — московское, как прежде
+    // примерная — гранулярно: abt 1 — год-онли («ГГГГ»), 2 — месяц («ГГГГ-ММ»),
+    // 3 — «~»-хвост за полной датой
+    const dOut = (d, abt) => abt === 1 ? d.slice(0, 4) : abt === 2 ? d.slice(0, 7) : d + (abt ? "~" : "");
     const tail = r => [
-        r.d,
+        r.d !== undefined ? dOut(r.d, r.abt) : undefined,
         r.plac
             ? (r.srcH !== undefined && r.srcH !== null ? pad(r.srcH) + ":" + pad(r.srcM ?? 0) : null)
             : (r.h !== undefined && r.h !== null ? pad(r.h) + ":" + pad(r.m ?? 0) : null),
         r.plac ? "(" + r.plac + ")" : null,
-        r.dd, r.dp ? "(" + r.dp + ")" : null,
+        r.dd !== undefined ? dOut(r.dd, r.dabt) : undefined, r.dp ? "(" + r.dp + ")" : null,
         r.note ? "^" + r.note : null,
     ].filter(Boolean).join(" ");
     const out = [], printed = new Set(), famsDone = new Set();
@@ -1528,8 +1553,8 @@ export function flatTreeText(persons, fams) {
     // строка свадьбы «+»×(d+1) + даты: вторая дата = развод; место/примечание в хвосте
     // (примечание — с маркером «^», как у персон)
     const wedPlus = f => {
-        const bits = [f.marr.d];
-        if (f.div) bits.push(f.div.d);
+        const bits = [dOut(f.marr.d, f.marr.abt)];
+        if (f.div) bits.push(dOut(f.div.d, f.div.abt));
         if (f.marr.plac) bits.push("(" + f.marr.plac + ")");
         if (f.note) bits.push("^" + f.note);
         return bits.join(" ");
@@ -1637,7 +1662,7 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
     const hasKeys = Array.isArray(keys) && keys.length > 0;
     const persons = (await personRows(chatId)).filter(r => !hasKeys || keys.includes(pkey(r)));
     const keySet = new Set(persons.map(r => pkey(r)));
-    const rows = persons.map(r => ({ name: r.n, birth: r.d, death: r.dd || null, sex: r.sex || null }));
+    const rows = persons.map(r => ({ name: r.n, birth: r.d, death: r.dd || null, sex: r.sex || null, abt: r.abt ?? 0 }));
     // якоря бездатных: год ДР датированного супруга (первой семьи по порядку)
     const stubs = (await indiRows(chatId)).filter(r => r.birtD == null && r.name !== "");
     const stubOf = new Map(stubs.map(r => [r.xref, r]));
@@ -1764,6 +1789,21 @@ export { focusKeys, focusHasPair, focusWithSpouses };
 
 // импорт разобранного гедкома = ЗАМЕНА: дерево чата очищается и заливается
 // заново (слияние больше не делаем — смешивание источников ломало базу).
+// уникальный ключ «Имя Д»: занят — примерная дата (approx) сдвигается на день
+// («ГГГГ-ММ-01»+1 → «1964-01-02»; арифметика Date UTC); точная — «~»-хвост
+// к имени («Иван 1954~» → новый ключ «Иван~ 1954»)
+export async function uniqueKeyOf(chatId, name, birtD, approx) {
+    while (true) {
+        const same = (await indiRows(chatId)).find(r => r.name === name && r.birtD === birtD);
+        if (!same) return { name, birtD };
+        if (approx) {
+            const dt = new Date(birtD + "T00:00:00Z");
+            dt.setUTCDate(dt.getUTCDate() + 1);
+            birtD = dt.toISOString().slice(0, 10);
+        } else name += "~";
+    }
+}
+
 // fam — по одному на каждый FAM файла с точными xref'ами (без слипания
 // семей ребёнка); свадьбы живут на fam — точная привязка супругов;
 // бездатные импортируются, когда упомянуты в семье (супруг/ребёнок), —
@@ -1779,29 +1819,78 @@ export async function importGedcom(chatId, g) {
         for (const cx of f.chil) famRefs.add(cx);
     }
     let persons = 0;
+    const dups = []; // разруленные коллизии ключа «Имя Д»
     for (const ind of g.indis) {
-        const dated = !!(ind.birt && ind.birt.date);
-        if (!ind.name || (!dated && !famRefs.has(ind.__xref))) continue;
-        let xref = ind.__xref;
-        if (dated) {
-            const same = (await indiRows(chatId)).find(r => r.name === ind.name && r.birtD === ind.birt.date);
-            if (same) xref = same.xref;
+        if (!ind.name || !(ind.birt && ind.birt.date)) continue;
+        const approx = !!ind.birt.abt;
+        const u = await uniqueKeyOf(chatId, ind.name, ind.birt.date, approx);
+        if (u.name !== ind.name || u.birtD !== ind.birt.date)
+            dups.push({ from: ind.name + " " + ind.birt.date, to: u.name + " " + u.birtD });
+        await db.insert(indi).values({
+            chatId, xref: ind.__xref, name: u.name, birtD: u.birtD,
+            birtH: null, birtM: null,
+            srcH: ind.birt.time ? Number(ind.birt.time.slice(0, 2)) : null,
+            srcM: ind.birt.time ? Number(ind.birt.time.slice(3, 5)) : null,
+            deatD: ind.deat && ind.deat.date ? ind.deat.date : null, deatH: null, deatM: null,
+            dsrcH: ind.deat && ind.deat.time ? Number(ind.deat.time.slice(0, 2)) : null,
+            dsrcM: ind.deat && ind.deat.time ? Number(ind.deat.time.slice(3, 5)) : null,
+            sex: ind.sex ?? null,
+            plac: ind.birt && ind.birt.plac ? ind.birt.plac : null,
+            deatPlac: ind.deat && ind.deat.plac ? ind.deat.plac : null,
+            note: ind.note ?? null,
+            birtAbt: ind.birt.abt || 0,
+            deatAbt: (ind.deat && ind.deat.abt) || 0,
+        }).run();
+        byX.set(ind.__xref, ind.__xref);
+        persons++;
+    }
+    // второй проход: бездатные супруги — ДР от супруга (год того, -01-01,
+    // примерная birtAbt); коллизия — +1 день (как прочие примерные даты);
+    // бездатные дети и безымянные — мимо
+    for (const ind of g.indis) {
+        if (!ind.name || (ind.birt && ind.birt.date)) continue;
+        if (!famRefs.has(ind.__xref)) continue;
+        let year = null;
+        for (const f of g.fams) {
+            if (f.husb !== ind.__xref && f.wife !== ind.__xref) continue;
+            const sx = f.husb === ind.__xref ? f.wife : f.husb;
+            const sp = sx && g.indis.find(i => i.__xref === sx);
+            if (sp && sp.birt && sp.birt.date) { year = sp.birt.date.slice(0, 4); break; }
         }
-        if (xref === ind.__xref)
+        if (year === null) {
+            // бездатный ребёнок/супруг бездатного — заглушка (birtD NULL), как раньше
             await db.insert(indi).values({
-                chatId, xref, name: ind.name, birtD: dated ? ind.birt.date : null,
-                birtH: null, birtM: null,
-                srcH: dated && ind.birt.time ? Number(ind.birt.time.slice(0, 2)) : null,
-                srcM: dated && ind.birt.time ? Number(ind.birt.time.slice(3, 5)) : null,
+                chatId, xref: ind.__xref, name: ind.name, birtD: null,
+                birtH: null, birtM: null, srcH: null, srcM: null,
                 deatD: ind.deat && ind.deat.date ? ind.deat.date : null, deatH: null, deatM: null,
-                dsrcH: ind.deat && ind.deat.time ? Number(ind.deat.time.slice(0, 2)) : null,
-                dsrcM: ind.deat && ind.deat.time ? Number(ind.deat.time.slice(3, 5)) : null,
+                dsrcH: null, dsrcM: null,
                 sex: ind.sex ?? null,
                 plac: ind.birt && ind.birt.plac ? ind.birt.plac : null,
                 deatPlac: ind.deat && ind.deat.plac ? ind.deat.plac : null,
                 note: ind.note ?? null,
+                birtAbt: 0,
+                deatAbt: (ind.deat && ind.deat.abt) || 0,
             }).run();
-        byX.set(ind.__xref, xref);
+            byX.set(ind.__xref, ind.__xref);
+            persons++;
+            continue;
+        }
+        const u = await uniqueKeyOf(chatId, ind.name, year + "-01-01", true);
+        if (u.name !== ind.name || u.birtD !== year + "-01-01")
+            dups.push({ from: ind.name, to: u.name + " " + u.birtD });
+        await db.insert(indi).values({
+            chatId, xref: ind.__xref, name: u.name, birtD: u.birtD,
+            birtH: null, birtM: null, srcH: null, srcM: null,
+            deatD: ind.deat && ind.deat.date ? ind.deat.date : null, deatH: null, deatM: null,
+            dsrcH: null, dsrcM: null,
+            sex: ind.sex ?? null,
+            plac: ind.birt && ind.birt.plac ? ind.birt.plac : null,
+            deatPlac: ind.deat && ind.deat.plac ? ind.deat.plac : null,
+            note: ind.note ?? null,
+            birtAbt: 1,
+            deatAbt: (ind.deat && ind.deat.abt) || 0,
+        }).run();
+        byX.set(ind.__xref, ind.__xref);
         persons++;
     }
     let famCount = 0, childCount = 0;
@@ -1811,9 +1900,11 @@ export async function importGedcom(chatId, g) {
         await db.insert(fam).values({
             chatId, xref: f.__xref, adhoc: false, husb: h ?? null, wife: w ?? null,
             marrD: hasMarr ? f.marr.date : null,
+            marrAbt: hasMarr && f.marr.abt || 0,
             marrPlac: hasMarr && f.marr.plac ? f.marr.plac : null,
             note: f.note ?? null,
             divD: f.div && f.div.date ? f.div.date : null,
+            divAbt: (f.div && f.div.abt) || 0,
             divPlac: f.div && f.div.plac ? f.div.plac : null,
         }).run(); // тот же FAM zweimal — не бывает в валидном гедкоме
         famCount++;
@@ -1845,7 +1936,7 @@ export async function importGedcom(chatId, g) {
                 .where(and(eq(chil.chatId, chatId), eq(chil.fam, fx), eq(chil.indi, c))).run();
         }
     }
-    return { persons, fams: famCount, links: childCount, errors: [] };
+    return { persons, fams: famCount, links: childCount, errors: [], dups };
 }
 
 // резерв прежнего дерева чата файлом <имя>-old.ged (фолбэк — текстом);
@@ -1956,6 +2047,8 @@ export function treeReport(rep) {
     if (rep.cut !== undefined)
         body = (rep.cut ? "✂️ ветвь срезана: " + rep.cut + " персон, " + rep.famsCut + " семей\n" : "✂️ ветвь обновлена\n")
             + body;
+    if (rep.dups && rep.dups.length)
+        body += "\n" + rep.dups.map(d => "♻️ дубль: " + d.from + " → " + d.to).join("\n");
     if (rep.errors.length)
         body += "\n" + rep.errors.map(e => "💥 стр " + e.line + ": " + e.msg).join("\n");
     return body;

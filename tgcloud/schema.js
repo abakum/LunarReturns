@@ -16,6 +16,8 @@ export const indi = table('indi', {
   birtM: integer('birt_m'),
   srcH: integer('src_h'),         // исходное местное время рождения (2 TIME)
   srcM: integer('src_m'),
+  birtAbt: integer('birt_abt'),   // ДР примерное («~»/только год) — юбилеи молчат
+  deatAbt: integer('deat_abt'),   // смерть примерная (в оповещения не попадает)
   deatD: text('deat_d'),
   deatH: integer('deat_h'), deatM: integer('deat_m'),
   dsrcH: integer('dsrc_h'), dsrcM: integer('dsrc_m'),
@@ -37,6 +39,8 @@ export const fam = table('fam', {
   husb: text('husb'), wife: text('wife'),
   marrD: text('marr_d'), marrPlac: text('marr_plac'),
   divD: text('div_d'), divPlac: text('div_plac'),
+  marrAbt: integer('marr_abt'),   // свадьба примерная (строк в /today и 🔔 нет)
+  divAbt: integer('div_abt'),     // развод примерный
   note: text('note'),             // примечание строки свадьбы (1 NOTE у FAM)
 }, (t) => ({
   uq: uniqueIndex('uq_fam_xref').on(t.chatId, t.xref),
