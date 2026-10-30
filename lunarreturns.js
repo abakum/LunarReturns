@@ -864,6 +864,12 @@ function weddingRecOf(s) {
     return { rec, note: note && hat ? note + " " + hat : (note || hat) };
 }
 
+// примерная дата текстом: abt 1 — только год, 2 — год+месяц, 3 — «~» за
+// полной датой (так же печатаются коллизии ключа в отчёте импорта)
+function approxOut(d, abt) {
+    return abt === 1 ? d.slice(0, 4) : abt === 2 ? d.slice(0, 7) : d + (abt ? "~" : "");
+}
+
 // строки → семантика: { persons, weddings, children, errors }
 // persons[i]: {sex:'M'|'F'|null, rec:{n,d,...}|{n}, note, nameOnly, spouseLine}
 // weddings[i]: {m: idx|null, f: idx|null, rec:{d,plac,dd,plac2}, note}
@@ -1928,7 +1934,10 @@ function treeReport(rep) {
 
 // уникальный ключ «Имя Д»: занят — примерная дата (approx) сдвигается на день
 // («ГГГГ-ММ-01»+1 → «1964-01-02»; арифметика Date UTC); точная — «~»-хвост
-// к имени («Иван 1954~» → новый ключ «Иван~ 1954»)
+// к имени («Иван 1954~» → новый ключ «Иван~ 1954»). Сдвинутая примерная дата
+// получает abt 3 (флаг примерности полного дня): иначе «Имя 1234» (abt 1,
+// хранится «1234-01-01») после сдвига дубля на «1234-01-02» печаталось бы
+// по-прежнему «1234» — сдвинутый день терялся бы (в т.ч. в выгрузке гедкома)
 // (ТГ-копия: tgcloud/lib/bot.js, uniqueKeyOf)
 function uniqueKeyOf(peerId, name, birtD, approx) {
     while (true) {
@@ -2291,8 +2300,12 @@ function importGedcom(peerId, g) {
         if (!ind.name || !(ind.birt && ind.birt.date)) continue;
         const approx = !!ind.birt.abt;
         const u = uniqueKeyOf(peerId, ind.name, ind.birt.date, approx);
+        // сдвинутый дубль — флаг примерности 3 (полный день с «~»): в базе
+        // хранится тот же флаг, что печатается в отчёте ниже
+        const uabt = u.birtD === ind.birt.date ? (ind.birt.abt || 0) : 3;
         if (u.name !== ind.name || u.birtD !== ind.birt.date)
-            dups.push({ from: ind.name + " " + ind.birt.date, to: u.name + " " + u.birtD });
+            dups.push({ from: ind.name + " " + approxOut(ind.birt.date, ind.birt.abt),
+                to: u.name + " " + approxOut(u.birtD, uabt) });
         qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note,birt_abt,deat_abt)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
             peerId, ind.__xref, u.name, u.birtD,
@@ -2307,7 +2320,7 @@ function importGedcom(peerId, g) {
             ind.birt && ind.birt.plac ? ind.birt.plac : null,
             ind.deat && ind.deat.plac ? ind.deat.plac : null,
             ind.note ?? null,
-            ind.birt.abt || 0,
+            uabt, // дубль со сдвинутой датой — abt 3 (иначе печать прячет сдвиг)
             (ind.deat && ind.deat.abt) || 0);
         byId.set(ind.__xref, ind.__xref);
         persons++;
@@ -2346,8 +2359,10 @@ function importGedcom(peerId, g) {
             continue;
         }
         const u = uniqueKeyOf(peerId, ind.name, year + "-01-01", true);
+        // сдвинутый дубль — флаг примерности 3 (как в первом проходе)
+        const uabt = u.birtD === year + "-01-01" ? 1 : 3;
         if (u.name !== ind.name || u.birtD !== year + "-01-01")
-            dups.push({ from: ind.name, to: u.name + " " + u.birtD });
+            dups.push({ from: ind.name, to: u.name + " " + approxOut(u.birtD, uabt) });
         qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note,birt_abt,deat_abt)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
             peerId, ind.__xref, u.name, u.birtD,
@@ -2360,7 +2375,7 @@ function importGedcom(peerId, g) {
             ind.birt && ind.birt.plac ? ind.birt.plac : null,
             ind.deat && ind.deat.plac ? ind.deat.plac : null,
             ind.note ?? null,
-            1,
+            uabt, // дубль со сдвинутой датой — abt 3 (иначе печать прячет сдвиг)
             (ind.deat && ind.deat.abt) || 0);
         byId.set(ind.__xref, ind.__xref);
         persons++;
@@ -2719,9 +2734,9 @@ function flatTreeText(persons, fams) {
     // Место — в скобках за своей датой (рождения/смерти): грамматика пачки
     // трактует время как местное в месте, поэтому с местом выводится
     // исходное время (если было), без места — московское, как прежде
-    // примерная дата — гранулярно: abt 1 — год-онли («ГГГГ»), 2 — месяц
-    // («ГГГГ-ММ»), 3 — «~»-хвост за полной датой
-    const dOut = (d, abt) => abt === 1 ? d.slice(0, 4) : abt === 2 ? d.slice(0, 7) : d + (abt ? "~" : "");
+    // примерная дата — гранулярно (approxOut): 1 — «ГГГГ», 2 — «ГГГГ-ММ»,
+    // 3 — «~»-хвост за полной датой
+    const dOut = approxOut;
     const tail = r => [
         r.d !== undefined ? dOut(r.d, r.abt) : undefined,
         r.plac

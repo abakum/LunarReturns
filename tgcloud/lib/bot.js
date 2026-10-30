@@ -1529,9 +1529,9 @@ export function flatTreeText(persons, fams) {
     // Место — в скобках за своей датой (рождения/смерти): грамматика пачки
     // трактует время как местное в месте, поэтому с местом выводится
     // исходное время (если было), без места — московское, как прежде
-    // примерная — гранулярно: abt 1 — год-онли («ГГГГ»), 2 — месяц («ГГГГ-ММ»),
+    // примерная дата — гранулярно (approxOut): 1 — «ГГГГ», 2 — «ГГГГ-ММ»,
     // 3 — «~»-хвост за полной датой
-    const dOut = (d, abt) => abt === 1 ? d.slice(0, 4) : abt === 2 ? d.slice(0, 7) : d + (abt ? "~" : "");
+    const dOut = approxOut;
     const tail = r => [
         r.d !== undefined ? dOut(r.d, r.abt) : undefined,
         r.plac
@@ -1791,7 +1791,11 @@ export { focusKeys, focusHasPair, focusWithSpouses };
 // заново (слияние больше не делаем — смешивание источников ломало базу).
 // уникальный ключ «Имя Д»: занят — примерная дата (approx) сдвигается на день
 // («ГГГГ-ММ-01»+1 → «1964-01-02»; арифметика Date UTC); точная — «~»-хвост
-// к имени («Иван 1954~» → новый ключ «Иван~ 1954»)
+// к имени («Иван 1954~» → новый ключ «Иван~ 1954»). Сдвинутая примерная дата
+// получает abt 3 (флаг примерности полного дня): иначе «Имя 1234» (abt 1,
+// хранится «1234-01-01») после сдвига дубля на «1234-01-02» печаталось бы
+// по-прежнему «1234» — сдвинутый день терялся бы (в т.ч. в выгрузке гедкома)
+// (ВК-копия: lunarreturns.js, uniqueKeyOf)
 export async function uniqueKeyOf(chatId, name, birtD, approx) {
     while (true) {
         const same = (await indiRows(chatId)).find(r => r.name === name && r.birtD === birtD);
@@ -1802,6 +1806,12 @@ export async function uniqueKeyOf(chatId, name, birtD, approx) {
             birtD = dt.toISOString().slice(0, 10);
         } else name += "~";
     }
+}
+
+// примерная дата текстом: abt 1 — только год, 2 — год+месяц, 3 — «~» за
+// полной датой (так же печатаются коллизии ключа в отчёте импорта)
+function approxOut(d, abt) {
+    return abt === 1 ? d.slice(0, 4) : abt === 2 ? d.slice(0, 7) : d + (abt ? "~" : "");
 }
 
 // fam — по одному на каждый FAM файла с точными xref'ами (без слипания
@@ -1824,8 +1834,12 @@ export async function importGedcom(chatId, g) {
         if (!ind.name || !(ind.birt && ind.birt.date)) continue;
         const approx = !!ind.birt.abt;
         const u = await uniqueKeyOf(chatId, ind.name, ind.birt.date, approx);
+        // сдвинутый дубль — флаг примерности 3 (полный день с «~»): в базе
+        // хранится тот же флаг, что печатается в отчёте ниже
+        const uabt = u.birtD === ind.birt.date ? (ind.birt.abt || 0) : 3;
         if (u.name !== ind.name || u.birtD !== ind.birt.date)
-            dups.push({ from: ind.name + " " + ind.birt.date, to: u.name + " " + u.birtD });
+            dups.push({ from: ind.name + " " + approxOut(ind.birt.date, ind.birt.abt),
+                to: u.name + " " + approxOut(u.birtD, uabt) });
         await db.insert(indi).values({
             chatId, xref: ind.__xref, name: u.name, birtD: u.birtD,
             birtH: null, birtM: null,
@@ -1838,7 +1852,7 @@ export async function importGedcom(chatId, g) {
             plac: ind.birt && ind.birt.plac ? ind.birt.plac : null,
             deatPlac: ind.deat && ind.deat.plac ? ind.deat.plac : null,
             note: ind.note ?? null,
-            birtAbt: ind.birt.abt || 0,
+            birtAbt: uabt, // дубль со сдвинутой датой — abt 3 (иначе печать прячет сдвиг)
             deatAbt: (ind.deat && ind.deat.abt) || 0,
         }).run();
         byX.set(ind.__xref, ind.__xref);
@@ -1876,8 +1890,10 @@ export async function importGedcom(chatId, g) {
             continue;
         }
         const u = await uniqueKeyOf(chatId, ind.name, year + "-01-01", true);
+        // сдвинутый дубль — флаг примерности 3 (как в первом проходе)
+        const uabt = u.birtD === year + "-01-01" ? 1 : 3;
         if (u.name !== ind.name || u.birtD !== year + "-01-01")
-            dups.push({ from: ind.name, to: u.name + " " + u.birtD });
+            dups.push({ from: ind.name, to: u.name + " " + approxOut(u.birtD, uabt) });
         await db.insert(indi).values({
             chatId, xref: ind.__xref, name: u.name, birtD: u.birtD,
             birtH: null, birtM: null, srcH: null, srcM: null,
@@ -1887,7 +1903,7 @@ export async function importGedcom(chatId, g) {
             plac: ind.birt && ind.birt.plac ? ind.birt.plac : null,
             deatPlac: ind.deat && ind.deat.plac ? ind.deat.plac : null,
             note: ind.note ?? null,
-            birtAbt: 1,
+            birtAbt: uabt, // дубль со сдвинутой датой — abt 3 (иначе печать прячет сдвиг)
             deatAbt: (ind.deat && ind.deat.abt) || 0,
         }).run();
         byX.set(ind.__xref, ind.__xref);
