@@ -204,7 +204,7 @@ export function chartModel(title, rows, links, rel = null) {
     if (kin && rel.range) kin.set(rel.hero, rangeLevel(rel.range));
     people.forEach((p, i) => {
         p.row = i;
-        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + (p.r.birth != null && !p.r.abt ? p.yr : ""); })();
+        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + (p.r.birth != null ? p.yr : ""); })();
     });
     const rowOf = new Map(people.map(p => [p.key, p]));
     const allYears = [
