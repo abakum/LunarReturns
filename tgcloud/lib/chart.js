@@ -131,10 +131,13 @@ export function parseTtf(b) {
 // rel.phantoms — дети супругов вне чарта (не попали в радиус): рисовать
 //   линию между супругами в годы их рождения — [{ fam: [супруг, супруг],
 //   years: [год…] }]
+// marriages — свадьбы с датой: [{ fam: [супруг, супруг], year: год свадьбы }]
+//   — вертикаль между супругами в год свадьбы, без точек, цветом семьи; год
+//   учитывается в распределении цветов и слотах вертикалей своего года
 // Вычисляет всю геометрию (без рендера) → модель с примитивами draws
 // (rect/rrect/line/dot/text) в порядке отрисовки — единая основа для
 // PDF-эммитера
-export function chartModel(title, rows, links, rel = null) {
+export function chartModel(title, rows, links, rel = null, marriages = null) {
     if (!rows.length) throw new Error("chart: персоны пусты");
     const year = d => Number(String(d).slice(0, 4));
     // бездатные (birth null): год — якорь от ДР супруга (левая колонка пустая,
@@ -254,6 +257,22 @@ export function chartModel(title, rows, links, rel = null) {
                     allYears.push(yr);
                 }
         }
+    // свадьбы: вертикаль между супругами в год свадьбы, без точек; год
+    // свадьбы — в famYears (распределение цветов семей) и в ось X; пара
+    // не в чарте (вне фрагмента/радиуса, оба без даты) — пропускается
+    const married = [];             // { fam, year, a, b } — a/b ключи супругов
+    if (Array.isArray(marriages))
+        for (const mg of marriages) {
+            const ks = mg && Array.isArray(mg.fam) && mg.fam.length === 2 ? mg.fam : null;
+            const yr = mg ? mg.year : null;
+            if (!ks || ks[0] === ks[1] || !Number.isFinite(yr)
+                || !rowOf.has(ks[0]) || !rowOf.has(ks[1])) continue;
+            const fam = [...ks].sort().join(" и ");
+            if (!famOf.has(fam)) { famOf.set(fam, famOf.size); famYears.set(fam, new Set()); }
+            famYears.get(fam).add(yr);
+            allYears.push(yr);
+            married.push({ fam, year: yr, a: ks[0], b: ks[1] });
+        }
     const famColorIdx = new Map();
     const busy = new Map();         // год → занятые индексы FAM_COLORS
     for (const [fam] of famOf) {
@@ -350,6 +369,15 @@ export function chartModel(title, rows, links, rel = null) {
         slotOf.set(kk, yearCount.get(ph.year) || 0);
         yearCount.set(ph.year, (yearCount.get(ph.year) || 0) + 1);
     }
+    // свадьбы занимают свои столбцы: год свадьбы совпал с событием той же
+    // семьи (рождение/фантом) — одна вертикаль на оба; чужие события года — рядом
+    for (const mg of married) {
+        const kk = mg.fam + "\0" + mg.year;
+        if (famSeen.has(kk)) continue;
+        famSeen.add(kk);
+        slotOf.set(kk, yearCount.get(mg.year) || 0);
+        yearCount.set(mg.year, (yearCount.get(mg.year) || 0) + 1);
+    }
     for (const l of links) {
         const fam = famStr(l);
         const col = famColor(fam);
@@ -386,6 +414,14 @@ export function chartModel(title, rows, links, rel = null) {
         draws.push({ k: "dot", x, y: p1.cy, r: 3.5, fill: col });
         draws.push({ k: "dot", x, y: p2.cy, r: 3.5, fill: col });
     }
+    // свадьбы: вертикаль между супругами в год свадьбы — без точек, цвет семьи;
+    // точек нет и потому, что у связей/фантомов они и так есть, а свадьба —
+    // событие пары, не персоны
+    for (const mg of married) {
+        const p1 = rowOf.get(mg.a), p2 = rowOf.get(mg.b);
+        const x = xS(mg.year) + 1.5 * slotOf.get(mg.fam + "\0" + mg.year);
+        draws.push({ k: "line", x1: x, y1: p1.cy, x2: x, y2: p2.cy, stroke: famColor(mg.fam), w: 1.5 });
+    }
     return { title, W, H, KW, draws };
 }
 
@@ -406,9 +442,9 @@ export function fileBaseOf(head) {
 
 // диаграмма → PDF (строка latin1, байт на символ): страницы A4 landscape
 // режут единое полотно чарта на горизонтальные полосы (Form XObject + клип)
-export function chartPdf(title, rows, links, fontBytes, rel = null) {
+export function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null) {
     const f = parseTtf(fontBytes);
-    const m = chartModel(title, rows, links, rel);
+    const m = chartModel(title, rows, links, rel, marriages);
     const n = v => String(Math.round(v * 1000) / 1000);
     const col = hex => [1, 3, 5].map(i => n(parseInt(hex.slice(i, i + 2), 16) / 255)).join(" ");
     const cmap = new Map(f.cmap);

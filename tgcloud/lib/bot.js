@@ -1727,17 +1727,21 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
     // якорь»); бездатный не в чарте (вне фрагмента) — вертикали нет
     const bornOf = new Map((await personRows(chatId)).map(r => [pkey(r), r.d]));
     const phantoms = [];
+    const marriages = [];           // свадьбы с датой: { fam: [ключ, ключ], year }
     for (const f of await famList(chatId)) {
         const ps = f.parents.filter(p => keySet.has(p));
         const sk = famStubKey.get(f.xref) || null;
         const pair = ps.length === 2 ? ps.map(ckey)
             : ps.length === 1 && sk ? [ckey(ps[0]), sk] : null;
         if (!pair) continue;
+        // дата свадьбы — вертикаль между супругами в год свадьбы (без точек)
+        if (f.marr && f.marr.d)
+            marriages.push({ fam: pair, year: Number(f.marr.d.slice(0, 4)) });
         const yrs = [...new Set(f.children.filter(c => !keySet.has(c) && bornOf.has(c))
             .map(c => Number(bornOf.get(c).slice(0, 4))))].sort((a, b) => a - b);
         if (yrs.length) phantoms.push({ fam: pair, years: yrs });
     }
-    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }), persons: Math.min(rows.length, CHART_MAX) };
+    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages), persons: Math.min(rows.length, CHART_MAX) };
 }
 
 // тап 🧬 / «/gedcom» / «/gedcomN»: <имя>.ged всегда, <имя>.pdf (диаграмма,
