@@ -2296,6 +2296,7 @@ function importGedcom(peerId, g) {
     }
     let persons = 0;
     const dups = []; // разруленные коллизии ключа «Имя Д»
+    const resolved = new Map(); // xref → итоговая дата дубля (наследование ДР супругой)
     for (const ind of g.indis) {
         if (!ind.name || !(ind.birt && ind.birt.date)) continue;
         const approx = !!ind.birt.abt;
@@ -2303,6 +2304,7 @@ function importGedcom(peerId, g) {
         // сдвинутый дубль — флаг примерности 3 (полный день с «~»): в базе
         // хранится тот же флаг, что печатается в отчёте ниже
         const uabt = u.birtD === ind.birt.date ? (ind.birt.abt || 0) : 3;
+        resolved.set(ind.__xref, u.birtD);
         if (u.name !== ind.name || u.birtD !== ind.birt.date)
             dups.push({ from: ind.name + " " + approxOut(ind.birt.date, ind.birt.abt),
                 to: u.name + " " + approxOut(u.birtD, uabt) });
@@ -2325,20 +2327,20 @@ function importGedcom(peerId, g) {
         byId.set(ind.__xref, ind.__xref);
         persons++;
     }
-    // второй проход: бездатные супруги — ДР от супруга (год того, -01-01,
-    // примерная birt_abt); коллизия — +1 день (как прочие примерные даты);
-    // бездатные дети и безымянные — мимо
+    // второй проход: бездатные супруги — ПОЛНАЯ дата супруга, birt_abt 3
+    // (фиктивная: в шкале PDF нет года и прожитых лет); коллизия —
+    // +1 день (как прочие примерные даты); бездатные дети и безымянные — мимо
     for (const ind of g.indis) {
         if (!ind.name || (ind.birt && ind.birt.date)) continue;
         if (!famRefs.has(ind.__xref)) continue;
-        let year = null;
+        let full = null;
         for (const f of g.fams) {
             if (f.husb !== ind.__xref && f.wife !== ind.__xref) continue;
             const sx = f.husb === ind.__xref ? f.wife : f.husb;
             const sp = sx && g.indis.find(i => i.__xref === sx);
-            if (sp && sp.birt && sp.birt.date) { year = sp.birt.date.slice(0, 4); break; }
+            if (sp && sp.birt && sp.birt.date) { full = resolved.get(sx) || sp.birt.date; break; }
         }
-        if (year === null) {
+        if (full === null) {
             // бездатный ребёнок/супруг бездатного — заглушка (birt_d NULL), как раньше
             qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note,birt_abt,deat_abt)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -2358,10 +2360,11 @@ function importGedcom(peerId, g) {
             persons++;
             continue;
         }
-        const u = uniqueKeyOf(peerId, ind.name, year + "-01-01", true);
-        // сдвинутый дубль — флаг примерности 3 (как в первом проходе)
-        const uabt = u.birtD === year + "-01-01" ? 1 : 3;
-        if (u.name !== ind.name || u.birtD !== year + "-01-01")
+        const u = uniqueKeyOf(peerId, ind.name, full, true);
+        // фиктивная ДР от супруга — всегда birt_abt 3 (как и сдвинутый дубль):
+        // в шкале PDF у такой строки нет года и прожитых лет
+        const uabt = 3;
+        if (u.name !== ind.name || u.birtD !== full)
             dups.push({ from: ind.name, to: u.name + " " + approxOut(u.birtD, uabt) });
         qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note,birt_abt,deat_abt)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -3043,7 +3046,8 @@ function chartModel(title, rows, links, rel = null, marriages = null) {
     // у героя в колонке — «диапазон» радиуса (уровень из кейкапа заголовка,
     // rel.range — rangeLevel(L)); у остальных строк — прежние индивидуальные
     // ярлыки родства (как в 🔔-списке); у героя и вне родни (без героя/
-    // диапазона) — подпись «Год»; бездатным год неизвестен — колонка пустая
+    // диапазона) — подпись «Год»; бездатным год неизвестен, у фиктивных ДР
+    // (abt 3: от супруга или сдвинутый дубль) год тоже не печатается
     const kin = rel && rel.hero
         ? new Map(people.map(p =>
             [p.key, kinLabel(rel.pairs || [], rel.spouses || [], k2 => (rel.sex || {})[k2] ?? null, rel.hero, p.key)]))
@@ -3051,7 +3055,7 @@ function chartModel(title, rows, links, rel = null, marriages = null) {
     if (kin && rel.range) kin.set(rel.hero, rangeLevel(rel.range));
     people.forEach((p, i) => {
         p.row = i;
-        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + (p.r.birth != null ? p.yr : ""); })();
+        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + (p.r.birth != null && p.r.abt !== 3 ? p.yr : ""); })();
     });
     const rowOf = new Map(people.map(p => [p.key, p]));
     const allYears = [
@@ -3181,9 +3185,10 @@ function chartModel(title, rows, links, rel = null, marriages = null) {
         const lnEnd = x1 - nw - 10;
         if (lnEnd > KW - 6)
             draws.push({ k: "line", x1: KW - 6, y1: cy, x2: lnEnd, y2: cy, stroke: "#bbbbbb", w: 1 });
-        draws.push({ k: "text", x: x1 - 6, y: cy + 3.5, s: p.r.name, size: 10, fill: "#111111", anchor: "end" });
+        // имя героя чарта — жирным
+        draws.push({ k: "text", x: x1 - 6, y: cy + 3.5, s: p.r.name, size: 10, fill: "#111111", anchor: "end", bold: rel != null && p.key === rel.hero });
         draws.push({ k: "rrect", x: x1, y: cy - BAR_H / 2, w: Math.max(2, x2 - x1), h: BAR_H, r: 2, fill: bar });
-        if (p.dy !== null && p.r.birth != null) // известная смерть — N прожитых лет за баром
+        if (p.dy !== null && p.r.birth != null && p.r.abt !== 3) // известная смерть — N прожитых лет за баром (у фиктивной ДР abt 3 — не пишем)
             draws.push({ k: "text", x: x2 + 4, y: cy + 3.5, s: String(p.dy - p.yr), size: 10, fill: bar });
     }
     // связи родитель→ребёнок (в год рождения ребёнка), точки на строках;

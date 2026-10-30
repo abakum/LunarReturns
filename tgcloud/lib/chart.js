@@ -199,7 +199,8 @@ export function chartModel(title, rows, links, rel = null, marriages = null) {
     // у героя в колонке — «диапазон» радиуса (уровень из кейкапа заголовка,
     // rel.range — rangeLevel(L)); у остальных строк — прежние индивидуальные
     // ярлыки родства (как в 🔔-списке); у героя и вне родни (без героя/
-    // диапазона) — подпись «Год»; бездатным год неизвестен — колонка пустая
+    // диапазона) — подпись «Год»; бездатным год неизвестен, у фиктивных ДР
+    // (abt 3: от супруга или сдвинутый дубль) год тоже не печатается
     const kin = rel && rel.hero
         ? new Map(people.map(p =>
             [p.key, kinLabel(rel.pairs || [], rel.spouses || [], k2 => (rel.sex || {})[k2] ?? null, rel.hero, p.key)]))
@@ -207,7 +208,7 @@ export function chartModel(title, rows, links, rel = null, marriages = null) {
     if (kin && rel.range) kin.set(rel.hero, rangeLevel(rel.range));
     people.forEach((p, i) => {
         p.row = i;
-        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + (p.r.birth != null ? p.yr : ""); })();
+        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + (p.r.birth != null && p.r.abt !== 3 ? p.yr : ""); })();
     });
     const rowOf = new Map(people.map(p => [p.key, p]));
     const allYears = [
@@ -241,8 +242,8 @@ export function chartModel(title, rows, links, rel = null, marriages = null) {
         famYears.get(fam).add(y);
     }
     // фантомные рождения (rel.phantoms): те же fam-структуры + записи для
-    // рисования; годы обоим детям вне чарта — в диапазон оси X; у семьи без
-    // ссылок в чарте цвет берётся от её порядкового номера
+    // рисования; годы детей вне чарта — в диапазон оси X; у семьи без ссылок
+    // в чарте цвет берётся от её порядкового номера
     const phantom = [];             // { fam, year, a, b } — a/b ключи супругов
     if (rel && Array.isArray(rel.phantoms))
         for (const ph of rel.phantoms) {
@@ -320,7 +321,7 @@ export function chartModel(title, rows, links, rel = null, marriages = null) {
     }
     draws.push({ k: "line", x1: KW, y1: H - 26, x2: KW + PLOT_W, y2: H - 26, stroke: "#888888", w: 1 });
     // подписи «Связь год» слева; имя — слева от бара (перед его началом),
-    // выноска — до имени, её хвост (тонкая линия) тянется к началу бара
+    // выноска — до имени, её хвост (тонкая линия) тянется от колонки
     for (const p of people) {
         const cy = plotTop + p.y0 + p.h / 2;
         p.cy = cy;
@@ -337,9 +338,10 @@ export function chartModel(title, rows, links, rel = null, marriages = null) {
         const lnEnd = x1 - nw - 10;
         if (lnEnd > KW - 6)
             draws.push({ k: "line", x1: KW - 6, y1: cy, x2: lnEnd, y2: cy, stroke: "#bbbbbb", w: 1 });
-        draws.push({ k: "text", x: x1 - 6, y: cy + 3.5, s: p.r.name, size: 10, fill: "#111111", anchor: "end" });
+        // имя героя чарта — жирным
+        draws.push({ k: "text", x: x1 - 6, y: cy + 3.5, s: p.r.name, size: 10, fill: "#111111", anchor: "end", bold: rel != null && p.key === rel.hero });
         draws.push({ k: "rrect", x: x1, y: cy - BAR_H / 2, w: Math.max(2, x2 - x1), h: BAR_H, r: 2, fill: bar });
-        if (p.dy !== null && p.r.birth != null) // известная смерть — N прожитых лет за баром
+        if (p.dy !== null && p.r.birth != null && p.r.abt !== 3) // известная смерть — N прожитых лет за баром (у фиктивной ДР abt 3 — не пишем)
             draws.push({ k: "text", x: x2 + 4, y: cy + 3.5, s: String(p.dy - p.yr), size: 10, fill: bar });
     }
     // связи родитель→ребёнок (в год рождения ребёнка), точки на строках;
