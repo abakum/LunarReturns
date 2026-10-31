@@ -18,7 +18,7 @@ export const HELP = "Отправьте «Имя ГГГГ-ММ-ДД [ЧЧ:ММ] 
     + "(/-Пётр — мужчины 0-го уровня, /--Иван — 1-го, /=… — женщины; «/ текст» — подстрока;\n"
     + "/-, /--, /+…, /=… — все мужчины/свадьбы/женщины уровня)\n"
     + "Кнопки под ответом: 👎 удалить, 👀 подробно.\n"
-    + "Кнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf),\n"
+    + "Кнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf+.ged.txt — пачка радиуса: вверх и вниз),\n"
     + "«-+=» — пачка ветви (герой первой строкой, потомки — вся глубина).\n"
     + "Пачкой в ответе на цитату — ЗАМЕНА ветви цитируемого: срезана и привита;\n"
     + "одной строкой без маркера в ответе на триггер — ПРАВКА записи целиком (пол и ветвь не трогаются).\n"
@@ -647,15 +647,30 @@ export function rootOf(tree) {
 }
 
 // правка ветви: цитируемый anchorKey — герой пачки tree. Молча: старая ветвь
-// срезается (cutBranch), поля героя обновляются по первой строке пачки (имя и
+// срезается (cutBranch), поля героя обновляются по строке героя пачки (имя и
 // дата рождения правимы), новая ветвь прививается applyTree'ом. Цитируемый
-// не найден — пачка применяется как есть (добавление merge'ем)
+// не найден — пачка применяется как есть (добавление merge'ем).
+// Пачка РОМБА (chatFlatText по keys — .ged.txt третьего прицепа 🧬) несёт
+// героя ВНУТРИ дерева (первым корнем идёт старший предок) и открывается
+// меткой NOT_FOR_GRAFT: радиус не несёт всех потомков героя, прививка
+// обновила бы связи лишь частично. Такая пачка отвергается — правки нет,
+// ответ-ошибка предлагает плоское древо тапа «-+=». Мимо якоря метка резке
+// мешает, а добавлению нет: merge пачки ромба в чистый чат работает как прежде
 export async function cutAndGraft(chatId, anchorKey, tree) {
+    if (tree.noGraft) // метка NOT_FOR_GRAFT первой строкой (пачка ромба)
+        return { persons: 0, fams: 0, links: 0, errors: [], noGraft: true };
     const px = await xrefOfKey(chatId, anchorKey);
     if (!px) return { ...(await applyTree(chatId, tree)), cut: 0, famsCut: 0 };
+    const heroIdx = tree.persons.findIndex(p => !p.spouseLine
+        && p.rec.n + " " + p.rec.d === anchorKey);
+    const root = rootOf(tree);
+    if (heroIdx >= 0 && root && tree.persons.indexOf(root) !== heroIdx) {
+        const rep = await applyTree(chatId, tree); // герой внутри пачки — merge без резки
+        rep.cut = 0; rep.famsCut = 0;
+        return rep;
+    }
     const cut = await cutBranch(chatId, px,
         tree.persons.map(p => p.rec.n)); // свадьбы-заглушки пар пачки тоже срезаются
-    const root = rootOf(tree);
     if (!root) { await deleteEventCascade(chatId, anchorKey); }
     else if (root.rec.d !== undefined) // герой без даты — заглушка не замещает запись
         await setPersonByXref(chatId, px, Object.assign({ sex: root.sex, note: root.note }, root.rec));
@@ -1213,6 +1228,32 @@ export function splitText(text, MAX = 4000) {
 // персон; группы с одинаковым набором родителей схлопываются — как прежде).
 // keys — необязательный набор персон: фрагмент только по ним (для
 // сообщений-связей)
+// семьи в поколениях: семьи родителей раньше семей детей — канонический
+// порядок строк семей в пачке (.ged.txt) и нумерации FAM в .ged независимо
+// от порядка вставки: номер семьи детей бывает меньше номера семьи родителей
+// (upload/GK.ged), и тогда визит-порядок корней в flatTreeText работает лишь
+// как страховка. Связь: семья g, где половина f — ребёнок, идёт перед f;
+// сторонние семьи и циклы — в прежнем порядке (стабильно).
+function famsByGenerations(fams, halvesOf, kidsOf) {
+    const parentFams = f => {
+        const hs = halvesOf(f), out = [];
+        for (const g of fams)
+            if (g !== f && !out.includes(g) && kidsOf(g).some(c => hs.includes(c))) out.push(g);
+        return out;
+    };
+    const done = new Set(), out = [];
+    while (out.length < fams.length) {
+        let step = false;
+        for (const f of fams)
+            if (!done.has(f) && parentFams(f).every(g => done.has(g))) {
+                done.add(f); out.push(f); step = true;
+            }
+        if (!step) break;
+    }
+    for (const f of fams) if (!done.has(f)) out.push(f);
+    return out;
+}
+
 export async function gedcomText(chatId, keys) {
     const MON = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
     const gdate = d => { const [y, mo, dd] = d.split("-").map(Number); return dd + " " + MON[mo - 1] + " " + y; };
@@ -1264,9 +1305,16 @@ export async function gedcomText(chatId, keys) {
         const div = f.divD ? { d: f.divD, ...(f.divAbt ? { abt: f.divAbt } : {}), ...(f.divPlac ? { plac: f.divPlac } : {}) } : null;
         const fnote = f.note || null;
         if (hasKeys) {
+            // фрагмент: семья остаётся при ХОТЬ ОДНОЙ половине в keys (как
+            // в пачке chatFlatText — famBody печатает свадьбы половин из
+            // keys): бездетные свадьбы и семьи с детьми за пределами keys
+            // тоже идут, иначе пачка .ged.txt и гедком .ged одной пачки
+            // расходились бы (round-trip терял свадьбы и ломал глубины).
+            // famc за радиусом (в keys лишь ребёнок) — мимо: в пачке таких
+            // строк нет, глубины он не меняет
             const ps = pkeys.filter(p => keys.includes(p));
+            if (!ps.length) continue;
             const cs = children.filter(c => keys.includes(c));
-            if (!(ps.length && cs.length)) continue;
             pkeys.length = 0; pkeys.push(...ps);
             children.length = 0; children.push(...cs);
             // фрагмент — датированные персоны из keys; заглушки-половины/дети — как есть
@@ -1283,6 +1331,12 @@ export async function gedcomText(chatId, keys) {
             if (!m.fnote) m.fnote = fnote;
         } else fams.push({ s, fx: [f.xref], pkeys, stubs, kstubs, children, marr, div, fnote });
     }
+    // поколения: семьи родителей раньше семей детей — каноническая нумерация
+    // FAM независимо от порядка вставки (см. famsByGenerations)
+    const famsOrd = famsByGenerations(fams,
+        f => [...f.pkeys, ...f.stubs.map(s => s.xref)],
+        f => [...f.children, ...f.kstubs.map(s => s.xref)]);
+    for (let i = 0; i < fams.length; i++) fams[i] = famsOrd[i];
     // заглушкам — X-номера; FAM — по порядку; HUSB/WIFE по полу (без — HUSB)
     let stubN = 0;
     const stubId = new Map(), stubInfo = new Map();
@@ -1421,8 +1475,21 @@ async function flatRows(chatId) {
             if (!m.note) m.note = F.note;
         } else fams.push({ s, ...F });
     }
+    // поколения до построения пачки: семьи родителей раньше семей детей
+    // (см. famsByGenerations) — familyOf (первая семья ребёнка), «mine»
+    // (порядок браков) и famsDone не зависят от порядка вставки семей
+    const famsOrd = famsByGenerations(fams,
+        f => [f.hKey, f.wKey].filter(k => k != null), f => f.children);
+    for (let i = 0; i < fams.length; i++) fams[i] = famsOrd[i];
     return [persons, fams];
 }
+
+// метка пачки РОМБА (chatFlatText по keys — .ged.txt третьего прицепа 🧬):
+// герой посередине, радиус не несёт всех потомков героя — для резки-прививки
+// такая пачка не годится. parseTree (tgcloud/lib/parse.js) читает метку
+// первой непустой строкой в tree.noGraft, cutAndGraft её отвергает;
+// строки «#» парсер пачки пропускает как комментарии — состав не меняется
+const NOT_FOR_GRAFT = "#not for cut and graft";
 
 export async function chatFlatText(chatId, keys = null) {
     // keys (опционально) — фокус-радиус: пачка только этого подмножества
@@ -1433,7 +1500,10 @@ export async function chatFlatText(chatId, keys = null) {
         || keys.includes(p.name + " " + (p.d ?? "")));
     if (!hasKeys) return flatTreeText(persons, allFams);
     const kOf = new Map(allPersons.map(p => [p.key, p.name + " " + (p.d ?? "")]));
-    return flatTreeText(persons, allFams.filter(f =>
+    // пачка ромба несёт героя посередине (первым корнем — старший предок) —
+    // для резки-прививки не годится: первой строкой метка NOT_FOR_GRAFT,
+    // parseTree читает её в tree.noGraft, cutAndGraft такую пачку отвергает
+    return NOT_FOR_GRAFT + "\n" + flatTreeText(persons, allFams.filter(f =>
         [f.hKey, f.wKey, ...f.children].some(k => k != null
             && keys.includes(kOf.get(k) || ""))));
 }
@@ -1502,7 +1572,12 @@ export async function branchFlatText(chatId, key) {
     const [allPersons, allFams] = await flatRows(chatId);
     const x = (allPersons.find(p => p.name + " " + (p.d ?? "") === key) || {}).key;
     if (x == null) return "";
-    const [persons, fams] = subsetBranch(allPersons, allFams, x, await edgeKids(chatId));
+    const [picked, fams] = subsetBranch(allPersons, allFams, x, await edgeKids(chatId));
+    // герой — первой строкой пачки ветви (корень разбора): переставляем
+    // его вперёд массива персон — корни flatTreeText визитуются
+    // в порядке массива
+    const hi = picked.findIndex(p => p.key === x);
+    const persons = hi > 0 ? [picked[hi], ...picked.slice(0, hi), ...picked.slice(hi + 1)] : picked;
     return flatTreeText(persons, fams);
 }
 
@@ -1571,13 +1646,18 @@ export function flatTreeText(persons, fams) {
             : (f.hKey != null ? byKey.get(f.hKey) : f.hName != null ? { name: f.hName, nameOnly: true } : null);
         if (other) {
             out.push("+".repeat(d + 1) + (f.marr ? wedPlus(f) : ""));
-            // «другая половина» — ребёнок другого семейства? Печатаем её
+            // «другая половина» — ребёнок включённого семейства? Печатаем её
             // полную строку (с событием) под свадьбой, но НЕ закрываем её
             // от печати: строку с маркером позже выдаст родительская ветвь,
             // а при импорте одинаковые «Имя Д» схлопнутся в одну персону —
-            // иначе связь с родителями потеряется
-            const kid = other.key != null && !printed.has(other.key)
-                && familyOf.has(other.key);
+            // иначе связь с родителями потеряется. Половин её родительской
+            // семьи в пачке нет (семья вне радиуса/ветви, вошла касанием
+            // ребёнка) — закрываем сразу: открытой строке маркерную выдал
+            // бы остаточный визит на нуле, пачка несла бы хвостовой дубль
+            // и переставала быть идемпотентной
+            const kfam = other.key != null ? familyOf.get(other.key) : null;
+            const kid = other.key != null && !printed.has(other.key) && kfam
+                && [kfam.hKey, kfam.wKey].some(k => k != null && byKey.has(k));
             if (kid) lineOf(other, other.sex !== "F", d, true);
             else if (other.key != null && printed.has(other.key))
                 lineOf({ name: other.name, nameOnly: true }, other.sex !== "F", d, true);
@@ -1609,6 +1689,20 @@ export function flatTreeText(persons, fams) {
         for (const f of [...mine.filter(f => !hasOther(f) && !f.marr), ...mine.filter(f => hasOther(f) || f.marr)])
             famBody(f, r.key, d);
     };
+    // дети не выпадают из семьи: сначала визит корней — персон, чья
+    // родительская семья не в пачке или вошла без половин (familyOf,
+    // касанием ребёнка, половины за радиусом/ветвью), в порядке массива;
+    // famBody родителей выдаёт строки детей с маркерами глубины. Ребёнок,
+    // вставленный раньше родителей (номер семьи детей меньше номера семьи
+    // родителей), корнем не считается: раньше он печатался на нуле и
+    // терял связь с семьёй при обратном импорте пачки. Условие зеркалит
+    // kid в famBody: открытая строка — только при половинах в пачке.
+    // Остаток — циклы, оторванные узлы — как прежде, на нуле.
+    const isRoot = r => {
+        const f = familyOf.get(r.key);
+        return !f || ![f.hKey, f.wKey].some(k => k != null && byKey.has(k));
+    };
+    for (const r of persons) if (isRoot(r)) visit(r, 0);
     for (const r of persons) visit(r, 0);
     return out.join("\n");
 }
@@ -1747,6 +1841,10 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
 // тап 🧬 / «/gedcom» / «/gedcomN»: <имя>.ged всегда, <имя>.pdf (диаграмма,
 // имя из заголовка fileBaseOf); heroKey — pkey героя для колонки «Связь год»;
 // неудача — фолбэк текстовым гедкомом (sendLong)
+// Радиусный вызов (keys — ромб родни: тап 🧬 на фокусе и /gedcomN в ответ
+// на триггер): третий файл <имя>.ged.txt — пачка того же ромба
+// (chatFlatText по keys): форма «-+=», но не только вниз — и вверх, и вниз,
+// в пределах радиуса; всему древу чата пачки нет (его «-+=» и так весь)
 export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0) {
     const g = await gedcomText(chatId, keys);
     // заголовок чарта без цифры уровня (кейкап оставлен только фокусу);
@@ -1755,6 +1853,9 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
     const chartHead = head0.replace(/^\d\u20E3\s*/, "");
     const rm = /^(\d)\u20E3/.exec(head0);
     const base = fileBaseOf(head0);
+    // третий файл (радиусные 🧬 и /gedcomN): пачка ромба — chatFlatText по keys;
+    // фолбэк текстом пачку не дублирует — она идёт только файлом
+    const pack = Array.isArray(keys) && keys.length ? await chatFlatText(chatId, keys) : "";
     let pdf = null, persons = 0, chartErr = null;
     try {
         const res = await chartFor(chatId, keys, chartHead, heroKey, rm ? Number(rm[1]) : null);
@@ -1777,7 +1878,15 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
             caption: "🧬 Диаграмма древа: " + persons + " персон",
             ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
         });
-        console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : ""), "chat", chatId);
+        // BOM — чтобы Windows-редакторы открывали пачку как UTF-8
+        if (pack) await api.sendDocument({
+            chat_id: chatId,
+            document: new InputFile(enc.encode("\uFEFF" + pack), base + ".ged.txt", { type: "text/plain" }),
+            caption: "🧬 Пачка древа (радиус " + (rm ? rm[1] : "1") + "): вверх и вниз",
+            ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
+        });
+        console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : "")
+            + (pack ? " + " + base + ".ged.txt" : ""), "chat", chatId);
         if (chartErr) await api.sendMessage({ chat_id: chatId, text: "💥 Диаграмма не построена: " + chartErr });
         return;
     } catch (e) {
@@ -2065,6 +2174,8 @@ export function stripHtml(t) {
 
 // сводка применения пачки (✅-строка + ошибки построчно) — общий формат ответа
 export function treeReport(rep) {
+    if (rep.noGraft) // пачка ромба в ответ на триггер — правки нет
+        return "💥 Для замены ветки используйте плоское дерево полученное нажатием на кнопку -+=";
     let body = "✅ древо: персон " + rep.persons + ", семей " + rep.fams
         + ", детей " + rep.links;
     if (rep.cut !== undefined)
