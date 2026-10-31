@@ -955,7 +955,28 @@ function parseTree(text) {
         const it = parseTreeLine(line);
         if (it.k === "err") { errors.push({ line: ln, msg: it.msg }); continue; }
         if (it.k === "p") {
-            if (pw !== null) flushPw();
+            // маркерная половина той же глубины сразу за «+»: «=ЕЯ 1936…»,
+            // «-Иван 1954…» — вторая половина открытой свадьбы (пол —
+            // противоположный владельцу), как bare-строка; иначе — новая
+            // персона уровня этого маркера
+            let asHalf = false;
+            if (pw !== null) {
+                const ow = stack.find(s => s.depth === pw.depth);
+                if (ow && ((persons[ow.o].sex === "M" && it.sex === "F")
+                    || (persons[ow.o].sex === "F" && it.sex === "M"))) {
+                    asHalf = true;
+                    const S = persons.push({ sex: it.sex, rec: it.rec, note: it.note,
+                        nameOnly: !!it.nameOnly, spouseLine: true }) - 1;
+                    if (!bindW(pw.wIdx, S, pw.depth, ln)) {
+                        // не привязалась — обычная персона уровня маркера
+                        persons.pop();
+                        asHalf = false;
+                    }
+                    pw = null; // привязка состоялась — свадьба закрыта
+                }
+                flushPw();
+            }
+            if (asHalf) continue;
             const idx = persons.push({ sex: it.sex, rec: it.rec, note: it.note, nameOnly: !!it.nameOnly,
                 spouseLine: false }) - 1;
             const d = it.depth;
