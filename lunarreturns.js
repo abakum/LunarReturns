@@ -2977,7 +2977,9 @@ function flatTreeText(persons, fams, canonical = false) {
         // семей) — после семей, по возрасту; остаток (циклы, оторванные
         // узлы) — тоже по возрасту
         const roots = persons.filter(r => isRoot(r));
-        for (const r of roots.filter(halfOf).sort((a, b) => byDate(minFamKey(a), minFamKey(b))))
+        for (const r of roots.filter(halfOf).sort((a, b) => byDate(minFamKey(a), minFamKey(b))
+            || byDate(a.d ?? null, b.d ?? null) // ничья — старший супруг первым (как в PDF)
+            || (a.name < b.name ? -1 : 1)))
             visit(r, 0);
         for (const r of roots.filter(r => !halfOf(r)).sort(personCmp)) visit(r, 0);
         const rest = persons.filter(r => !printed.has(r.key));
