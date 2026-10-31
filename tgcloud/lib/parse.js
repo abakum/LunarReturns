@@ -327,6 +327,14 @@ function gedStats(g) {
 // за которой вторая половина идёт следующей строкой; 'sp' — имя без маркера
 // (вторая половина последней «+»-свадьбы); строка дат без «+» — ошибка
 // (свадьба — «+»×n + даты)
+
+// метка пачки РОМБА (chatFlatText по keys — .ged.txt третьего прицепа 🧬):
+// герой посередине, радиус не несёт всех потомков героя — для резки-прививки
+// такая пачка не годится. parseTree читает метку первой непустой строкой в
+// tree.noGraft, cutAndGraft её отвергает; строки «#» парсер пачки пропускает
+// как комментарии — на состав и обратимость пачки метка не влияет
+const NOT_FOR_GRAFT = "#not for cut and graft";
+
 function parseTreeLine(line) {
     const mm = line.match(/^([-+=]+)\s*(.*)$/);
     if (mm) {
@@ -411,6 +419,10 @@ function weddingRecOf(s) {
 // половиной — дети ниже принадлежат ему).
 function parseTree(text) {
     const errors = [], persons = [], weddings = [], children = [];
+    // метка NOT_FOR_GRAFT первой непустой строкой (BOM перед ней — мимо):
+    // пачка ромба, резке-прививке не подлежит (см. cutAndGraft)
+    const ng0 = String(text).replace(/^\uFEFF/, "").split(/\r?\n/).find(l => l.trim());
+    const noGraft = !!ng0 && ng0.trim().toLowerCase() === NOT_FOR_GRAFT;
     const stack = []; // открытые семьи: {depth, m, f, o} — глубины строго растут; o — владелец
     let pw = null;    // открытое «+»: {wIdx, depth, spi|null, line}
     let ln = 0;
@@ -506,7 +518,7 @@ function parseTree(text) {
         pw = { wIdx, depth: it.depth, spi: null, line: ln };
     }
     flushPw();
-    return { persons, weddings, children, errors };
+    return { persons, weddings, children, errors, noGraft };
 }
 
 export { parseTrigger, parseGedcom, gedStats, parseTree, parseTreeLine };

@@ -1498,7 +1498,7 @@ export async function chatFlatText(chatId, keys = null) {
     const [allPersons, allFams] = await flatRows(chatId);
     const persons = allPersons.filter(p => !hasKeys
         || keys.includes(p.name + " " + (p.d ?? "")));
-    if (!hasKeys) return flatTreeText(persons, allFams);
+    if (!hasKeys) return flatTreeText(persons, allFams, true); // canonical — рецепт порядка
     const kOf = new Map(allPersons.map(p => [p.key, p.name + " " + (p.d ?? "")]));
     // пачка ромба несёт героя посередине (первым корнем — старший предок) —
     // для резки-прививки не годится: первой строкой метка NOT_FOR_GRAFT,
@@ -1582,8 +1582,13 @@ export async function branchFlatText(chatId, key) {
 }
 
 // fam в виде полу: hName/wName — имена заглушек ...
-// fams of slot; чистая логика — дословно в обеих копиях
-export function flatTreeText(persons, fams) {
+// fams of slot; чистая логика — дословно в обеих копиях.
+// canonical (рецепт порядка, только полная пачка): семьи — по дате свадьбы,
+// без даты — по дате рождения старшего супруга; дети в семье — по возрасту;
+// браки одной персоны — по тому же ключу; корни-владельцы семей — в порядке
+// их семей; плавающие и остаток — по возрасту. Радиусные пачки и ветвь героя
+// (герой первой строкой) — как прежде
+export function flatTreeText(persons, fams, canonical = false) {
     const byKey = new Map(persons.map(p => [p.key, p]));
     const familyOf = new Map(); // ребёнок (xref) → его семья (первая по порядку)
     for (const f of fams) for (const c of f.children) if (!familyOf.has(c)) familyOf.set(c, f);
@@ -1617,6 +1622,26 @@ export function flatTreeText(persons, fams) {
         r.note ? "^" + r.note : null,
     ].filter(Boolean).join(" ");
     const out = [], printed = new Set(), famsDone = new Set();
+    // канонические ключи (canonical — рецепт): семья — дата свадьбы, без
+    // неё — дата рождения старшего супруга (раньше старше); без дат — в
+    // конец, стабильно. Порядок перестаёт зависеть от порядка вставки:
+    // экспорт сходится с импортом и дифы пустеют
+    const birthOf = k => { const r = byKey.get(k); return r && r.d ? r.d : null; };
+    const famKey = f => {
+        if (f.marr) return f.marr.d;
+        const ds = [f.hKey, f.wKey].filter(k => k != null).map(birthOf).filter(Boolean).sort();
+        return ds.length ? ds[0] : null;
+    };
+    const byDate = (a, b) => a === null && b === null ? 0
+        : a === null ? 1 : b === null ? -1 : a < b ? -1 : a > b ? 1 : 0;
+    const famCmp = (a, b) => byDate(famKey(a), famKey(b));
+    const personCmp = (a, b) => byDate(a.d ?? null, b.d ?? null);
+    const minFamKey = r => {
+        const ks = fams.filter(f => f.hKey === r.key || f.wKey === r.key)
+            .map(famKey).filter(k => k !== null).sort();
+        return ks.length ? ks[0] : (r.d ?? null);
+    };
+    const halfOf = r => fams.some(f => f.hKey === r.key || f.wKey === r.key);
     // строка персоны: bare — вторая половина «+»-свадьбы (без маркера), иначе
     // маркеры '-'×(d+1)/'='×(d+1); заглушки — только имя
     const lineOf = (r, male, d, bare) => {
@@ -1664,15 +1689,20 @@ export function flatTreeText(persons, fams) {
             else lineOf(other, other.sex !== "F", d, true);
             if (kid) printed.delete(other.key); // маркерная строка — от родителей
         } else if (f.marr) {
-            // семья без второй половины: односторонняя свадьба («+дата»);
-            // голый «+» без даты не выводится — при пересборке пачки дети
-            // и так привязываются к строке родителя
+            // семья без второй половины: односторонняя свадьба («+дата»)
             out.push("+".repeat(d + 1) + wedPlus(f));
+        } else if (!f.children.length) {
+            // пустая односторонняя семья (свадьба была, половина и дата
+            // неизвестны): голый «+» — он связывает семью даже без даты,
+            // иначе при пересборке пачки семья потеряется вовсе. Семье
+            // с детьми «+» не нужен: дети и так привязываются к строке
+            // родителя, а лишний «+» при импорте плодил бы вторую семью
+            out.push("+".repeat(d + 1));
         }
-        for (const ck of f.children) {
-            const rk = byKey.get(ck);
-            if (rk) visit(rk, d + 1);
-        }
+        // дети по возрасту (canonical): старшие раньше, без даты — в конце
+        const kids = f.children.map(ck => byKey.get(ck)).filter(Boolean);
+        if (canonical) kids.sort(personCmp);
+        for (const rk of kids) visit(rk, d + 1);
     };
     const visit = (r, d) => {
         if (printed.has(r.key)) return;
@@ -1686,12 +1716,16 @@ export function flatTreeText(persons, fams) {
             return x != null ? byKey.has(x) : (k ? f.wName : f.hName) != null;
         };
         const mine = fams.filter(f => f.hKey === r.key || f.wKey === r.key);
-        for (const f of [...mine.filter(f => !hasOther(f) && !f.marr), ...mine.filter(f => hasOther(f) || f.marr)])
+        const solo = mine.filter(f => !hasOther(f) && !f.marr);
+        const wed = mine.filter(f => hasOther(f) || f.marr);
+        if (canonical) wed.sort(famCmp); // браки — по дате свадьбы/старшему супругу
+        for (const f of [...solo, ...wed])
             famBody(f, r.key, d);
     };
     // дети не выпадают из семьи: сначала визит корней — персон, чья
     // родительская семья не в пачке или вошла без половин (familyOf,
-    // касанием ребёнка, половины за радиусом/ветвью), в порядке массива;
+    // касанием ребёнка, половины за радиусом/ветвью); в canonical —
+    // по рецепту (семья/возраст, см. выше), иначе в порядке массива;
     // famBody родителей выдаёт строки детей с маркерами глубины. Ребёнок,
     // вставленный раньше родителей (номер семьи детей меньше номера семьи
     // родителей), корнем не считается: раньше он печатался на нуле и
@@ -1702,8 +1736,22 @@ export function flatTreeText(persons, fams) {
         const f = familyOf.get(r.key);
         return !f || ![f.hKey, f.wKey].some(k => k != null && byKey.has(k));
     };
-    for (const r of persons) if (isRoot(r)) visit(r, 0);
-    for (const r of persons) visit(r, 0);
+    if (canonical) {
+        // рецепт: корни-владельцы семей — в порядке их семей (дата
+        // свадьбы, без неё — старший супруг); плавающие (без своих
+        // семей) — после семей, по возрасту; остаток (циклы, оторванные
+        // узлы) — тоже по возрасту
+        const roots = persons.filter(r => isRoot(r));
+        for (const r of roots.filter(halfOf).sort((a, b) => byDate(minFamKey(a), minFamKey(b))))
+            visit(r, 0);
+        for (const r of roots.filter(r => !halfOf(r)).sort(personCmp)) visit(r, 0);
+        const rest = persons.filter(r => !printed.has(r.key));
+        rest.sort(personCmp);
+        for (const r of rest) visit(r, 0);
+    } else {
+        for (const r of persons) if (isRoot(r)) visit(r, 0);
+        for (const r of persons) visit(r, 0);
+    }
     return out.join("\n");
 }
 
