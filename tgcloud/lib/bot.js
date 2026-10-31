@@ -1918,33 +1918,26 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
     } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
     try {
         const enc = new TextEncoder();
-        // прицепы .ged (+ .pdf) — одним медиа-групповым сообщением (по одному
-        // sendDocument они выглядели бы двумя ответами); подпись группы —
-        // заголовок (лимит caption 1024 — head короче)
+        // BOM — чтобы Windows-редакторы открывали пачку как UTF-8;
+        // пачка <4000: правим сообщение с 🔗/🧬-кнопками — текст = пачка
+        // (клавиатура сообщения сохраняется), прицепы .ged+.pdf — медиа-группой;
+        // не влезает — все три прицепа (.ged+.pdf+.ged.txt) одной медиа-группой
+        const packFits = !!pack && pack.length < 4000;
+        if (packFits && replyTo) await api.editMessageText({
+            chat_id: chatId, message_id: replyTo, text: pack,
+        });
         const media = [{ type: "document", media: new InputFile(enc.encode(g), base + ".ged", { type: "text/plain" }),
             caption: head }];
         if (pdf) media.push({ type: "document",
             media: new InputFile(Uint8Array.from(pdf, c => c.charCodeAt(0)), base + ".pdf", { type: "application/pdf" }) });
+        if (pack && !packFits) media.push({ type: "document",
+            media: new InputFile(enc.encode("\uFEFF" + pack), base + ".ged.txt", { type: "text/plain" }) });
         await api.sendMediaGroup({
-            chat_id: chatId, media, // оба прицепа — ответом (reply) на сообщение с кнопками/командой
-            ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
-        });
-        // BOM — чтобы Windows-редакторы открывали пачку как UTF-8;
-        // пачка <4000 — текстом следующим сообщением, иначе — файл .ged.txt
-        const packFits = !!pack && pack.length < 4000;
-        if (pack && !packFits) await api.sendDocument({
-            chat_id: chatId,
-            document: new InputFile(enc.encode("\uFEFF" + pack), base + ".ged.txt", { type: "text/plain" }),
-            caption: "🧬 Пачка древа (радиус " + (rm ? rm[1] : "1") + "): вверх и вниз",
-            ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
-        });
-        if (packFits) await api.sendMessage({
-            chat_id: chatId,
-            text: pack, // заголовок уже в подписи .ged
+            chat_id: chatId, media, // прицепы — ответом (reply) на сообщение с кнопками/командой
             ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
         });
         console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : "")
-            + (pack ? (packFits ? " (пачка текстом)" : " + " + base + ".ged.txt") : ""), "chat", chatId);
+            + (pack ? (packFits ? " (пачка текстом в ответе)" : " + " + base + ".ged.txt") : ""), "chat", chatId);
         if (chartErr) await api.sendMessage({ chat_id: chatId, text: "💥 Диаграмма не построена: " + chartErr });
         return;
     } catch (e) {

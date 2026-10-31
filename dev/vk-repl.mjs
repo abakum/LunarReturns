@@ -144,7 +144,7 @@ const srv = http.createServer((req, res) => {
                 const cmid = Number(p.conversation_message_id);
                 const m = msgs.find(x => x.cmid === cmid);
                 if (!m) return json({ response: 1 });
-                if (p.attachment) { m.text = (m.text ? m.text + '\n' : '') + '📎 вложение ' + String(p.attachment); showBot(m, true); }
+                if (p.attachment) { m.text = (p.message !== undefined ? String(p.message) + '\n' : '') + '📎 вложение ' + String(p.attachment); showBot(m, true); }
                 else if (p.message !== undefined) { m.text = String(p.message); showBot(m, true); }
                 if (p.keyboard !== undefined) m.kb = p.keyboard;
                 return json({ response: 1 });
@@ -293,16 +293,19 @@ async function exec(line) {
         } catch (e) { fail(e); }
         return;
     }
-    // !sendged «ключ» N — sendGedArtifacts радиуса N (как 🧬 на фокусе)
-    if (m = line.match(/^!sendged (.+) (\d+)$/)) {
+    // !sendged «ключ» N [>N] — sendGedArtifacts радиуса N (как 🧬 на фокусе);
+    // с >N — правка сообщения N (как нажатие 🧬 на его кнопках)
+    if (m = line.match(/^!sendged (.+) (\d+)(?:\s+>(\d+))?$/)) {
         try {
             const key = m[1];
-            const spd = process.env.LR_DB || DB_FILE; // база уже открыта T
             const pairs = T.linkPairs(CHAT);
             const spPairs = T.focusSpousePairs(CHAT);
             const keys = T.focusWithSpouses(T.focusKeys(pairs, key, Number(m[2])), spPairs);
             const rec = T.recordOf(CHAT, key);
-            await Promise.race([T.sendGedArtifacts(CHAT, keys, T.focusHead(key, Number(m[2]), rec ? rec.dd : null), msgs.length, 1, key), hang()]);
+            const originMsg = m[3] && msgs[Number(m[3]) - 1] ? msgs[Number(m[3]) - 1] : null;
+            const origin = originMsg ? { peer_id: CHAT, conversation_message_id: originMsg.cmid } : null;
+            await Promise.race([T.sendGedArtifacts(CHAT, keys, T.focusHead(key, Number(m[2]), rec ? rec.dd : null),
+                msgs.length, 1, key, origin, originMsg ? originMsg.kb : null), hang()]);
             console.log('--- sendGedArtifacts завершён');
         } catch (e) { fail(e); }
         return;

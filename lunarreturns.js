@@ -3790,13 +3790,15 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
         const headTxt = head + (packFits ? "\n" + pack : "");
         if (origin) {
             try {
+                // правим сообщение фокуса: текст (заголовок + пачка, если
+                // влезает) и прицепы — всё в одном сообщении; не влезает —
+                // прицепы .ged+.pdf+.ged.txt, текст не трогаем
                 await vkApi("messages.edit", {
                     peer_id: origin.peer_id, conversation_message_id: origin.conversation_message_id,
-                    attachment: atts.join(","), keyboard: kb
+                    message: packFits ? headTxt : undefined, attachment: atts.join(","), keyboard: kb
                 });
                 console.log("ged artifacts edited into origin:", base + ".ged", "peer", peerId);
                 if (chartErr) await messagesSend(peerId, "💥 Диаграмма не построена: " + chartErr);
-                if (packFits) await messagesSend(peerId, pack, msgId, convMsgId);
                 return;
             } catch (e) {
                 console.error("editOriginAtts:", e.message, "— отношу файлом");
