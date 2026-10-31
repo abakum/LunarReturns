@@ -99,7 +99,14 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
         let anchor = null;
         const k = rh[1].trim() + " " + rh[2];
         if (await recordOf(chatId, k)) anchor = k;
-        const rep = anchor ? await cutAndGraft(chatId, anchor, tree) : await applyTree(chatId, tree);
+        if (!anchor) {
+            // цитата на триггера не нашлась — добавлять молча нельзя: так
+            // пачка применилась бы целиком (мимо героя)
+            await api.sendMessage({ chat_id: chatId, text: "💥 В ответе — не триггер: пачка не применена. Герой ветви должен быть «Имя ГГГГ-ММ-ДД» из древа чата." });
+            console.log("txt drop reply: триггера нет, мимо, чат", chatId);
+            return;
+        }
+        const rep = await cutAndGraft(chatId, anchor, tree);
         await sendLong(chatId, treeReport(rep));
         console.log("txt tree:", rep.cut !== undefined ? "срезано " + rep.cut + ", " : "", rep.persons, "персон,", rep.links, "детей, чат", chatId);
         return;
@@ -113,7 +120,7 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
         text: "📄 Файл " + name + ": персон " + new Set(tree.persons
             .map(p => p.rec.n + "|" + (p.rec.d ?? ""))).size
             + ", семей " + tree.weddings.length + ", детей " + tree.children.length
-            + ". Добавить пачку к дереву чата?",
+            + ". Заменить этим древо чата? В ответ на триггер — без замены: будет срезана и привита ветвь триггера.",
         // «Да, с резервом» — только при непустом дереве чата
         reply_markup: dropKb((await personRows(chatId)).length > 0),
     });

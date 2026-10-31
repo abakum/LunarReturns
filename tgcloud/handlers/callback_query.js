@@ -407,13 +407,14 @@ export default async function (cq, ctx) {
             await answer("не добавлено");
             return;
         }
-        // .ged.txt-пачка: без замены — дерево ДОБАВЛЯЕТСЯ (с резервом сначала файлом)
+        // .ged.txt-пачка: ЗАМЕНА дерева чата (с резервом сначала файлом)
         if (/\.ged\.txt$/i.test(row.fileName)) {
             if (data === "ged:bak") await sendTreeBackup(chatId);
+            await clearChatTree(chatId);
             const rep = await applyTree(chatId, parseTree(row.content), null);
             await editText(treeReport(rep), undefined);
-            await answer("пачка добавлена");
-            console.log("txt apply:", rep.persons, "персон,", rep.links, "детей, chat", chatId);
+            await answer("древо заменено");
+            console.log("txt replace:", rep.persons, "персон,", rep.links, "детей, chat", chatId);
             return;
         }
         const r = await replaceWithGedcom(chatId, parseGedcom(row.content), data === "ged:bak");

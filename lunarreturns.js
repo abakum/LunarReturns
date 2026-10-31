@@ -4182,7 +4182,7 @@ async function longPollStep() {
     }
 }
 
-const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Пачкой древа в ответе на героя — замена его ветви (срезана и привита). Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата; /links (в ответ на триггер) — пачка ВЕТВИ героя (как «-+=» на фокусе), без ответа — пачка древа чата; /Иван — поиск по древу (/-Пётр — мужчины 0-го уровня, /--Иван — 1-го, /=… — женщины; «/ текст» — подстрока; /-, /--, /+…, /=… — все мужчины/свадьбы/женщины уровня).\nКнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf+.ged.txt — пачка радиуса: вверх и вниз), «-+=» — пачка ВЕТВИ: герой первой строкой, потомки — вся глубина; в фокусе цифры радиуса отдельным рядом ([цифры] / [🔔 🧬 -+= ❌]). /bellN (в ответ на триггер) — список родни в радиусе N (как 🔔 фокуса).\nПачка в ответе на цитату — ЗАМЕНА ветви цитируемого (срезана и привита); одной строкой без маркера в ответе на триггер — ПРАВКА записи целиком (пол и ветвь не трогаются); просто сообщением/файлом — добавление к древу.";
+const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Пачкой древа в ответе на героя — замена его ветви (срезана и привита). Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата; /links (в ответ на триггер) — пачка ВЕТВИ героя (как «-+=» на фокусе), без ответа — пачка древа чата; /Иван — поиск по древу (/-Пётр — мужчины 0-го уровня, /--Иван — 1-го, /=… — женщины; «/ текст» — подстрока; /-, /--, /+…, /=… — все мужчины/свадьбы/женщины уровня).\nКнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf+.ged.txt — пачка радиуса: вверх и вниз), «-+=» — пачка ВЕТВИ: герой первой строкой, потомки — вся глубина; в фокусе цифры радиуса отдельным рядом ([цифры] / [🔔 🧬 -+= ❌]). /bellN (в ответ на триггер) — список родни в радиусе N (как 🔔 фокуса).\nПачка в ответе на цитату — ЗАМЕНА ветви цитируемого (срезана и привита); одной строкой без маркера в ответе на триггер — ПРАВКА записи целиком (пол и ветвь не трогаются); просто сообщением — добавление к древу; файлом .ged.txt — замена дерева чата («Нет / Да / Да, с резервом»).";
 
 // большой ответ — одним файлом: «.ged.txt» (пачка древа) либо «.txt» (список
 // событий); не выложился — сообщение об ошибке (без кусков). Файл — ответом
@@ -4286,7 +4286,14 @@ async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
         let anchor = null;
         const k = rh[1].trim() + " " + rh[2];
         if (recordOf(peerId, k)) anchor = k;
-        const rep = anchor ? cutAndGraft(peerId, anchor, tree) : applyTree(peerId, tree);
+        if (!anchor) {
+            // цитата на триггера не нашлась — добавлять молча нельзя: так
+            // пачка применилась бы целиком (мимо героя)
+            await messagesSend(peerId, "💥 В ответе — не триггер: пачка не применена. Герой ветви должен быть «Имя ГГГГ-ММ-ДД» из древа чата.", msgId, convMsgId);
+            console.log("txt drop reply: триггера нет, мимо, peer", peerId);
+            return;
+        }
+        const rep = cutAndGraft(peerId, anchor, tree);
         await messagesSend(peerId, treeReport(rep), msgId, convMsgId);
         console.log("txt tree:", rep.cut !== undefined ? "срезано " + rep.cut + ", " : "", rep.persons, "персон,", rep.links, "детей, peer", peerId);
         return;
@@ -4305,7 +4312,8 @@ async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
     await messagesSend(peerId, "📄 Файл " + name + ": персон " + new Set(tree.persons
         .map(p => p.rec.n + "|" + (p.rec.d ?? ""))).size
         + ", семей " + tree.weddings.length + ", детей " + tree.children.length
-        + ". Добавить пачку к дереву чата?", msgId, convMsgId, kb);
+        + ". Заменить тем древо чата? В ответ на триггер — без замены: будет срезана и привита ветвь триггера.",
+        msgId, convMsgId, kb);
 }
 
 // ---- фокус-сообщение: «/» ответом на триггер, радиус родни 1–5 ----
@@ -4875,16 +4883,17 @@ async function handleEvent(o) {
             return;
         }
         gedPending.delete(peerId);
-        // .ged.txt-пачка: ДОБАВЛЕНИЕ к дереву (с резервом — прежнее дерево файлом)
+        // .ged.txt-пачка: ЗАМЕНА дерева чата (с резервом — прежнее дерево файлом)
         if (/\.ged\.txt$/i.test(pend.name)) {
             if (payload === "ged:bak" && !(await sendTreeBackup(peerId))) {
                 await answerEvent(o.event_id || o.id, o.user_id, peerId, "не удалось выложить резерв");
                 return;
             }
+            clearChatTree(peerId);
             const rep = applyTree(peerId, parseTree(pend.text), null);
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "пачка добавлена");
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "древо заменено");
             await editOrigin(o, treeReport(rep), JSON.stringify({ inline: true, buttons: [] }));
-            console.log("txt apply:", rep.persons, "персон,", rep.links, "детей, peer", peerId);
+            console.log("txt replace:", rep.persons, "персон,", rep.links, "детей, peer", peerId);
             return;
         }
         if (payload === "ged:ign") {
