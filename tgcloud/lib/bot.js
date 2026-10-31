@@ -1918,17 +1918,15 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
     } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
     try {
         const enc = new TextEncoder();
-        // оба файла — ответом (reply) на сообщение с кнопками/командой
-        await api.sendDocument({
-            chat_id: chatId,
-            document: new InputFile(enc.encode(g), base + ".ged", { type: "text/plain" }),
-            caption: head,
-            ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
-        });
-        if (pdf) await api.sendDocument({
-            chat_id: chatId,
-            document: new InputFile(Uint8Array.from(pdf, c => c.charCodeAt(0)), base + ".pdf", { type: "application/pdf" }),
-            caption: "🧬 Диаграмма древа: " + persons + " персон",
+        // прицепы .ged (+ .pdf) — одним медиа-групповым сообщением (по одному
+        // sendDocument они выглядели бы двумя ответами); подпись группы —
+        // заголовок (лимит caption 1024 — head короче)
+        const media = [{ type: "document", media: new InputFile(enc.encode(g), base + ".ged", { type: "text/plain" }),
+            caption: head }];
+        if (pdf) media.push({ type: "document",
+            media: new InputFile(Uint8Array.from(pdf, c => c.charCodeAt(0)), base + ".pdf", { type: "application/pdf" }) });
+        await api.sendMediaGroup({
+            chat_id: chatId, media, // оба прицепа — ответом (reply) на сообщение с кнопками/командой
             ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
         });
         // BOM — чтобы Windows-редакторы открывали пачку как UTF-8;
