@@ -1501,12 +1501,14 @@ export async function chatFlatText(chatId, keys = null) {
         || keys.includes(p.name + " " + (p.d ?? "")));
     if (!hasKeys) return flatTreeText(persons, allFams, true); // canonical — рецепт порядка
     const kOf = new Map(allPersons.map(p => [p.key, p.name + " " + (p.d ?? "")]));
-    // пачка ромба несёт героя посередине (первым корнем — старший предок) —
-    // для резки-прививки не годится: первой строкой метка NOT_FOR_GRAFT,
-    // parseTree читает её в tree.noGraft, cutAndGraft такую пачку отвергает
+    // пачка ромба — тот же канонический рецепт, что и у целого древа:
+    // порядок больше не «героевоцентричный» (герой посередине), семьи —
+    // по дате свадьбы/старшему супругу. Для резки-прививки не годится всё
+    // равно: первой строкой метка NOT_FOR_GRAFT, parseTree читает её в
+    // tree.noGraft, cutAndGraft такую пачку отвергает
     return NOT_FOR_GRAFT + "\n" + flatTreeText(persons, allFams.filter(f =>
         [f.hKey, f.wKey, ...f.children].some(k => k != null
-            && keys.includes(kOf.get(k) || ""))));
+            && keys.includes(kOf.get(k) || ""))), true);
 }
 
 // чистые подмножества пачки «ветвь героя»: fams, где герой/потомок является
@@ -1929,15 +1931,22 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
             caption: "🧬 Диаграмма древа: " + persons + " персон",
             ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
         });
-        // BOM — чтобы Windows-редакторы открывали пачку как UTF-8
-        if (pack) await api.sendDocument({
+        // BOM — чтобы Windows-редакторы открывали пачку как UTF-8;
+        // пачка <4000 — текстом следующим сообщением, иначе — файл .ged.txt
+        const packFits = !!pack && pack.length < 4000;
+        if (pack && !packFits) await api.sendDocument({
             chat_id: chatId,
             document: new InputFile(enc.encode("\uFEFF" + pack), base + ".ged.txt", { type: "text/plain" }),
             caption: "🧬 Пачка древа (радиус " + (rm ? rm[1] : "1") + "): вверх и вниз",
             ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
         });
+        if (packFits) await api.sendMessage({
+            chat_id: chatId,
+            text: pack, // заголовок уже в подписи .ged
+            ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
+        });
         console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : "")
-            + (pack ? " + " + base + ".ged.txt" : ""), "chat", chatId);
+            + (pack ? (packFits ? " (пачка текстом)" : " + " + base + ".ged.txt") : ""), "chat", chatId);
         if (chartErr) await api.sendMessage({ chat_id: chatId, text: "💥 Диаграмма не построена: " + chartErr });
         return;
     } catch (e) {

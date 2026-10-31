@@ -56,7 +56,8 @@ const PATCHES = [
      'if (!process.env.LR_NO_MAIN) main().catch(e => { console.error("fatal:", e); process.exit(1); });'],
     ['    cutAndGraft, setPersonByXref, editTrigger, rootOf, uniqueKeyOf, upcomingEvents,\n};',
      '    cutAndGraft, setPersonByXref, editTrigger, rootOf, uniqueKeyOf, upcomingEvents, handleEvent, handleMessage, handleGedDrop, handleTxtDrop,\n'
-     + '    peerKeyboard, getSettings, qa, isChatAdmin, dailyCheck, mskNowParts,\n};'],
+     + '    peerKeyboard, getSettings, qa, isChatAdmin, dailyCheck, mskNowParts,\n'
+     + '    sendGedArtifacts: typeof sendGedArtifacts === "function" ? sendGedArtifacts : null,\n};'],
     // подмена «сегодня»: !date YYYY-MM-DD [hh] → globalThis.__LR_TODAY/[__LR_HOUR]
     ['const mskToday = () => {',
      'const mskToday = () => {\n    if (globalThis.__LR_TODAY) return globalThis.__LR_TODAY;'],
@@ -292,6 +293,21 @@ async function exec(line) {
         } catch (e) { fail(e); }
         return;
     }
+    // !sendged «ключ» N — sendGedArtifacts радиуса N (как 🧬 на фокусе)
+    if (m = line.match(/^!sendged (.+) (\d+)$/)) {
+        try {
+            const key = m[1];
+            const spd = process.env.LR_DB || DB_FILE; // база уже открыта T
+            const pairs = T.linkPairs(CHAT);
+            const spPairs = T.focusSpousePairs(CHAT);
+            const keys = T.focusWithSpouses(T.focusKeys(pairs, key, Number(m[2])), spPairs);
+            const rec = T.recordOf(CHAT, key);
+            await Promise.race([T.sendGedArtifacts(CHAT, keys, T.focusHead(key, Number(m[2]), rec ? rec.dd : null), msgs.length, 1, key), hang()]);
+            console.log('--- sendGedArtifacts завершён');
+        } catch (e) { fail(e); }
+        return;
+    }
+    if (!m) {}
     // /N M [uID] — тап
     if (m = line.match(/^\/(\d+)\s+(\d+)(?:\s+(\d+))?$/)) {
         const msg = msgs[Number(m[1]) - 1];

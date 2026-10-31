@@ -2735,11 +2735,13 @@ function chatFlatText(peerId, keys = null) {
     const persons = rows.filter(r => !hasKeys || keys.includes(r.name + " " + (r.d ?? "")));
     if (!hasKeys) return flatTreeText(persons, allFams, true); // canonical — рецепт порядка
     const kOf = new Map(rows.map(r => [r.key, r.name + " " + (r.d ?? "")]));
-    // пачка ромба несёт героя посередине (первым корнем — старший предок) —
-    // для резки-прививки не годится: первой строкой метка NOT_FOR_GRAFT,
-    // parseTree читает её в tree.noGraft, cutAndGraft такую пачку отвергает
+    // пачка ромба — тот же канонический рецепт, что и у целого древа:
+    // порядок больше не «героевоцентричный» (герой посередине), семьи —
+    // по дате свадьбы/старшему супругу. Для резки-прививки не годится всё
+    // равно: первой строкой метка NOT_FOR_GRAFT, parseTree читает её в
+    // tree.noGraft, cutAndGraft такую пачку отвергает
     return NOT_FOR_GRAFT + "\n" + flatTreeText(persons, allFams.filter(f =>
-        [f.hKey, f.wKey, ...f.children].some(k => k != null && keys.includes(kOf.get(k) || ""))));
+        [f.hKey, f.wKey, ...f.children].some(k => k != null && keys.includes(kOf.get(k) || ""))), true);
 }
 
 // чистые подмножества пачки «ветвь героя»: fams, где герой/потомок является
@@ -3780,9 +3782,12 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
         pdf = res.pdf;
     } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
     try {
+        // пачка <4000 — текстом (сообщение с прицепами), иначе — файлом .ged.txt
+        const packFits = !!pack && pack.length < 4000;
         const atts = [await vkUploadDoc(peerId, base + ".ged", g)];
         if (pdf) atts.push(await vkUploadDoc(peerId, base + ".pdf", Buffer.from(pdf, "latin1")));
-        if (pack) atts.push(await vkUploadDoc(peerId, base + ".ged.txt", "\uFEFF" + pack));
+        if (pack && !packFits) atts.push(await vkUploadDoc(peerId, base + ".ged.txt", "\uFEFF" + pack));
+        const headTxt = head + (packFits ? "\n" + pack : "");
         if (origin) {
             try {
                 await vkApi("messages.edit", {
@@ -3791,14 +3796,15 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
                 });
                 console.log("ged artifacts edited into origin:", base + ".ged", "peer", peerId);
                 if (chartErr) await messagesSend(peerId, "💥 Диаграмма не построена: " + chartErr);
+                if (packFits) await messagesSend(peerId, pack, msgId, convMsgId);
                 return;
             } catch (e) {
                 console.error("editOriginAtts:", e.message, "— отношу файлом");
             }
         }
-        await messagesSend(peerId, head, msgId, convMsgId, null, atts.join(","));
+        await messagesSend(peerId, headTxt, msgId, convMsgId, null, atts.join(","));
         console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : "")
-            + (pack ? " + " + base + ".ged.txt" : ""), "peer", peerId);
+            + (pack ? (packFits ? " (пачка текстом)" : " + " + base + ".ged.txt") : ""), "peer", peerId);
         if (chartErr) await messagesSend(peerId, "💥 Диаграмма не построена: " + chartErr);
         return;
     } catch (e) {
