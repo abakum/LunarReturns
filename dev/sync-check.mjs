@@ -737,7 +737,7 @@ const stubFlat = VK.chatFlatText(GS_CH);
 const STUB_FLAT_EXPECT = '-Иван Г 1960-05-10 (Пермь) 2020-05-05 (Пермь)\n'
     + '+1983-06-04\n'
     + 'Мария С 1960-05-10~ (Сарапул) 2020-02-03 (Курск)\n'
-    + '--Сын Бездатный\n'
+    + '--Сын Бездатный 1984-06-04~ 1990-05-05 (Москва)\n' // свадьба +1 год (birt_abt 3)
     + '=Ольга Д 1955-03-01 2001-01-01 (Кладбище)';
 if (stubFlat !== STUB_FLAT_EXPECT)
     { failed++; console.log('✗ пачка бездатные/места:\n  ' + stubFlat); }
@@ -759,6 +759,67 @@ if (VK.chatFlatText(GS_CH) !== STUB_FLAT_EXPECT)
 VK.importGedcom(GS_CH, VK.parseGedcom(VK.gedcomText(GS_CH)));
 await TG.importGedcom(GS_CH, TGP.parseGedcom(await TG.gedcomText(GS_CH)));
 cmp('round-trip .ged бездатные', VK.chatFlatText(GS_CH), await TG.chatFlatText(GS_CH));
+
+// ==================== 3бв. бездатные дети: сиблинг/свадьба/родитель ======
+// приоритет: ДР последнего сиблинга +1 год → свадьба +1 год →
+// ДР младшего родителя +20 лет; коллизия одинаковых фиктивных дат —
+// +1 год (не близнецы); без всего перечисленного — заглушка без даты
+const GED_KIDS = ['0 HEAD',
+    '0 @I1@ INDI', '1 NAME Отец /О/', '1 SEX M', '1 BIRT', '2 DATE 10 MAY 1900',
+    '0 @I2@ INDI', '1 NAME Мать /О/', '1 SEX F', '1 BIRT', '2 DATE 20 NOV 1903',
+    '0 @I3@ INDI', '1 NAME Старший /О/', '1 BIRT', '2 DATE 1 FEB 1930',
+    '0 @I4@ INDI', '1 NAME Дочь /О/', '1 SEX F',                          // сиблинг
+    '0 @I5@ INDI', '1 NAME Большой /О/', '1 BIRT', '2 DATE 9 AUG 1933',
+    '0 @F1@ FAM', '1 HUSB @I1@', '1 WIFE @I2@', '1 CHIL @I3@', '1 CHIL @I4@', '1 CHIL @I5@',
+    '1 MARR', '2 DATE 7 JUL 1928',
+    '0 @I6@ INDI', '1 NAME Папа /П/', '1 BIRT', '2 DATE 1 JAN 1901',
+    '0 @I7@ INDI', '1 NAME Мама /П/', '1 SEX F', '1 BIRT', '2 DATE 2 FEB 1904',
+    '0 @I8@ INDI', '1 NAME Тот /П/',                                      // родитель
+    '0 @F2@ FAM', '1 HUSB @I6@', '1 WIFE @I7@', '1 CHIL @I8@',
+    '0 @I9@ INDI', '1 NAME Папа2 /П/', '1 SEX M',
+    '0 @I10@ INDI', '1 NAME Мама2 /П/', '1 SEX F', '1 BIRT', '2 DATE 3 MAR 1906',
+    '0 @I11@ INDI', '1 NAME Сын /П/',                                     // единственный датный родитель
+    '0 @F3@ FAM', '1 HUSB @I9@', '1 WIFE @I10@', '1 CHIL @I11@',
+    '0 @I12@ INDI', '1 NAME Близнец /К/',
+    '0 @I13@ INDI', '1 NAME Близнец /К/',
+    '0 @I14@ INDI', '1 NAME Папа3 /К/', '1 BIRT', '2 DATE 5 MAY 1921',
+    '0 @I15@ INDI', '1 NAME Мама3 /К/', '1 SEX F', '1 BIRT', '2 DATE 6 JUN 1922',
+    '0 @F4@ FAM', '1 HUSB @I14@', '1 WIFE @I15@', '1 CHIL @I12@', '1 CHIL @I13@',
+    '1 MARR', '2 DATE 1 DEC 1943',
+    '0 @I16@ INDI', '1 NAME Мать4 /Н/', '1 SEX F',
+    '0 @I17@ INDI', '1 NAME Реб /Н/',                                     // ничего не известно — без даты
+    '0 @F5@ FAM', '1 WIFE @I16@', '1 CHIL @I17@',
+    '0 TRLR'].join('\n');
+const GK_CH = 15;
+VK.clearChatTree(GK_CH);
+await TG.clearChatTree(GK_CH);
+const vkImpK = VK.importGedcom(GK_CH, VK.parseGedcom(GED_KIDS));
+const tgImpK = await TG.importGedcom(GK_CH, TGP.parseGedcom(GED_KIDS));
+cmp('importGedcom бездатные дети отчёт', vkImpK, tgImpK);
+const kidsFlat = VK.chatFlatText(GK_CH);
+cmp('importGedcom бездатные дети пачка', kidsFlat, await TG.chatFlatText(GK_CH));
+cmp('importGedcom бездатные дети гедком', VK.gedcomText(GK_CH), await TG.gedcomText(GK_CH));
+cmp('importGedcom бездатные дети свадьбы', VK.weddingRows(GK_CH), await TG.weddingRows(GK_CH));
+// round-trip: экспорт → импорт → та же пачка
+VK.importGedcom(GK_CH, VK.parseGedcom(VK.gedcomText(GK_CH)));
+await TG.importGedcom(GK_CH, TGP.parseGedcom(await TG.gedcomText(GK_CH)));
+cmp('round-trip .ged бездатные дети', VK.chatFlatText(GK_CH), await TG.chatFlatText(GK_CH));
+if (VK.chatFlatText(GK_CH) !== kidsFlat)
+    { failed++; console.log('✗ round-trip пачка бездатные дети:\n  ' + VK.chatFlatText(GK_CH)); }
+const kidOf = n => VK.personRows(GK_CH).filter(r => r.n.startsWith(n));
+const kidWant = (n, d, what) => {
+    if (!kidOf(n).some(r => r.d === d))
+        { failed++; console.log('✗ бездатные дети ' + what + ': нет ключа «' + n + ' ' + d + '»: ' + kidOf(n).map(r => r.n + ' ' + r.d).join(' | ')); }
+};
+kidWant('Дочь О', '1934-08-09', 'последний сиблинг +1 год');
+kidWant('Тот П', '1924-02-02', 'младший родитель +20 лет');
+kidWant('Сын П', '1926-03-03', 'родитель без свадьбы +20 лет');
+kidWant('Близнец К', '1944-12-01', 'свадьба +1 год');
+kidWant('Близнец К', '1945-12-01', 'коллизия фиктивных дат +1 год');
+{
+    const reb = kidOf('Реб Н')[0];
+    if (reb && reb.d !== undefined) { failed++; console.log('✗ бездатные дети: «Реб Н» получил дату ' + reb.d); }
+}
 
 // ==================== 3в. бездатный в диаграмме: точка/вертикали ========
 // бездатный муж с датированной женой: связь ребёнка — точки на всех трёх

@@ -1960,13 +1960,17 @@ export { focusKeys, focusHasPair, focusWithSpouses };
 // хранится «1234-01-01») после сдвига дубля на «1234-01-02» печаталось бы
 // по-прежнему «1234» — сдвинутый день терялся бы (в т.ч. в выгрузке гедкома)
 // (ВК-копия: lunarreturns.js, uniqueKeyOf)
-export async function uniqueKeyOf(chatId, name, birtD, approx) {
+export async function uniqueKeyOf(chatId, name, birtD, approx, yearly) {
     while (true) {
         const same = (await indiRows(chatId)).find(r => r.name === name && r.birtD === birtD);
         if (!same) return { name, birtD };
         if (approx) {
             const dt = new Date(birtD + "T00:00:00Z");
-            dt.setUTCDate(dt.getUTCDate() + 1);
+            // год — для фиктивных дат (второй проход: они не означают близнецов,
+            // два бездатных ребёнка/супруга одной даты разводим по годам);
+            // день — для коллизий настоящих дат (сдвиг дубля, abt 3)
+            if (yearly) dt.setUTCFullYear(dt.getUTCFullYear() + 1);
+            else dt.setUTCDate(dt.getUTCDate() + 1);
             birtD = dt.toISOString().slice(0, 10);
         } else name += "~";
     }
@@ -1978,10 +1982,19 @@ function approxOut(d, abt) {
     return abt === 1 ? d.slice(0, 4) : abt === 2 ? d.slice(0, 7) : d + (abt ? "~" : "");
 }
 
+// та же дата через N лет (29 фев → 1 мар в невисокосный год — само собой)
+// (ВК-копия: lunarreturns.js, datePlusYears)
+function datePlusYears(d, years) {
+    const dt = new Date(d + "T00:00:00Z");
+    dt.setUTCFullYear(dt.getUTCFullYear() + years);
+    return dt.toISOString().slice(0, 10);
+}
+
 // fam — по одному на каждый FAM файла с точными xref'ами (без слипания
 // семей ребёнка); свадьбы живут на fam — точная привязка супругов;
-// бездатные импортируются, когда упомянуты в семье (супруг/ребёнок), —
-// заглушки-персоны (birtD null), как свадебные половины; безымянные — мимо.
+// бездатные импортируются, когда упомянуты в семье — с фиктивной датой
+// (супруг: дата половины; ребёнок: сиблинг/свадьба/родитель, birtD abt 3),
+// без варианта — заглушки-персоны (birtD null); безымянные — мимо.
 // Возвращает краткий отчёт. Повторный импорт лечит любые старые данные
 export async function importGedcom(chatId, g) {
     await clearChatTree(chatId);
@@ -2024,9 +2037,9 @@ export async function importGedcom(chatId, g) {
         byX.set(ind.__xref, ind.__xref);
         persons++;
     }
-    // второй проход: бездатные супруги — ПОЛНАЯ дата супруга, birtAbt 3
-    // (фиктивная: в шкале PDF нет года и прожитых лет); коллизия —
-    // +1 день (как прочие примерные даты); бездатные дети и безымянные — мимо
+    // второй проход: бездатные супруги и дети — фиктивная полная дата,
+    // birtAbt 3 (в шкале PDF нет года и прожитых лет); коллизия фиктивных
+    // дат — +1 год (не близнецы); безымянные — мимо
     for (const ind of g.indis) {
         if (!ind.name || (ind.birt && ind.birt.date)) continue;
         if (!famRefs.has(ind.__xref)) continue;
@@ -2037,8 +2050,24 @@ export async function importGedcom(chatId, g) {
             const sp = sx && g.indis.find(i => i.__xref === sx);
             if (sp && sp.birt && sp.birt.date) { full = resolved.get(sx) || sp.birt.date; break; }
         }
+        if (full === null) for (const f of g.fams) {
+            // бездатный ребёнок: ДР последнего (самого позднего) сиблинга +1 год,
+            // иначе известная свадьба +1 год, иначе ДР младшего родителя +20 лет;
+            // даты берем послеколлизионные (resolved, сдвиг дублей)
+            if (!f.chil.includes(ind.__xref)) continue;
+            const dated = cx => {
+                const p = g.indis.find(i => i.__xref === cx);
+                return p && p.name && p.birt && p.birt.date ? (resolved.get(p.__xref) || p.birt.date) : null;
+            };
+            const sibs = f.chil.map(dated).filter(Boolean).sort();
+            if (sibs.length) { full = datePlusYears(sibs[sibs.length - 1], 1); break; }
+            if (f.marr && f.marr.date) { full = datePlusYears(f.marr.date, 1); break; }
+            const pars = [f.husb, f.wife].map(dated).filter(Boolean).sort();
+            if (pars.length) { full = datePlusYears(pars[pars.length - 1], 20); break; }
+        }
         if (full === null) {
-            // бездатный ребёнок/супруг бездатного — заглушка (birtD NULL), как раньше
+            // бездатный без дат в семье (супруг бездатного и т.п.) —
+            // заглушка (birtD NULL), как раньше
             await db.insert(indi).values({
                 chatId, xref: ind.__xref, name: ind.name, birtD: null,
                 birtH: null, birtM: null, srcH: null, srcM: null,
@@ -2055,7 +2084,7 @@ export async function importGedcom(chatId, g) {
             persons++;
             continue;
         }
-        const u = await uniqueKeyOf(chatId, ind.name, full, true);
+        const u = await uniqueKeyOf(chatId, ind.name, full, true, true);
         // фиктивная ДР от супруга — всегда birtAbt 3 (как и сдвинутый дубль):
         // в шкале PDF у такой строки нет года и прожитых лет
         const uabt = 3;

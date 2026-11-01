@@ -1988,13 +1988,17 @@ function treeReport(rep) {
 // хранится «1234-01-01») после сдвига дубля на «1234-01-02» печаталось бы
 // по-прежнему «1234» — сдвинутый день терялся бы (в т.ч. в выгрузке гедкома)
 // (ТГ-копия: tgcloud/lib/bot.js, uniqueKeyOf)
-function uniqueKeyOf(peerId, name, birtD, approx) {
+function uniqueKeyOf(peerId, name, birtD, approx, yearly) {
     while (true) {
         const same = q1("SELECT xref FROM indi WHERE chat=? AND name=? AND birt_d=?", peerId, name, birtD);
         if (!same) return { name, birtD };
         if (approx) {
             const dt = new Date(birtD + "T00:00:00Z");
-            dt.setUTCDate(dt.getUTCDate() + 1);
+            // год — для фиктивных дат (второй проход: они не означают близнецов,
+            // два бездатных ребёнка/супруга одной даты разводим по годам);
+            // день — для коллизий настоящих дат (сдвиг дубля, abt 3)
+            if (yearly) dt.setUTCFullYear(dt.getUTCFullYear() + 1);
+            else dt.setUTCDate(dt.getUTCDate() + 1);
             birtD = dt.toISOString().slice(0, 10);
         } else name += "~";
     }
@@ -2334,6 +2338,13 @@ function linkKeyboard(peerId, link) {
 // бездатные импортируются, когда упомянуты в семье (супруг/ребёнок), —
 // заглушки-персоны (birt_d NULL), как свадебные половины; безымянные — мимо.
 // Возвращает краткий отчёт. Повторный импорт лечит любые старые данные
+// та же дата через N лет (29 фев → 1 мар в невисокосный год — само собой)
+function datePlusYears(d, years) {
+    const dt = new Date(d + "T00:00:00Z");
+    dt.setUTCFullYear(dt.getUTCFullYear() + years);
+    return dt.toISOString().slice(0, 10);
+}
+
 function importGedcom(peerId, g) {
     clearChatTree(peerId);
     const byId = new Map(); // xref файла → xref в базе (совпавшие «Имя Д» — один)
@@ -2376,9 +2387,9 @@ function importGedcom(peerId, g) {
         byId.set(ind.__xref, ind.__xref);
         persons++;
     }
-    // второй проход: бездатные супруги — ПОЛНАЯ дата супруга, birt_abt 3
-    // (фиктивная: в шкале PDF нет года и прожитых лет); коллизия —
-    // +1 день (как прочие примерные даты); бездатные дети и безымянные — мимо
+    // второй проход: бездатные супруги и дети — фиктивная полная дата,
+    // birt_abt 3 (в шкале PDF нет года и прожитых лет); коллизия фиктивных
+    // дат — +1 год (не близнецы); безымянные — мимо
     for (const ind of g.indis) {
         if (!ind.name || (ind.birt && ind.birt.date)) continue;
         if (!famRefs.has(ind.__xref)) continue;
@@ -2388,6 +2399,21 @@ function importGedcom(peerId, g) {
             const sx = f.husb === ind.__xref ? f.wife : f.husb;
             const sp = sx && g.indis.find(i => i.__xref === sx);
             if (sp && sp.birt && sp.birt.date) { full = resolved.get(sx) || sp.birt.date; break; }
+        }
+        if (full === null) for (const f of g.fams) {
+            // бездатный ребёнок: ДР последнего (самого позднего) сиблинга +1 год,
+            // иначе известная свадьба +1 год, иначе ДР младшего родителя +20 лет;
+            // даты берем послеколлизионные (resolved, сдвиг дублей)
+            if (!f.chil.includes(ind.__xref)) continue;
+            const dated = cx => {
+                const p = g.indis.find(i => i.__xref === cx);
+                return p && p.name && p.birt && p.birt.date ? (resolved.get(p.__xref) || p.birt.date) : null;
+            };
+            const sibs = f.chil.map(dated).filter(Boolean).sort();
+            if (sibs.length) { full = datePlusYears(sibs[sibs.length - 1], 1); break; }
+            if (f.marr && f.marr.date) { full = datePlusYears(f.marr.date, 1); break; }
+            const pars = [f.husb, f.wife].map(dated).filter(Boolean).sort();
+            if (pars.length) { full = datePlusYears(pars[pars.length - 1], 20); break; }
         }
         if (full === null) {
             // бездатный ребёнок/супруг бездатного — заглушка (birt_d NULL), как раньше
@@ -2409,7 +2435,7 @@ function importGedcom(peerId, g) {
             persons++;
             continue;
         }
-        const u = uniqueKeyOf(peerId, ind.name, full, true);
+        const u = uniqueKeyOf(peerId, ind.name, full, true, true);
         // фиктивная ДР от супруга — всегда birt_abt 3 (как и сдвинутый дубль):
         // в шкале PDF у такой строки нет года и прожитых лет
         const uabt = 3;
