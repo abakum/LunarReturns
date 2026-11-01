@@ -2035,7 +2035,7 @@ function datePlusYears(d, years) {
 // fam — по одному на каждый FAM файла с точными xref'ами (без слипания
 // семей ребёнка); свадьбы живут на fam — точная привязка супругов;
 // бездатные импортируются, когда упомянуты в семье — с фиктивной датой
-// (супруг: дата половины; ребёнок: сиблинг/свадьба/родитель, birtD abt 3),
+// (супруг: дата половины; ребёнок: каскад сиблинг/свадьба/родитель, birtD abt 3),
 // без варианта — заглушки-персоны (birtD null); безымянные — мимо.
 // Возвращает краткий отчёт. Повторный импорт лечит любые старые данные
 export async function importGedcom(chatId, g) {
@@ -2079,6 +2079,37 @@ export async function importGedcom(chatId, g) {
         byX.set(ind.__xref, ind.__xref);
         persons++;
     }
+    // фиктивные ДР бездатных поименованных детей по fam'ам — каскадом:
+    // якорь первого (ДР самого позднего датного сиблинга +1 год, иначе
+    // свадьба +1 год, иначе ДР младшего родителя +20 лет), каждый следующий
+    // бездатный — +1 год к предыдущей присвоенной дате, а не повторно к тому
+    // же якорю (у детей с разными именами коллизии нет — без каскада все
+    // получили бы одну дату); даты берутся послеколлизионные (resolved,
+    // сдвиг дублей)
+    const kidFull = new Map(); // xref бездатного ребёнка → фиктивная полная дата
+    const kidDated = cx => {
+        const p = g.indis.find(i => i.__xref === cx);
+        return p && p.name && p.birt && p.birt.date ? (resolved.get(p.__xref) || p.birt.date) : null;
+    };
+    for (const f of g.fams) {
+        const datedSibs = f.chil.map(kidDated).filter(Boolean).sort();
+        const pars = [f.husb, f.wife].map(kidDated).filter(Boolean).sort();
+        let prev = null;
+        for (const cx of f.chil) {
+            if (kidDated(cx) !== null) continue; // датный сиблинг — только якорь
+            const p = g.indis.find(i => i.__xref === cx);
+            if (!p || !p.name || kidFull.has(cx)) continue; // безымянные — мимо; повторный FAMC — первая fam
+            if (prev === null) {
+                if (datedSibs.length) prev = datePlusYears(datedSibs[datedSibs.length - 1], 1);
+                else if (f.marr && f.marr.date) prev = datePlusYears(f.marr.date, 1);
+                else if (pars.length) prev = datePlusYears(pars[pars.length - 1], 20);
+                else continue;
+            } else {
+                prev = datePlusYears(prev, 1);
+            }
+            kidFull.set(cx, prev);
+        }
+    }
     // второй проход: бездатные супруги и дети — фиктивная полная дата,
     // birtAbt 3 (в шкале PDF нет года и прожитых лет); коллизия фиктивных
     // дат — +1 год (не близнецы); безымянные — мимо
@@ -2092,21 +2123,7 @@ export async function importGedcom(chatId, g) {
             const sp = sx && g.indis.find(i => i.__xref === sx);
             if (sp && sp.birt && sp.birt.date) { full = resolved.get(sx) || sp.birt.date; break; }
         }
-        if (full === null) for (const f of g.fams) {
-            // бездатный ребёнок: ДР последнего (самого позднего) сиблинга +1 год,
-            // иначе известная свадьба +1 год, иначе ДР младшего родителя +20 лет;
-            // даты берем послеколлизионные (resolved, сдвиг дублей)
-            if (!f.chil.includes(ind.__xref)) continue;
-            const dated = cx => {
-                const p = g.indis.find(i => i.__xref === cx);
-                return p && p.name && p.birt && p.birt.date ? (resolved.get(p.__xref) || p.birt.date) : null;
-            };
-            const sibs = f.chil.map(dated).filter(Boolean).sort();
-            if (sibs.length) { full = datePlusYears(sibs[sibs.length - 1], 1); break; }
-            if (f.marr && f.marr.date) { full = datePlusYears(f.marr.date, 1); break; }
-            const pars = [f.husb, f.wife].map(dated).filter(Boolean).sort();
-            if (pars.length) { full = datePlusYears(pars[pars.length - 1], 20); break; }
-        }
+        if (full === null) full = kidFull.get(ind.__xref) || null;
         if (full === null) {
             // бездатный без дат в семье (супруг бездатного и т.п.) —
             // заглушка (birtD NULL), как раньше

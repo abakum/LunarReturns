@@ -2461,13 +2461,6 @@ function linkKeyboard(peerId, link) {
     return JSON.stringify({ inline: true, buttons: rows });
 }
 
-// импорт разобранного гедкома = ЗАМЕНА: дерево чата очищается и заливается
-// заново (слияние больше не делаем — смешивание источников ломало базу).
-// fam — по одному на каждый FAM файла с точными xref'ами (без слипания
-// семей ребёнка); свадьбы живут на fam — точная привязка супругов;
-// бездатные импортируются, когда упомянуты в семье (супруг/ребёнок), —
-// заглушки-персоны (birt_d NULL), как свадебные половины; безымянные — мимо.
-// Возвращает краткий отчёт. Повторный импорт лечит любые старые данные
 // та же дата через N лет (29 фев → 1 мар в невисокосный год — само собой)
 function datePlusYears(d, years) {
     const dt = new Date(d + "T00:00:00Z");
@@ -2475,6 +2468,14 @@ function datePlusYears(d, years) {
     return dt.toISOString().slice(0, 10);
 }
 
+// импорт разобранного гедкома = ЗАМЕНА: дерево чата очищается и заливается
+// заново (слияние больше не делаем — смешивание источников ломало базу).
+// fam — по одному на каждый FAM файла с точными xref'ами (без слипания
+// семей ребёнка); свадьбы живут на fam — точная привязка супругов;
+// бездатные импортируются, когда упомянуты в семье — с фиктивной датой
+// (супруг: дата половины; ребёнок: каскад сиблинг/свадьба/родитель, birt_abt 3),
+// без варианта — заглушки-персоны (birt_d NULL); безымянные — мимо.
+// Возвращает краткий отчёт. Повторный импорт лечит любые старые данные
 function importGedcom(peerId, g) {
     clearChatTree(peerId);
     const byId = new Map(); // xref файла → xref в базе (совпавшие «Имя Д» — один)
@@ -2517,6 +2518,37 @@ function importGedcom(peerId, g) {
         byId.set(ind.__xref, ind.__xref);
         persons++;
     }
+    // фиктивные ДР бездатных поименованных детей по fam'ам — каскадом:
+    // якорь первого (ДР самого позднего датного сиблинга +1 год, иначе
+    // свадьба +1 год, иначе ДР младшего родителя +20 лет), каждый следующий
+    // бездатный — +1 год к предыдущей присвоенной дате, а не повторно к тому
+    // же якорю (у детей с разными именами коллизии нет — без каскада все
+    // получили бы одну дату); даты берутся послеколлизионные (resolved,
+    // сдвиг дублей)
+    const kidFull = new Map(); // xref бездатного ребёнка → фиктивная полная дата
+    const kidDated = cx => {
+        const p = g.indis.find(i => i.__xref === cx);
+        return p && p.name && p.birt && p.birt.date ? (resolved.get(p.__xref) || p.birt.date) : null;
+    };
+    for (const f of g.fams) {
+        const datedSibs = f.chil.map(kidDated).filter(Boolean).sort();
+        const pars = [f.husb, f.wife].map(kidDated).filter(Boolean).sort();
+        let prev = null;
+        for (const cx of f.chil) {
+            if (kidDated(cx) !== null) continue; // датный сиблинг — только якорь
+            const p = g.indis.find(i => i.__xref === cx);
+            if (!p || !p.name || kidFull.has(cx)) continue; // безымянные — мимо; повторный FAMC — первая fam
+            if (prev === null) {
+                if (datedSibs.length) prev = datePlusYears(datedSibs[datedSibs.length - 1], 1);
+                else if (f.marr && f.marr.date) prev = datePlusYears(f.marr.date, 1);
+                else if (pars.length) prev = datePlusYears(pars[pars.length - 1], 20);
+                else continue;
+            } else {
+                prev = datePlusYears(prev, 1);
+            }
+            kidFull.set(cx, prev);
+        }
+    }
     // второй проход: бездатные супруги и дети — фиктивная полная дата,
     // birt_abt 3 (в шкале PDF нет года и прожитых лет); коллизия фиктивных
     // дат — +1 год (не близнецы); безымянные — мимо
@@ -2530,21 +2562,7 @@ function importGedcom(peerId, g) {
             const sp = sx && g.indis.find(i => i.__xref === sx);
             if (sp && sp.birt && sp.birt.date) { full = resolved.get(sx) || sp.birt.date; break; }
         }
-        if (full === null) for (const f of g.fams) {
-            // бездатный ребёнок: ДР последнего (самого позднего) сиблинга +1 год,
-            // иначе известная свадьба +1 год, иначе ДР младшего родителя +20 лет;
-            // даты берем послеколлизионные (resolved, сдвиг дублей)
-            if (!f.chil.includes(ind.__xref)) continue;
-            const dated = cx => {
-                const p = g.indis.find(i => i.__xref === cx);
-                return p && p.name && p.birt && p.birt.date ? (resolved.get(p.__xref) || p.birt.date) : null;
-            };
-            const sibs = f.chil.map(dated).filter(Boolean).sort();
-            if (sibs.length) { full = datePlusYears(sibs[sibs.length - 1], 1); break; }
-            if (f.marr && f.marr.date) { full = datePlusYears(f.marr.date, 1); break; }
-            const pars = [f.husb, f.wife].map(dated).filter(Boolean).sort();
-            if (pars.length) { full = datePlusYears(pars[pars.length - 1], 20); break; }
-        }
+        if (full === null) full = kidFull.get(ind.__xref) || null;
         if (full === null) {
             // бездатный ребёнок/супруг бездатного — заглушка (birt_d NULL), как раньше
             qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note,birt_abt,deat_abt)
