@@ -3,7 +3,7 @@ import { db, api } from 'sdk';
 import { and, eq, or, inArray } from 'sdk/db';
 import { indi, fam, chil, edges, settings, focusView } from '../schema.js';
 import { mskToday } from './astro.js';
-import { kinLabel } from './kinship.js';
+import { kinLabel, fynny } from './kinship.js';
 import { REL_DEFS, religiousDigest } from './religion.js';
 import { jubileeText } from './text.js';
 
@@ -1084,6 +1084,10 @@ function focusKeys(pairs, key, radius) {
         const [k, u, d] = queue.pop();
         const step = (adj, nu, nd) => {
             if (nu > radius || nd > radius) return;
+            // fynny-ромб: боковая родня (u,d ≥ 1) — по числу слов цепочки
+            // (u+d−1 ≤ radius; ярлыки-цепочки — lib/kinship.js, fynny);
+            // радиус 5 — «показать всех» (прежний ромб, без лимита слов)
+            if (fynny && radius < 5 && nu && nd && nu + nd - 1 > radius) return;
             for (const x of (adj.get(k) || [])) {
                 let arr = best.get(x);
                 if (!arr) best.set(x, arr = []);
@@ -1118,6 +1122,19 @@ function focusWithSpouses(keys, spousePairs) {
     return [...set];
 }
 
+// ключи 🔔-списка при fynny: как focusWithSpouses, но доклеенный супруг
+// остаётся, только если его ярлык-цепочка влезает в радиус (супруг героя
+// «муж/жена» — всегда; «жена брата» — с 2️⃣, «жена сына сына» — с 3️⃣…);
+// экспорту (🧬/PDF) нужна полная связность — там focusWithSpouses без лимита;
+// радиус 5 — «показать всех» (без словесного лимита, как в focusKeys)
+function focusListKeys(pairs, spousePairs, key, radius, sexOf) {
+    const core = new Set(focusKeys(pairs, key, radius));
+    const keys = focusWithSpouses(core, spousePairs);
+    if (!fynny || radius >= 5) return keys;
+    return keys.filter(s => core.has(s)
+        || kinLabel(pairs, spousePairs, sexOf, key, s).split(" ").length <= radius);
+}
+
 // супруги персон чата: fam с двумя датированными родителями — пары точные
 // (по xref); интерактивные свадьбы-заглушки без персон сюда не попадают —
 // привязываются confirmPair'ом (раньше «по первому имени» и тёзки ловили
@@ -1130,9 +1147,13 @@ export async function focusSpousePairs(chatId) {
 // как в колонке чарта у героя (rangeLevel)
 export const focusLabel = rangeLevel;
 
-// глубина родни персоны key (0 = ни родителей, ни потомков) — для скрытия
-// цифр радиуса без сведений: max(глубина предков, глубина потомков), т.к.
-// радиус теперь режет вниз тем же числом поколений, что и вверх (ромб)
+// fynny-достижимость родни персоны key (0 = ни родителей, ни потомков) —
+// для доступности цифр радиуса и шапки «радиус не глубже имеющихся связей»:
+// нужный радиус узла — прямая линия max(u,d), боковая (u,d ≥ 1) — u+d−1
+// (число слов цепочки); результат min(5, max needed) с ранним выходом при 5
+// (5️⃣ = «показать всех» покрывает и «слова 6+», как троюродный u4d3).
+// Так цифры 2️⃣3️⃣ видны у «горизонтальных» героев (кузены без дедов),
+// а 5️⃣ — только когда есть родня за пределами 4 слов / глубже 4 поколений
 export function focusDepth(pairs, key) {
     const kidsOf = new Map(), parentsOf = new Map();
     for (const [p, c] of pairs) {
@@ -1141,20 +1162,39 @@ export function focusDepth(pairs, key) {
         if (!parentsOf.has(c)) parentsOf.set(c, []);
         parentsOf.get(c).push(p);
     }
-    const depth = adj => {
-        let frontier = [key], d = 0;
-        const seen = new Set([key]);
-        while (frontier.length) {
-            const next = [];
-            for (const k of frontier) for (const x of (adj.get(k) || []))
-                if (!seen.has(x)) { seen.add(x); next.push(x); }
-            if (!next.length) break;
-            frontier = next;
-            d++;
+    // обход состояний (узел, вверх, вниз) с недоминируемыми векторами —
+    // как в focusKeys; векторы с needed > 5 не хранятся (5️⃣ их покрывает),
+    // итог — max по узлам их минимального нужного радиуса
+    const best = new Map([[key, [[0, 0]]]]);
+    const dominated = (arr, u, d) => arr.some(s => s[0] <= u && s[1] <= d);
+    let five = false;
+    const queue = [[key, 0, 0]];
+    while (queue.length && !five) {
+        const [k, u, d] = queue.pop();
+        const step = (adj, nu, nd) => {
+            if (nu > 5 || nd > 5 || (nu && nd && nu + nd - 1 > 5)) return;
+            for (const x of (adj.get(k) || [])) {
+                let arr = best.get(x);
+                if (!arr) best.set(x, arr = []);
+                if (dominated(arr, nu, nd)) continue;
+                for (let i = arr.length - 1; i >= 0; i--)
+                    if (nu <= arr[i][0] && nd <= arr[i][1]) arr.splice(i, 1);
+                arr.push([nu, nd]);
+                if (nu + nd > 5) five = true; // прямая (u или d) = 5 — «показать всех»
+                queue.push([x, nu, nd]);
+            }
+        };
+        step(parentsOf, u + 1, d);
+        step(kidsOf, u, d + 1);
+    }
+    if (five) return 5;
+    let m = 0;
+    for (const arr of best.values())
+        for (const [u, d] of arr) {
+            const needed = u && d ? u + d - 1 : Math.max(u, d);
+            if (needed > m) m = needed;
         }
-        return d;
-    };
-    return Math.max(depth(parentsOf), depth(kidsOf));
+    return Math.min(m, 5);
 }
 
 // заголовок фокус-сообщения; dd — дата смерти/развода, если есть;
@@ -1874,14 +1914,17 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
     // якорь»); бездатный не в чарте (вне фрагмента) — вертикали нет
     const bornOf = new Map((await personRows(chatId)).map(r => [pkey(r), r.d]));
     const phantoms = [];
-    const marriages = [];           // свадьбы с датой: { fam: [ключ, ключ], year }
+    const marriages = [];           // свадьбы с датой: { fam: [ключ, ключ], year };
+                                    // один супруг в чарте — fam: [ключ] (зарубка)
     for (const f of await famList(chatId)) {
         const ps = f.parents.filter(p => keySet.has(p));
         const sk = famStubKey.get(f.xref) || null;
         const pair = ps.length === 2 ? ps.map(ckey)
-            : ps.length === 1 && sk ? [ckey(ps[0]), sk] : null;
+            : ps.length === 1 && sk ? [ckey(ps[0]), sk]
+            : ps.length === 1 ? [ckey(ps[0])] : null;
         if (!pair) continue;
-        // дата свадьбы — вертикаль между супругами в год свадьбы (без точек)
+        // дата свадьбы — вертикаль между супругами в год свадьбы (без точек);
+        // один супруг в чарте — зарубка на его баре (свадьба с выбывшим)
         if (f.marr && f.marr.d)
             marriages.push({ fam: pair, year: Number(f.marr.d.slice(0, 4)) });
         const yrs = [...new Set(f.children.filter(c => !keySet.has(c) && bornOf.has(c))
@@ -1893,7 +1936,7 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
 
 // тап 🧬 / «/gedcom» / «/gedcomN»: <имя>.ged всегда, <имя>.pdf (диаграмма,
 // имя из заголовка fileBaseOf); heroKey — pkey героя для колонки «Связь год»;
-// неудача — фолбэк текстовым гедкомом (sendLong)
+// неудача выкладки — только сообщение об ошибке, гедком текстом не дублируем
 // Радиусный вызов (keys — ромб родни: тап 🧬 на фокусе и /gedcomN в ответ
 // на триггер): третий файл <имя>.ged.txt — пачка того же ромба
 // (chatFlatText по keys): форма «-+=», но не только вниз — и вверх, и вниз,
@@ -1907,7 +1950,7 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
     const rm = /^(\d)\u20E3/.exec(head0);
     const base = fileBaseOf(head0);
     // третий файл (радиусные 🧬 и /gedcomN): пачка ромба — chatFlatText по keys;
-    // фолбэк текстом пачку не дублирует — она идёт только файлом
+    // она идёт только файлом (пачка <4000 — текстом правки сообщения)
     const pack = Array.isArray(keys) && keys.length ? await chatFlatText(chatId, keys) : "";
     let pdf = null, persons = 0, chartErr = null;
     try {
@@ -1942,12 +1985,11 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
         return;
     } catch (e) {
         console.error("sendDocument:", e.message);
-        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось выложить файлы — гедком текстом" });
+        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось выложить файлы: " + e.message });
     }
-    await sendLong(chatId, (head ? head + "\n" : "") + g, undefined, head0 || "Гедком-древо");
 }
 
-export { focusKeys, focusHasPair, focusWithSpouses };
+export { focusKeys, focusHasPair, focusWithSpouses, focusListKeys };
 
 // ============================== ГЕДКОМ: импорт = ЗАМЕНА ==============================
 

@@ -1015,9 +1015,13 @@ function parseTree(text) {
     return { persons, weddings, children, errors, noGraft };
 }
 
-// глубина родни персоны key (0 = ни родителей, ни потомков) — для скрытия
-// цифр радиуса без сведений: max(глубина предков, глубина потомков),
-// т.к. радиус теперь режет вниз тем же числом поколений, что и вверх.
+// fynny-достижимость родни персоны key (0 = ни родителей, ни потомков) —
+// для доступности цифр радиуса и шапки «радиус не глубже имеющихся связей»:
+// нужный радиус узла — прямая линия max(u,d), боковая (u,d ≥ 1) — u+d−1
+// (число слов цепочки); результат min(5, max needed) с ранним выходом при 5
+// (5️⃣ = «показать всех» покрывает и «слова 6+», как троюродный u4d3).
+// Так цифры 2️⃣3️⃣ видны у «горизонтальных» героев (кузены без дедов),
+// а 5️⃣ — только когда есть родня за пределами 4 слов / глубже 4 поколений.
 // В ТГ — focusDepth в lib/bot.js.
 function focusDepth(pairs, key) {
     const kidsOf = new Map(), parentsOf = new Map();
@@ -1027,20 +1031,39 @@ function focusDepth(pairs, key) {
         if (!parentsOf.has(c)) parentsOf.set(c, []);
         parentsOf.get(c).push(p);
     }
-    const depth = adj => {
-        let frontier = [key], d = 0;
-        const seen = new Set([key]);
-        while (frontier.length) {
-            const next = [];
-            for (const k of frontier) for (const x of (adj.get(k) || []))
-                if (!seen.has(x)) { seen.add(x); next.push(x); }
-            if (!next.length) break;
-            frontier = next;
-            d++;
+    // обход состояний (узел, вверх, вниз) с недоминируемыми векторами —
+    // как в focusKeys; векторы с needed > 5 не хранятся (5️⃣ их покрывает),
+    // итог — max по узлам их минимального нужного радиуса
+    const best = new Map([[key, [[0, 0]]]]);
+    const dominated = (arr, u, d) => arr.some(s => s[0] <= u && s[1] <= d);
+    let five = false;
+    const queue = [[key, 0, 0]];
+    while (queue.length && !five) {
+        const [k, u, d] = queue.pop();
+        const step = (adj, nu, nd) => {
+            if (nu > 5 || nd > 5 || (nu && nd && nu + nd - 1 > 5)) return;
+            for (const x of (adj.get(k) || [])) {
+                let arr = best.get(x);
+                if (!arr) best.set(x, arr = []);
+                if (dominated(arr, nu, nd)) continue;
+                for (let i = arr.length - 1; i >= 0; i--)
+                    if (nu <= arr[i][0] && nd <= arr[i][1]) arr.splice(i, 1);
+                arr.push([nu, nd]);
+                if (nu + nd > 5) five = true; // прямая (u или d) = 5 — «показать всех»
+                queue.push([x, nu, nd]);
+            }
+        };
+        step(parentsOf, u + 1, d);
+        step(kidsOf, u, d + 1);
+    }
+    if (five) return 5;
+    let m = 0;
+    for (const arr of best.values())
+        for (const [u, d] of arr) {
+            const needed = u && d ? u + d - 1 : Math.max(u, d);
+            if (needed > m) m = needed;
         }
-        return d;
-    };
-    return Math.max(depth(parentsOf), depth(kidsOf));
+    return Math.min(m, 5);
 }
 
 // множество родни персоны key в радиусе radius — «ромб»: узел включён, если
@@ -1064,6 +1087,9 @@ function focusKeys(pairs, key, radius) {
         const [k, u, d] = queue.pop();
         const step = (adj, nu, nd) => {
             if (nu > radius || nd > radius) return;
+            // fynny-ромб: боковая родня (u,d ≥ 1) — по числу слов цепочки
+            // (u+d−1 ≤ radius); радиус 5 — «показать всех» (прежний ромб)
+            if (fynny && radius < 5 && nu && nd && nu + nd - 1 > radius) return;
             for (const x of (adj.get(k) || [])) {
                 let arr = best.get(x);
                 if (!arr) best.set(x, arr = []);
@@ -1099,6 +1125,20 @@ function focusWithSpouses(keys, spousePairs) {
     return [...set];
 }
 
+// ключи 🔔-списка при fynny: как focusWithSpouses, но доклеенный супруг
+// остаётся, только если его ярлык-цепочка влезает в радиус (супруг героя
+// «муж/жена» — всегда; «жена брата» — с 2️⃣, «жена сына сына» — с 3️⃣…);
+// экспорту (🧬/PDF) нужна полная связность — там focusWithSpouses без лимита;
+// радиус 5 — «показать всех» (без словесного лимита, как в focusKeys).
+// Дословная копия — tgcloud/lib/bot.js.
+function focusListKeys(pairs, spousePairs, key, radius, sexOf) {
+    const core = new Set(focusKeys(pairs, key, radius));
+    const keys = focusWithSpouses(core, spousePairs);
+    if (!fynny || radius >= 5) return keys;
+    return keys.filter(s => core.has(s)
+        || kinLabel(pairs, spousePairs, sexOf, key, s).split(" ").length <= radius);
+}
+
 // kinship.js — ярлыки родства «кто цитируемому кто»: мать, сын, внучка,
 // двоюродный брат, жена внука, муж дочки… Чистая функция без зависимостей;
 // дословная копия живёт в lunarreturns.js (ВК) — менять в обоих местах
@@ -1113,11 +1153,22 @@ function focusWithSpouses(keys, spousePairs) {
 // у партнёра) и «отец жены», «племянник мужа», «отец жены внука» (кровь —
 // у партнёра, ярлык партнёра к цитируемому — по браку, не глубже двух
 // браковых шагов — иначе «муж жены мужа…» зациклится).
+//
+// fynny = 1 — ярлыки-цепочки по реальному древу: каждое слово — один реальный
+// шаг к конкретной персоне («отец отца» вместо «дедушка», «сын сестры» вместо
+// «племянник», «сын сестры отца» вместо «двоюродный брат»); никаких
+// обобщающих слов (дядя, тётя, дед, внук…). Первое слово — в именительном
+// падеже (оно про to), остальные — родительном; при неизвестном поле —
+// нейтральные «родитель/ребёнок/сиблинг». Ромб фильтра (focusKeys ниже)
+// при fynny = 1 режет боковую родню по числу слов цепочки (u+d−1 ≤ radius),
+// радиус 5 — «показать всех». Дословная копия — tgcloud/lib/kinship.js.
+
+const fynny = 1;
 
 function kinLabel(pairs, spousePairs, sexOf, from, to, depth = 0) {
     if (from === to) return "";
     const blood = kinBlood(pairs, sexOf, from, to);
-    if (blood) return blood;
+    if (blood) return fynny ? kinChain(pairs, sexOf, from, to) : blood;
     // кровь не прослеживается — супруги: «муж/жена + родство партнёра»
     // (жена внука, муж дочки…) и «родство партнёра + муж/жена» (отец жены,
     // племянник мужа…); у супруга цитируемого партнёр = from → просто
@@ -1130,7 +1181,8 @@ function kinLabel(pairs, spousePairs, sexOf, from, to, depth = 0) {
             return s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
         }
         // родство партнёра — по крови
-        const l = kinBlood(pairs, sexOf, from, partner);
+        const l = fynny ? kinChain(pairs, sexOf, from, partner)
+            : kinBlood(pairs, sexOf, from, partner);
         if (l) {
             const s = sexOf ? sexOf(to) : null;
             const who = s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
@@ -1290,6 +1342,84 @@ function kinBlood(pairs, sexOf, from, to) {
         return side(a, b, sexOf ? sexOf(to) : null, anc);
     }
     return "";
+}
+
+// fynny-цепочка: ярлык-путь по реальному древу вместо короткого слова —
+// «отец отца» (дедушка), «мать отца» (бабушка), «сын сестры» (племянник),
+// «сын сестры отца» (двоюродный брат); вызывается только для кровной родни
+// (kinBlood уже дал ярлык) — но возвращает «», если родство не нашлось.
+// Слово каждого шага — по полу реальной персоны; первое слово (про to) — в
+// именительном падеже, хвост пути от to обратно к from — в родительном.
+function kinChain(pairs, sexOf, from, to) {
+    const kidsOf = new Map(), parentsOf = new Map();
+    for (const [p, c] of pairs) {
+        if (!kidsOf.has(p)) kidsOf.set(p, []);
+        kidsOf.get(p).push(c);
+        if (!parentsOf.has(c)) parentsOf.set(c, []);
+        parentsOf.get(c).push(p);
+    }
+    // обход вширь: Map key → глубина (0 = сам start) — как в kinBlood
+    const walk = adj => {
+        return start => {
+            const m = new Map([[start, 0]]);
+            let frontier = [start];
+            for (let d = 1; ; d++) {
+                const next = [];
+                for (const k of frontier) for (const x of (adj.get(k) || []))
+                    if (!m.has(x)) { m.set(x, d); next.push(x); }
+                if (!next.length) break;
+                frontier = next;
+            }
+            return m;
+        };
+    };
+    const self = walk(parentsOf)(from), other = walk(parentsOf)(to);
+    let best = null;
+    for (const [k, a] of self) {
+        const b = other.get(k);
+        if (b === undefined) continue;
+        if (!best || a + b < best[0] + best[1] || (a + b === best[0] + best[1] && a < best[0]))
+            best = [a, b, k];
+    }
+    if (!best) return "";
+    const [a, b, k] = best;
+    const sex = x => sexOf ? sexOf(x) : null;
+    const parWord = s => s === "F" ? "мать" : s === "M" ? "отец" : "родитель";
+    const kidWord = s => s === "F" ? "дочь" : s === "M" ? "сын" : "ребёнок";
+    const sibWord = s => s === "F" ? "сестра" : s === "M" ? "брат" : "сиблинг";
+    // первое слово — в именительном, хвост — родительным (genLabel)
+    const link = words => !words.length ? "" : words.length === 1 ? words[0]
+        : words[0] + " " + genLabel(words.slice(1).join(" "));
+    // путь вверх: [A_1 … A_a] — реальные предки from, A_a = k (первый найденный)
+    const upPath = (node, depth, seen) => {
+        if (depth === a) return node === k ? [] : null;
+        for (const p of (parentsOf.get(node) || [])) {
+            if (seen.has(p)) continue;
+            const rest = upPath(p, depth + 1, new Set(seen).add(p));
+            if (rest) return [p, ...rest];
+        }
+        return null;
+    };
+    // путь вниз: [C_1 … C_b] — реальные потомки, C_b = to (первый найденный)
+    const downPath = (node, depth, seen) => {
+        if (depth === b) return node === to ? [] : null;
+        for (const c of (kidsOf.get(node) || [])) {
+            if (seen.has(c)) continue;
+            const rest = downPath(c, depth + 1, new Set(seen).add(c));
+            if (rest) return [c, ...rest];
+        }
+        return null;
+    };
+    if (!b) return link(upPath(from, 0, new Set([from])).reverse().map(p => parWord(sex(p))));
+    if (!a) return link(downPath(k, 0, new Set([k])).reverse().map(p => kidWord(sex(p))));
+    // боковая: спуск от to к перелому «брат/сестра» предка на глубине a−1,
+    // затем подъём к цитируемому: «сын сына сестры отца»
+    const ups = upPath(from, 0, new Set([from]));
+    const downs = downPath(k, 0, new Set([k])); // [C_1 … C_b], C_1 — сиблинг A_{a−1}
+    const words = downs.slice().reverse()
+        .map((p, i) => i === b - 1 ? sibWord(sex(p)) : kidWord(sex(p)));
+    for (let i = a - 2; i >= 0; i--) words.push(parWord(sex(ups[i])));
+    return link(words);
 }
 
 // родительный падеж ярлыка: «сын» → «сына», «двоюродный брат» → «двоюродного
@@ -3305,16 +3435,17 @@ function chartModel(title, rows, links, rel = null, marriages = null) {
                 }
         }
     // свадьбы: вертикаль между супругами в год свадьбы, без точек; год
-    // свадьбы — в famYears (распределение цветов семей) и в ось X; пара
-    // не в чарте (вне фрагмента/радиуса, оба без даты) — пропускается
-    const married = [];             // { fam, year, a, b } — a/b ключи супругов
+    // свадьбы — в famYears (распределение цветов семей) и в ось X; один
+    // супруг в чарте (второй вне радиуса) — зарубка на баре присутствующего
+    // (cy…cy+8, как хвост фантомной вертикали); пара не в чарте — пропускается
+    const married = [];             // { fam, year, a, b? } — b может не быть
     if (Array.isArray(marriages))
         for (const mg of marriages) {
-            const ks = mg && Array.isArray(mg.fam) && mg.fam.length === 2 ? mg.fam : null;
+            const ks = mg && Array.isArray(mg.fam) && (mg.fam.length === 1 || mg.fam.length === 2) ? mg.fam : null;
             const yr = mg ? mg.year : null;
-            if (!ks || ks[0] === ks[1] || !Number.isFinite(yr)
-                || !rowOf.has(ks[0]) || !rowOf.has(ks[1])) continue;
-            const fam = [...ks].sort().join(" и ");
+            if (!ks || (ks.length === 2 && ks[0] === ks[1]) || !Number.isFinite(yr)
+                || ks.some(k => !rowOf.has(k))) continue;
+            const fam = ks.length === 2 ? [...ks].sort().join(" и ") : ks[0];
             if (!famOf.has(fam)) { famOf.set(fam, famOf.size); famYears.set(fam, new Set()); }
             famYears.get(fam).add(yr);
             allYears.push(yr);
@@ -3464,10 +3595,15 @@ function chartModel(title, rows, links, rel = null, marriages = null) {
     }
     // свадьбы: вертикаль между супругами в год свадьбы — без точек, цвет семьи;
     // точек нет и потому, что у связей/фантомов они и так есть, а свадьба —
-    // событие пары, не персоны
+    // событие пары, не персоны. Один супруг в чарте (второй вне радиуса) —
+    // зарубка вниз от бара (cy…cy+8) — как хвост фантомной вертикали
     for (const mg of married) {
-        const p1 = rowOf.get(mg.a), p2 = rowOf.get(mg.b);
+        const p1 = rowOf.get(mg.a), p2 = mg.b != null ? rowOf.get(mg.b) : null;
         const x = xS(mg.year) + 1.5 * slotOf.get(mg.fam + "\0" + mg.year);
+        if (!p2) { // свадьба с выбывшим супругом — зарубка на баре присутствующего
+            draws.push({ k: "line", x1: x, y1: p1.cy, x2: x, y2: p1.cy + 8, stroke: famColor(mg.fam), w: 1.5 });
+            continue;
+        }
         draws.push({ k: "line", x1: x, y1: p1.cy, x2: x, y2: p2.cy, stroke: famColor(mg.fam), w: 1.5 });
     }
     return { title, W, H, KW, draws };
@@ -3732,14 +3868,17 @@ function chartFor(peerId, keys, title, heroKey = null, range = null) {
     // якорь»); бездатный не в чарте (вне фрагмента) — вертикали нет
     const bornOf = new Map(personRows(peerId).map(r => [pkey(r), r.d]));
     const phantoms = [];
-    const marriages = [];           // свадьбы с датой: { fam: [ключ, ключ], year }
+    const marriages = [];           // свадьбы с датой: { fam: [ключ, ключ], year };
+                                    // один супруг в чарте — fam: [ключ] (зарубка)
     for (const f of famList(peerId)) {
         const ps = f.parents.filter(p => keySet.has(p));
         const sk = famStubKey.get(f.xref) || null;
         const pair = ps.length === 2 ? ps.map(ckey)
-            : ps.length === 1 && sk ? [ckey(ps[0]), sk] : null;
+            : ps.length === 1 && sk ? [ckey(ps[0]), sk]
+            : ps.length === 1 ? [ckey(ps[0])] : null;
         if (!pair) continue;
-        // дата свадьбы — вертикаль между супругами в год свадьбы (без точек)
+        // дата свадьбы — вертикаль между супругами в год свадьбы (без точек);
+        // один супруг в чарте — зарубка на его баре (свадьба с выбывшим)
         if (f.marr && f.marr.d)
             marriages.push({ fam: pair, year: Number(f.marr.d.slice(0, 4)) });
         const yrs = [...new Set(f.children.filter(c => !keySet.has(c) && bornOf.has(c))
@@ -3783,7 +3922,7 @@ async function vkUploadDoc(peerId, title, content) {
 
 // тап 🧬 / «/gedcom» / «/gedcomN»: <имя>.ged всегда, <имя>.pdf (диаграмма,
 // имя из заголовка fileBaseOf); heroKey — pkey героя для колонки «Связь год»;
-// неудача — фолбэк текстовым гедкомом
+// неудача выкладки — только сообщение об ошибке, гедком текстом не дублируем
 // Радиусный вызов (keys — ромб родни: тап 🧬 на фокусе и /gedcomN в ответ
 // на триггер): третий прицеп <имя>.ged.txt — пачка того же ромба
 // (chatFlatText по keys): форма «-+=», но не только вниз — и вверх, и вниз,
@@ -3799,7 +3938,7 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
     const rm = /^(\d)\u20E3/.exec(head0);
     const base = fileBaseOf(head0);
     // третий прицеп (радиусные 🧬 и /gedcomN): пачка ромба — chatFlatText по keys;
-    // фолбэк текстом пачку не дублирует — она идёт только файлом
+    // она идёт только файлом (пачка <4000 — текстом сообщения)
     const pack = Array.isArray(keys) && keys.length ? chatFlatText(peerId, keys) : "";
     let pdf = null, persons = 0, chartErr = null;
     try {
@@ -3837,11 +3976,8 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
         return;
     } catch (e) {
         console.error("doc upload:", e.message);
-        await messagesSend(peerId, "💥 Не удалось выложить файлы — гедком текстом");
+        await messagesSend(peerId, "💥 Не удалось выложить файлы: " + e.message);
     }
-    const parts = splitText((head ? head + "\n" : "") + g);
-    for (let i = 0; i < parts.length; i++)
-        await messagesSend(peerId, parts[i], i === 0 ? msgId : 0, i === 0 ? convMsgId : 0);
 }
 
 // ============================== НАСТРОЙКИ ==============================
@@ -4446,11 +4582,15 @@ function focusSpousePairs(peerId) {
 function focusText(peerId, key, radius, bell, dd, byFull = false) {
     const pairs = linkPairs(peerId);
     const spPairs = focusSpousePairs(peerId);
-    const keys = focusWithSpouses(focusKeys(pairs, key, radius), spPairs);
+    const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
+    // fynny-ромб (супруги — по лимиту слов ярлыка) един и для списка, и для
+    // гедком-фрагмента: на r1 супруги детей для связности не нужны (черточки
+    // свадеб и точки ДР детей рисуются из fam-данных), на r2 «жена сына»
+    // (2 слова) влезает — связность сохраняется; радиус 5 — без лимита
+    const keys = focusListKeys(pairs, spPairs, key, radius, k => sexMap.get(k) ?? null);
     const items = [...personRows(peerId), ...weddingRows(peerId)];
     // 🔔-список — без примерных дат (список оповещений); гедком/дамп — как есть
     const bellItems = byFull ? items : items.filter(r => !r.abt && !r.dabt && !r.mabt);
-    const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
     // круговой порядок «от сегодня» (МСК) — ось сортировки списка; MM-DD
     const { mo, d: dToday } = mskNowParts();
     const mmdd = String(mo).padStart(2, "0") + "-" + String(dToday).padStart(2, "0");
@@ -4506,9 +4646,9 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             const key = grh[1].trim() + " " + grh[2];
             const rec = recordOf(peerId, key);
             if (rec) {
-                const keys = focusWithSpouses(
-                    focusKeys(linkPairs(peerId), key, radius),
-                    focusSpousePairs(peerId));
+                const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
+                const keys = focusListKeys(linkPairs(peerId), focusSpousePairs(peerId),
+                    key, radius, k => sexMap.get(k) ?? null);
                 await sendGedArtifacts(peerId, keys, focusHead(key, radius, rec.dd), msgId, convMsgId, key);
                 console.log("focus text:", key, "радиус", radius, "peer", peerId);
                 return;
@@ -4831,7 +4971,9 @@ async function handleEvent(o) {
         // и <имя>.ged.txt — пачка ромба («-+=» печатает только вниз, тут и
         // вверх, в пределах радиуса); правка не нужна — файлы отдельным сообщением
         if (p.c === "foc:tree") {
-            const keys = focusWithSpouses(focusKeys(linkPairs(peerId), key, radius), focusSpousePairs(peerId));
+            const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
+            const keys = focusListKeys(linkPairs(peerId), focusSpousePairs(peerId),
+                key, radius, k => sexMap.get(k) ?? null);
             await sendGedArtifacts(peerId, keys, focusHead(key, radius, rec.dd), 0, o.conversation_message_id, key,
                 o, await focusKeyboard(peerId, o.user_id, key, radius, depth));
             return;
@@ -5428,7 +5570,7 @@ main().catch(e => { console.error("fatal:", e); process.exit(1); });
 
 module.exports.__test = {
     parseTrigger, parseGedcom, gedStats, parseTree, parseTreeLine, applyTree, treeReport,
-    focusKeys, focusHasPair, focusWithSpouses, focusLabel, focusHead,
+    focusKeys, focusHasPair, focusWithSpouses, focusListKeys, focusLabel, focusHead,
     focusListText, kinLabel, focusDepth, addLink, deleteLink, pairRecords, confirmPair, linkText, linkPairs,
     personRows, weddingRows, famList, famView, focusSpousePairs, upsertPerson, deleteEventCascade,
     clearChatTree, recordOf, recordAnyOf, chartPdf, chartModel, chartFor, fileBaseOf, b64ToBytes, parseTtf,

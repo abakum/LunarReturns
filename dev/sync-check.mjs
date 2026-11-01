@@ -423,9 +423,9 @@ for (const r of [1, 2, 3, 5]) {
 // радиус 1 у Сына: предки (Отец, Мать, Чужой) + их потомки (Сын, Дочь)
 cmp('focusKeys r1 состав', [...VK.focusKeys(focusPairs, son, 1)].sort(),
     ['Сын 1980-06-06', 'Дочь 1982-07-07', 'Отец 1955-03-03', 'Мать 1956-05-05', 'Чужой 1990-09-09'].sort());
-// радиус 2: + деды и все их потомки (Тётя, Двоюродный) — всё дерево 9 персон
+// радиус 2: + деды и все их потомки, кроме кузена (u2d2 — 3 слова, с r3)
 cmp('focusKeys r2 состав', [...VK.focusKeys(focusPairs, son, 2)].sort(),
-    [...new Set(focusPairs.flat())].sort());
+    [...new Set(focusPairs.flat())].filter(k => k !== 'Двоюродный 1984-08-08').sort());
 cmp('focusHasPair оба в множестве', VK.focusHasPair('Отец+Мать', VK.focusKeys(focusPairs, son, 1)),
     TG.focusHasPair('Отец+Мать', TG.focusKeys(focusPairs, son, 1)));
 cmp('focusHasPair один вне', VK.focusHasPair('Дед+Чужая', VK.focusKeys(focusPairs, son, 2)),
@@ -498,13 +498,15 @@ const kinSpouses = [
     ['Кузина 1956-06-06', 'Муж Кузины 1955-11-11'],
 ];
 const sonKey = 'Сын 1980-06-06';
-// focusDepth: глубина предков (цифры радиуса 2–5 — по сведениям о дедах/прадедах)
+// focusDepth: fynny-достижимость (min(5, max нужного радиуса)) — у Сына
+// троюродный (u4d3, слова 6) и кузина деда (u4d2, слова 5) требуют 5️⃣;
+// у Двоюродного правнучатый (u2d4, слова 5); без боковой — вертикаль
 cmp('focusDepth глубины',
     [[kinPairs, sonKey], [kinPairs, kinKeys['Двоюродный']], [['Родитель 1930-01-01', 'Сын 1990-01-01'], 'Сын 1990-01-01']]
         .map(c => VK.focusDepth(c[0], c[1])),
     [[kinPairs, sonKey], [kinPairs, kinKeys['Двоюродный']], [['Родитель 1930-01-01', 'Сын 1990-01-01'], 'Сын 1990-01-01']]
         .map(c => TG.focusDepth(c[0], c[1])));
-if (JSON.stringify([4, 4, 1]) !== JSON.stringify([
+if (JSON.stringify([5, 5, 1]) !== JSON.stringify([
     VK.focusDepth(kinPairs, sonKey), VK.focusDepth(kinPairs, kinKeys['Двоюродный']),
     VK.focusDepth([['Родитель 1930-01-01', 'Сын 1990-01-01']], 'Сын 1990-01-01')]))
     { failed++; console.log('✗ focusDepth: неверные глубины'); }
@@ -519,23 +521,23 @@ if (digs(1, 3) !== '2\u20E33\u20E3')
 if (digs(3, 3) !== '1\u20E32\u20E3') { failed++; console.log('✗ focusMarkup: радиус 3/прадеды\n  ' + digs(3, 3)); }
 const KIN_CASES = [
     [kinKeys['Отец'], 'отец'], [kinKeys['Мать'], 'мать'],
-    [kinKeys['Дед'], 'дедушка'], [kinKeys['Бабка'], 'бабушка'],
-    [kinKeys['Тётя'], 'тётя'], [kinKeys['Двоюродный'], 'двоюродный брат'],
+    [kinKeys['Дед'], 'отец отца'], [kinKeys['Бабка'], 'мать отца'],
+    [kinKeys['Тётя'], 'сестра отца'], [kinKeys['Двоюродный'], 'сын сестры отца'],
     [kinKeys['Дочь'], 'сестра'],
-    [kinKeys['Тесть'], 'муж тёти'],    // муж тёти — не процитируемому
-    [kinKeys['Прадед'], 'прадед'],     // глубина 3 — «пра»-приставка
-    [kinKeys['Прапрадед'], 'пра2дед'], // глубина 4 — «праN» вместо «прапра…»
-    [kinKeys['Дядька'], 'двоюродный дед'],      // брат деда (a=3, b=1)
-    [kinKeys['Тётка'], 'двоюродная бабушка'],   // сестра деда (a=3, b=1)
-    [kinKeys['Брат Прадеда'], 'двоюродный прадед'], // брат прадеда (a=4, b=1)
-    [kinKeys['Кузина'], 'двоюродная сестра дедушки'],   // (a=4, b=2) — составной
-    [kinKeys['Троюродный'], 'троюродный брат отца'],    // (a=4, b=3) — составной
-    [kinKeys['Племянник'], 'племянник'],                // (a=1, b=2)
-    [kinKeys['Внучатый'], 'внучатый племянник'],        // (a=1, b=3)
-    [kinKeys['Правнучатый'], 'правнучатый племянник'],  // (a=1, b=4) — составной
-    [kinKeys['ДвПлем'], 'двоюродный племянник'],        // (a=2, b=3)
-    [kinKeys['ДвВнуч'], 'двоюродный внучатый племянник'], // (a=2, b=4) — составной
-    [kinKeys['Чужая'], 'мать двоюродного брата'],      // родня родни по крови
+    [kinKeys['Тесть'], 'муж сестры отца'],   // супруг родни — кровь цепочкой
+    [kinKeys['Прадед'], 'отец отца отца'],     // глубина 3
+    [kinKeys['Прапрадед'], 'отец отца отца отца'], // глубина 4
+    [kinKeys['Дядька'], 'брат отца отца'],      // брат деда (u3d1)
+    [kinKeys['Тётка'], 'сестра отца отца'],     // сестра деда (u3d1)
+    [kinKeys['Брат Прадеда'], 'брат отца отца отца'], // брат прадеда (u4d1)
+    [kinKeys['Кузина'], 'дочь брата отца отца отца'],   // (u4d2)
+    [kinKeys['Троюродный'], 'сын дочки брата отца отца отца'], // (u4d3)
+    [kinKeys['Племянник'], 'сын сестры'],               // (u1d2)
+    [kinKeys['Внучатый'], 'сын сына сестры'],           // (u1d3)
+    [kinKeys['Правнучатый'], 'сын сына сына сестры'],   // (u1d4)
+    [kinKeys['ДвПлем'], 'сын сына сестры отца'],        // (u2d3)
+    [kinKeys['ДвВнуч'], 'сын сына сына сестры отца'],   // (u2d4)
+    [kinKeys['Чужая'], 'мать сына сестры отца'],        // родня родни по крови
 ];
 let kinOK = true;
 for (const [to, want] of KIN_CASES) {
@@ -566,20 +568,20 @@ if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'],
 cmp('kinLabel жена внука',
     VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Сноха']),
     TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Сноха']));
-if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Сноха']) !== 'жена внука')
-    { failed++; console.log('✗ kinLabel жена внука'); }
-// супруг сиблинга деда: ярлык в родительном падеже — «жена двоюродного деда»
+if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Сноха']) !== 'жена сына сына')
+    { failed++; console.log('✗ kinLabel жена сына сына'); }
+// супруг сиблинга деда: ярлык в родительном падеже — «жена брата отца отца»
 cmp('kinLabel жена двоюродного деда',
     VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Жена Дядьки']),
     TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Жена Дядьки']));
-if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Жена Дядьки']) !== 'жена двоюродного деда')
-    { failed++; console.log('✗ kinLabel жена двоюродного деда'); }
+if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Жена Дядьки']) !== 'жена брата отца отца')
+    { failed++; console.log('✗ kinLabel жена брата отца отца'); }
 // супруг кузены предков: составной ярлык в родительном падеже
-cmp('kinLabel муж двоюродной сестры дедушки',
+cmp('kinLabel муж кузины',
     VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Муж Кузины']),
     TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Муж Кузины']));
-if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Муж Кузины']) !== 'муж двоюродной сестры дедушки')
-    { failed++; console.log('✗ kinLabel муж двоюродной сестры дедушки'); }
+if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['Муж Кузины']) !== 'муж дочки брата отца отца отца')
+    { failed++; console.log('✗ kinLabel муж дочки брата отца отца отца'); }
 
 // родство через супруга: «отец жены», «племянник мужа», «отец жены внука»
 cmp('kinLabel отец жены',
@@ -592,11 +594,26 @@ cmp('kinLabel племянник мужа',
     TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, 'Мать 1956-05-05', kinKeys['Двоюродный']));
 if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, 'Мать 1956-05-05', kinKeys['Двоюродный']) !== 'племянник мужа')
     { failed++; console.log('✗ kinLabel племянник мужа'); }
-cmp('kinLabel отец жены внука',
+cmp('kinLabel отец жены сына сына',
     VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Отец Снохи']),
     TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Отец Снохи']));
-if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Отец Снохи']) !== 'отец жены внука')
-    { failed++; console.log('✗ kinLabel отец жены внука'); }
+if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Отец Снохи']) !== 'отец жены сына сына')
+    { failed++; console.log('✗ kinLabel отец жены сына сына'); }
+
+// fynny-ромб списков: доклеенный супруг остаётся, только если его ярлык
+// влезает в радиус («жена» — всегда; «муж сестры отца» — с 3️⃣; радиус 5 —
+// «показать всех», без лимита)
+const fkeysOf = (which, r) =>
+    which.focusListKeys(kinPairs, kinSpouses, sonKey, r, k => kinSex[k] ?? null);
+for (const r of [1, 2, 3, 5]) cmp('focusListKeys радиус ' + r, fkeysOf(VK, r), fkeysOf(TG, r));
+if (!fkeysOf(VK, 1).includes(kinKeys['Сноха']) || fkeysOf(VK, 1).includes(kinKeys['Тесть']))
+    { failed++; console.log('✗ focusListKeys r1: жена героя должна остаться, муж сестры отца — нет'); }
+if (fkeysOf(VK, 2).includes(kinKeys['Тесть']))
+    { failed++; console.log('✗ focusListKeys r2: «муж сестры отца» (3 слова) не влезает'); }
+if (!fkeysOf(VK, 3).includes(kinKeys['Тесть']))
+    { failed++; console.log('✗ focusListKeys r3: «муж сестры отца» (3 слова) влезает'); }
+if (!fkeysOf(VK, 5).includes(kinKeys['Жена Дядьки']) || !fkeysOf(VK, 5).includes(kinKeys['Муж Кузины']))
+    { failed++; console.log('✗ focusListKeys r5: «показать всех» — все супруги'); }
 
 // ==================== 8. focusListText: список с датой смерти и родством ====================
 const kinItems = [
@@ -618,13 +635,13 @@ for (const r of [1, 2]) {
         VK.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null, true),
         TG.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null, true));
     if (r === 2) {
-        if (!/^Бабка 1932-02-02 2000-03-03 бабушка$/m.test(want))
+        if (!/^Бабка 1932-02-02 2000-03-03 мать отца$/m.test(want))
             { failed++; console.log('✗ focusListText: Бабка без даты смерти/ярлыка'); }
         const pairLine = (want.split('\n').find(l => l.startsWith('Отец+Мать')) || '').trim();
         if (!/^Отец\+Мать 1979-01-01 1990-01-01$/.test(pairLine))
             { failed++; console.log('✗ focusListText: пара без ярлыка\n  ' + pairLine); }
-        if (!/^Тесть 1931-12-12 муж тёти$/m.test(want))
-            { failed++; console.log('✗ focusListText: супруг тёти без «муж тёти»'); }
+        if (!/^Тесть 1931-12-12 муж сестры отца$/m.test(want))
+            { failed++; console.log('✗ focusListText: супруг тёти без «муж сестры отца»'); }
         const full = VK.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null, true);
         if (!full.startsWith('Дед 1930-01-01')) // старейший (1930) — первым
             { failed++; console.log('✗ focusListText byFull: первая строка не старейший\n  ' + full.split('\n')[0]); }
@@ -635,7 +652,7 @@ for (const r of [1, 2]) {
             VK.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null, false, '12-01'),
             TG.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null, false, '12-01'));
         const future = VK.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null, false, '12-01');
-        if (!future.startsWith('Тесть 1931-12-12 муж тёти\nДед 1930-01-01'))
+        if (!future.startsWith('Тесть 1931-12-12 муж сестры отца\nДед 1930-01-01'))
             { failed++; console.log('✗ focusListText от сегодня: не Тесть→Дед\n  ' + future.split('\n').slice(0,2).join('\n')); }
         // без отсечки — прежнее поведение (весь год)
         const all = VK.focusListText(kinItems, kset, sonKey, kinPairs, kinSpouses, k => kinSex[k] ?? null);
@@ -643,30 +660,44 @@ for (const r of [1, 2]) {
             { failed++; console.log('✗ focusListText без отсечки должен показывать весь год'); }
     }
 }
-// состав по радиусам (ромб): r1 — родители и сиблинги (племянников нет:
-// u1d2), r2 — деды, тётя, двоюродный, племянник (но не внучатый u1d3/
-// двоюродный-племя u2d3), r3 — прадеды, дядьки, кузены-линия, внучатые
+// состав по радиусам (ромб, fynny): r1 — родители и сиблинги (u+d−1 ≤ 1),
+// r2 — деды, тётя, племянник (кузены u2d2 — 3 слова, с r3), r3 — прадеды,
+// дядьки/тётьи, кузены, внучатые, r4 — ДвПлем (u2d3), Брат Прадеда (u4d1),
+// Правнучатый (u1d4); r5 — «показать всех» (прежний ромб: Кузина u4d2,
+// Троюродный u4d3, ДвВнуч u2d4)
 const kinAt = (which, r) => which.focusKeys(kinPairs, sonKey, r);
 for (const r of [1, 2, 3, 4, 5]) cmp('фокус-множество радиус ' + r, kinAt(VK, r), kinAt(TG, r));
 if (kinAt(VK, 1).includes(kinKeys['Дед'])) { failed++; console.log('✗ r1 содержит деда'); }
 if (kinAt(VK, 2).includes(kinKeys['Прадед'])) { failed++; console.log('✗ r2 содержит прадеда'); }
 if (!kinAt(VK, 2).includes(kinKeys['Дед'])) { failed++; console.log('✗ r2 без деда'); }
+if (kinAt(VK, 3).includes(kinKeys['Прапрадед'])) { failed++; console.log('✗ r3 содержит прапрадеда'); }
 if (!kinAt(VK, 3).includes(kinKeys['Прадед'])) { failed++; console.log('✗ r3 без прадеда'); }
-// ромб: вниз режется тем же радиусом, что и вверх
+if (!kinAt(VK, 4).includes(kinKeys['Прапрадед'])) { failed++; console.log('✗ r4 без прапрадеда'); }
+// ромб fynny: вниз режется числом слов цепочки, как и вбок
 if (kinAt(VK, 1).includes(kinKeys['Племянник'])) { failed++; console.log('✗ r1 содержит племянника (u1d2)'); }
 if (kinAt(VK, 2).includes(kinKeys['Внучатый'])) { failed++; console.log('✗ r2 содержит внучатого (u1d3)'); }
 if (kinAt(VK, 2).includes(kinKeys['ДвПлем'])) { failed++; console.log('✗ r2 содержит двоюродного племянника (u2d3)'); }
 if (kinAt(VK, 2).includes(kinKeys['Правнучатый'])) { failed++; console.log('✗ r2 содержит правнучатого (u1d4)'); }
 if (!kinAt(VK, 2).includes(kinKeys['Племянник'])) { failed++; console.log('✗ r2 без племянника (u1d2)'); }
-if (!kinAt(VK, 2).includes(kinKeys['Двоюродный'])) { failed++; console.log('✗ r2 без двоюродного (u2d2)'); }
+if (kinAt(VK, 2).includes(kinKeys['Двоюродный'])) { failed++; console.log('✗ r2 содержит кузена (u2d2 — 3 слова, с r3)'); }
+if (!kinAt(VK, 2).includes(kinKeys['Тётя'])) { failed++; console.log('✗ r2 без тёти (u2d1)'); }
 if (!kinAt(VK, 3).includes(kinKeys['Внучатый'])) { failed++; console.log('✗ r3 без внучатого (u1d3)'); }
-if (!kinAt(VK, 3).includes(kinKeys['ДвПлем'])) { failed++; console.log('✗ r3 без двоюродного племянника (u2d3)'); }
-if (!kinAt(VK, 3).includes(kinKeys['Дядька'])) { failed++; console.log('✗ r3 без двоюродного деда (u3d1)'); }
+if (!kinAt(VK, 3).includes(kinKeys['Двоюродный'])) { failed++; console.log('✗ r3 без кузена (u2d2)'); }
+if (!kinAt(VK, 3).includes(kinKeys['Дядька'])) { failed++; console.log('✗ r3 без брата деда (u3d1)'); }
+if (!kinAt(VK, 3).includes(kinKeys['Тётка'])) { failed++; console.log('✗ r3 без сестры деда (u3d1)'); }
+if (kinAt(VK, 3).includes(kinKeys['ДвПлем'])) { failed++; console.log('✗ r3 содержит двоюродного племянника (u2d3 — 4 слова)'); }
 if (kinAt(VK, 3).includes(kinKeys['Правнучатый'])) { failed++; console.log('✗ r3 содержит правнучатого (u1d4)'); }
 if (!kinAt(VK, 4).includes(kinKeys['Правнучатый'])) { failed++; console.log('✗ r4 без правнучатого (u1d4)'); }
-if (!kinAt(VK, 4).includes(kinKeys['Кузина'])) { failed++; console.log('✗ r4 без кузины (u4d2)'); }
-if (!kinAt(VK, 4).includes(kinKeys['Троюродный'])) { failed++; console.log('✗ r4 без троюродного (u4d3)'); }
-if (!kinAt(VK, 4).includes(kinKeys['ДвВнуч'])) { failed++; console.log('✗ r4 без двоюродного внучатого племянника (u2d4)'); }
+if (!kinAt(VK, 4).includes(kinKeys['ДвПлем'])) { failed++; console.log('✗ r4 без двоюродного племянника (u2d3)'); }
+if (!kinAt(VK, 4).includes(kinKeys['Брат Прадеда'])) { failed++; console.log('✗ r4 без брата прадеда (u4d1)'); }
+if (kinAt(VK, 4).includes(kinKeys['Кузина'])) { failed++; console.log('✗ r4 содержит кузину (u4d2 — 5 слов)'); }
+if (kinAt(VK, 4).includes(kinKeys['Троюродный'])) { failed++; console.log('✗ r4 содержит троюродного (u4d3)'); }
+if (kinAt(VK, 4).includes(kinKeys['ДвВнуч'])) { failed++; console.log('✗ r4 содержит двоюродного внучатого (u2d4)'); }
+// радиус 5 — «показать всех»: прежний ромб (u,d ≤ 5)
+if (!kinAt(VK, 5).includes(kinKeys['Кузина'])) { failed++; console.log('✗ r5 без кузины (u4d2)'); }
+if (!kinAt(VK, 5).includes(kinKeys['Троюродный'])) { failed++; console.log('✗ r5 без троюродного (u4d3)'); }
+if (!kinAt(VK, 5).includes(kinKeys['ДвВнуч'])) { failed++; console.log('✗ r5 без двоюродного внучатого (u2d4)'); }
+if (!kinAt(VK, 5).includes(kinKeys['Прапрадед'])) { failed++; console.log('✗ r5 без прапрадеда (u4d0)'); }
 if (kinAt(VK, 3).includes(kinKeys['Брат Прадеда'])) { failed++; console.log('✗ r3 содержит брата прадеда (u4)'); }
 if (!kinAt(VK, 4).includes(kinKeys['Брат Прадеда'])) { failed++; console.log('✗ r4 без брата прадеда (u4d1)'); }
 // отражённый коб: потомки есть, родителей нет — цифра радиуса всё равно видна
@@ -1136,6 +1167,23 @@ cmp('chartPdf фантомы (байты)', VK.chartPdf('f', CHART_ROWS, CHART_L
     TGC.chartPdf('f', CHART_ROWS, CHART_LINKS, FONT, PH));
 cmp('chartPdf rel+фантомы (байты)', VK.chartPdf('s', CHART_ROWS, CHART_LINKS, FONT, { ...REL, ...PH }),
     TGC.chartPdf('s', CHART_ROWS, CHART_LINKS, FONT, { ...REL, ...PH }));
+// свадьба с супругом вне чарта (второй вне радиуса): зарубка на баре
+// присутствующего — вертикаль вниз cy…cy+8, без точек (как хвост фантома)
+const MARRY1 = [{ fam: ['Елизавета Петровна 1709-12-29'], year: 1727 },
+    { fam: ['Пётр I 1672-06-09', 'Екатерина I 1684-05-04'], year: 1712 }];
+cmp('chartModel свадьба-зарубка', VK.chartModel('w', CHART_ROWS, CHART_LINKS, null, MARRY1),
+    TGC.chartModel('w', CHART_ROWS, CHART_LINKS, null, MARRY1));
+cmp('chartPdf свадьба-зарубка (байты)', VK.chartPdf('w', CHART_ROWS, CHART_LINKS, FONT, null, MARRY1),
+    TGC.chartPdf('w', CHART_ROWS, CHART_LINKS, FONT, null, MARRY1));
+{
+    const ticks = VK.chartModel('w', CHART_ROWS, CHART_LINKS, null, MARRY1)
+        .draws.filter(d => d.k === 'line' && d.y2 - d.y1 === 8 && d.x2 === d.x1);
+    if (ticks.length !== 1)
+        { failed++; console.log('✗ chart.marry1: зарубка свадьбы не одна\n  ' + JSON.stringify(ticks)); }
+    if (VK.chartModel('w', CHART_ROWS, CHART_LINKS, null, [{ fam: ['Елизавета Петровна 1709-12-29', 'Кто-то 1700-01-01'], year: 1727 }])
+        .draws.some(d => d.k === 'line' && d.y2 - d.y1 === 8))
+        { failed++; console.log('✗ chart.marry1: парная свадьба не должна давать зарубку'); }
+}
 {
     const m = VK.chartModel('s', CHART_ROWS, CHART_LINKS, REL);
     const col = m.draws.filter(d => d.k === 'text' && d.fill === '#333333' && d.anchor === 'end').map(d => d.s);

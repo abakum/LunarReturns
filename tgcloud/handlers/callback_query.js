@@ -11,7 +11,7 @@ import {
     deleteEventCascade, replaceWithGedcom, clearChatTree, deleteLink, setIndiSex, toggleAdopted,
     linkById, linkPairs, xrefOfKey, personRows, weddingRows, sendTreeBackup,
     upcomingText, mmddToday, focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText,
-    focusWithSpouses, focusSpousePairs, focusListText, focusDepth, sendGedPdf,
+    focusWithSpouses, focusListKeys, focusSpousePairs, focusListText, focusDepth, sendGedPdf,
     applyTree, branchFlatText, keyOfXref, cutAndGraft, treeReport, sendFlatPack,
 } from '../lib/bot.js';
 
@@ -147,11 +147,13 @@ export default async function (cq, ctx) {
     const sexOf = async () => (rows => k => (rows.find(r => r.n + " " + r.d === k) || {}).sex ?? null)
         (await personRows(chatId));
     // радиус не глубже имеющихся предков; [radius, ключи родни]
+    // (fynny-ромб: супруги по лимиту слов ярлыка — едины для списка и 🧬/PDF;
+    // радиус 5 — «показать всех»)
     const radiusOf = async (key, fvRadius) => {
         const depth = Math.max(1, focusDepth(await linkPairs(chatId), key));
         const r = Math.min(fvRadius, depth);
-        const keys = focusWithSpouses(focusKeys(await linkPairs(chatId), key, r),
-            await focusSpousePairs(chatId));
+        const keys = focusListKeys(await linkPairs(chatId),
+            await focusSpousePairs(chatId), key, r, await sexOf());
         return [r, keys, depth];
     };
 

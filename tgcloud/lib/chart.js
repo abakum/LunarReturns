@@ -258,17 +258,18 @@ export function chartModel(title, rows, links, rel = null, marriages = null) {
                     allYears.push(yr);
                 }
         }
-    // свадьбы: вертикаль между супругами в год свадьбы, без точек; год
-    // свадьбы — в famYears (распределение цветов семей) и в ось X; пара
-    // не в чарте (вне фрагмента/радиуса, оба без даты) — пропускается
-    const married = [];             // { fam, year, a, b } — a/b ключи супругов
+    // свадьбы: вертикаль между супругами в год свадьбы, без точек; один
+    // супруг в чарте (второй вне радиуса) — зарубка на баре присутствующего
+    // (cy…cy+8, как хвост фантомной вертикали); год свадьбы — в famYears
+    // (распределение цветов семей) и в ось X; пара не в чарте — пропускается
+    const married = [];             // { fam, year, a, b? } — b может не быть
     if (Array.isArray(marriages))
         for (const mg of marriages) {
-            const ks = mg && Array.isArray(mg.fam) && mg.fam.length === 2 ? mg.fam : null;
+            const ks = mg && Array.isArray(mg.fam) && (mg.fam.length === 1 || mg.fam.length === 2) ? mg.fam : null;
             const yr = mg ? mg.year : null;
-            if (!ks || ks[0] === ks[1] || !Number.isFinite(yr)
-                || !rowOf.has(ks[0]) || !rowOf.has(ks[1])) continue;
-            const fam = [...ks].sort().join(" и ");
+            if (!ks || (ks.length === 2 && ks[0] === ks[1]) || !Number.isFinite(yr)
+                || ks.some(k => !rowOf.has(k))) continue;
+            const fam = ks.length === 2 ? [...ks].sort().join(" и ") : ks[0];
             if (!famOf.has(fam)) { famOf.set(fam, famOf.size); famYears.set(fam, new Set()); }
             famYears.get(fam).add(yr);
             allYears.push(yr);
@@ -418,10 +419,15 @@ export function chartModel(title, rows, links, rel = null, marriages = null) {
     }
     // свадьбы: вертикаль между супругами в год свадьбы — без точек, цвет семьи;
     // точек нет и потому, что у связей/фантомов они и так есть, а свадьба —
-    // событие пары, не персоны
+    // событие пары, не персоны. Один супруг в чарте (второй вне радиуса) —
+    // зарубка вниз от бара (cy…cy+8) — как хвост фантомной вертикали
     for (const mg of married) {
-        const p1 = rowOf.get(mg.a), p2 = rowOf.get(mg.b);
+        const p1 = rowOf.get(mg.a), p2 = mg.b != null ? rowOf.get(mg.b) : null;
         const x = xS(mg.year) + 1.5 * slotOf.get(mg.fam + "\0" + mg.year);
+        if (!p2) { // свадьба с выбывшим супругом — зарубка на баре присутствующего
+            draws.push({ k: "line", x1: x, y1: p1.cy, x2: x, y2: p1.cy + 8, stroke: famColor(mg.fam), w: 1.5 });
+            continue;
+        }
         draws.push({ k: "line", x1: x, y1: p1.cy, x2: x, y2: p2.cy, stroke: famColor(mg.fam), w: 1.5 });
     }
     return { title, W, H, KW, draws };

@@ -12,11 +12,22 @@
 // у партнёра) и «отец жены», «племянник мужа», «отец жены внука» (кровь —
 // у партнёра, ярлык партнёра к цитируемому — по браку, не глубже двух
 // браковых шагов — иначе «муж жены мужа…» зациклится).
+//
+// fynny = 1 — ярлыки-цепочки по реальному древу: каждое слово — один реальный
+// шаг к конкретной персоне («отец отца» вместо «дедушка», «сын сестры» вместо
+// «племянник», «сын сестры отца» вместо «двоюродный брат»); никаких
+// обобщающих слов (дядя, тётя, дед, внук…). Первое слово — в именительном
+// падеже (оно про to), остальные — родительном; при неизвестном поле —
+// нейтральные «родитель/ребёнок/сиблинг». Ромб фильтра (focusKeys в bot.js /
+// lunarreturns.js) при fynny = 1 режет боковую родню по числу слов цепочки
+// (u+d−1 ≤ radius), радиус 5 — «показать всех».
+
+export const fynny = 1;
 
 export function kinLabel(pairs, spousePairs, sexOf, from, to, depth = 0) {
     if (from === to) return "";
     const blood = kinBlood(pairs, sexOf, from, to);
-    if (blood) return blood;
+    if (blood) return fynny ? kinChain(pairs, sexOf, from, to) : blood;
     // кровь не прослеживается — супруги: «муж/жена + родство партнёра»
     // (жена внука, муж дочки…) и «родство партнёра + муж/жена» (отец жены,
     // племянник мужа…); у супруга цитируемого партнёр = from → просто
@@ -29,7 +40,8 @@ export function kinLabel(pairs, spousePairs, sexOf, from, to, depth = 0) {
             return s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
         }
         // родство партнёра — по крови
-        const l = kinBlood(pairs, sexOf, from, partner);
+        const l = fynny ? kinChain(pairs, sexOf, from, partner)
+            : kinBlood(pairs, sexOf, from, partner);
         if (l) {
             const s = sexOf ? sexOf(to) : null;
             const who = s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
@@ -189,6 +201,84 @@ function kinBlood(pairs, sexOf, from, to) {
         return side(a, b, sexOf ? sexOf(to) : null, anc);
     }
     return "";
+}
+
+// fynny-цепочка: ярлык-путь по реальному древу вместо короткого слова —
+// «отец отца» (дедушка), «мать отца» (бабушка), «сын сестры» (племянник),
+// «сын сестры отца» (двоюродный брат); вызывается только для кровной родни
+// (kinBlood уже дал ярлык) — но возвращает «», если родство не нашлось.
+// Слово каждого шага — по полу реальной персоны; первое слово (про to) — в
+// именительном падеже, хвост пути от to обратно к from — в родительном.
+function kinChain(pairs, sexOf, from, to) {
+    const kidsOf = new Map(), parentsOf = new Map();
+    for (const [p, c] of pairs) {
+        if (!kidsOf.has(p)) kidsOf.set(p, []);
+        kidsOf.get(p).push(c);
+        if (!parentsOf.has(c)) parentsOf.set(c, []);
+        parentsOf.get(c).push(p);
+    }
+    // обход вширь: Map key → глубина (0 = сам start) — как в kinBlood
+    const walk = adj => {
+        return start => {
+            const m = new Map([[start, 0]]);
+            let frontier = [start];
+            for (let d = 1; ; d++) {
+                const next = [];
+                for (const k of frontier) for (const x of (adj.get(k) || []))
+                    if (!m.has(x)) { m.set(x, d); next.push(x); }
+                if (!next.length) break;
+                frontier = next;
+            }
+            return m;
+        };
+    };
+    const self = walk(parentsOf)(from), other = walk(parentsOf)(to);
+    let best = null;
+    for (const [k, a] of self) {
+        const b = other.get(k);
+        if (b === undefined) continue;
+        if (!best || a + b < best[0] + best[1] || (a + b === best[0] + best[1] && a < best[0]))
+            best = [a, b, k];
+    }
+    if (!best) return "";
+    const [a, b, k] = best;
+    const sex = x => sexOf ? sexOf(x) : null;
+    const parWord = s => s === "F" ? "мать" : s === "M" ? "отец" : "родитель";
+    const kidWord = s => s === "F" ? "дочь" : s === "M" ? "сын" : "ребёнок";
+    const sibWord = s => s === "F" ? "сестра" : s === "M" ? "брат" : "сиблинг";
+    // первое слово — в именительном, хвост — родительным (genLabel)
+    const link = words => !words.length ? "" : words.length === 1 ? words[0]
+        : words[0] + " " + genLabel(words.slice(1).join(" "));
+    // путь вверх: [A_1 … A_a] — реальные предки from, A_a = k (первый найденный)
+    const upPath = (node, depth, seen) => {
+        if (depth === a) return node === k ? [] : null;
+        for (const p of (parentsOf.get(node) || [])) {
+            if (seen.has(p)) continue;
+            const rest = upPath(p, depth + 1, new Set(seen).add(p));
+            if (rest) return [p, ...rest];
+        }
+        return null;
+    };
+    // путь вниз: [C_1 … C_b] — реальные потомки, C_b = to (первый найденный)
+    const downPath = (node, depth, seen) => {
+        if (depth === b) return node === to ? [] : null;
+        for (const c of (kidsOf.get(node) || [])) {
+            if (seen.has(c)) continue;
+            const rest = downPath(c, depth + 1, new Set(seen).add(c));
+            if (rest) return [c, ...rest];
+        }
+        return null;
+    };
+    if (!b) return link(upPath(from, 0, new Set([from])).reverse().map(p => parWord(sex(p))));
+    if (!a) return link(downPath(k, 0, new Set([k])).reverse().map(p => kidWord(sex(p))));
+    // боковая: спуск от to к перелому «брат/сестра» предка на глубине a−1,
+    // затем подъём к цитируемому: «сын сына сестры отца»
+    const ups = upPath(from, 0, new Set([from]));
+    const downs = downPath(k, 0, new Set([k])); // [C_1 … C_b], C_1 — сиблинг A_{a−1}
+    const words = downs.slice().reverse()
+        .map((p, i) => i === b - 1 ? sibWord(sex(p)) : kidWord(sex(p)));
+    for (let i = a - 2; i >= 0; i--) words.push(parWord(sex(ups[i])));
+    return link(words);
 }
 
 // родительный падеж ярлыка: «сын» → «сына», «двоюродный брат» → «двоюродного

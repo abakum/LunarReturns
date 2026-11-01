@@ -7,7 +7,7 @@ import {
     HELP, startMarkup, chatAdmin, getSettings, todayText, eventMarkup, sendLong,
     recordOf, replaceWithGedcom,
     linkPairs, personRows, weddingRows, sendGedPdf, focusKeys, focusHead, focusMarkup,
-    focusWithSpouses, focusSpousePairs, focusDepth, focusListText, mmddToday, upcomingText, upsertPerson, applyTree, cutAndGraft, treeReport,
+    focusWithSpouses, focusListKeys, focusSpousePairs, focusDepth, focusListText, mmddToday, upcomingText, upsertPerson, applyTree, cutAndGraft, treeReport,
     editTrigger,
     chatFlatText, flatSearch, sendFlatPack,
 } from '../lib/bot.js';
@@ -216,13 +216,15 @@ export default async function (message, ctx) {
                 // как тап: радиус не глубже имеющихся связей
                 const pairs = await linkPairs(chatId);
                 const r = Math.min(radius, Math.max(1, focusDepth(pairs, key)));
-                const keys = focusWithSpouses(focusKeys(pairs, key, r),
-                    await focusSpousePairs(chatId));
-                const items = [...await personRows(chatId), ...await weddingRows(chatId)];
                 const sexMap = new Map((await personRows(chatId))
                     .map(rw => [rw.n + " " + rw.d, rw.sex ?? null]));
+                const spPairs = await focusSpousePairs(chatId);
+                // fynny-ромб: супруги по лимиту слов ярлыка
+                const keys = focusListKeys(pairs, spPairs, key, r,
+                    k => sexMap.get(k) ?? null);
+                const items = [...await personRows(chatId), ...await weddingRows(chatId)];
                 const body = focusListText(items, keys, key, pairs,
-                    await focusSpousePairs(chatId), k => sexMap.get(k) ?? null, false, mmddToday())
+                    spPairs, k => sexMap.get(k) ?? null, false, mmddToday())
                     || "(в радиусе нет событий)";
                 await api.sendMessage({ chat_id: chatId,
                     text: focusHead(key, r, rec.dd) + "\n" + body });
@@ -254,8 +256,11 @@ export default async function (message, ctx) {
             const rec = await recordOf(chatId, key);
             if (rec) {
                 const pairs = await linkPairs(chatId);
-                const keys = focusWithSpouses(
-                    focusKeys(pairs, key, radius), await focusSpousePairs(chatId));
+                const spPairs = await focusSpousePairs(chatId);
+                const sexMap = new Map((await personRows(chatId))
+                    .map(rw => [rw.n + " " + rw.d, rw.sex ?? null]));
+                const keys = focusListKeys(pairs, spPairs, key, radius,
+                    k => sexMap.get(k) ?? null);
                 await sendGedPdf(chatId, keys, focusHead(key, radius, rec.dd), key, message.message_id);
                 console.log("focus text:", key, "радиус", radius, "chat", chatId);
                 return;
