@@ -2741,7 +2741,9 @@ function gedcomText(peerId, keys) {
             // фрагмент — датированные персоны из keys; заглушки-половины/дети — как есть
         } else if (!pkeys.length && !stubs.length && !kstubs.length && !children.length) continue;
         const s = pkeys.slice().sort();
-        const m = fams.find(x => x.s.length === s.length && x.s.every((p, i) => p === s[i]));
+        // семьи без известных половин (pkeys пуст, обе половины — заглушки) не
+        // мержатся: иначе все s=[] склеиваются в одну FAM с сотнями FAMS у заглушек
+        const m = s.length ? fams.find(x => x.s.length === s.length && x.s.every((p, i) => p === s[i])) : null;
         if (m) {
             m.fx.push(f.xref);
             for (const c of children) if (!m.children.includes(c)) m.children.push(c);
@@ -2882,7 +2884,9 @@ function flatRows(peerId) {
         F.marr = f.marr_d ? { d: f.marr_d, ...(f.marr_abt ? { abt: f.marr_abt } : {}), ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null;
         F.div = f.div_d ? { d: f.div_d, ...(f.div_abt ? { abt: f.div_abt } : {}), ...(f.div_plac ? { plac: f.div_plac } : {}) } : null;
         const s = [F.hKey, F.wKey].filter(k => k != null).sort();
-        const m = fams.find(x => x.s.length === s.length && x.s.every((k, i) => k === s[i]));
+        // обе половины мимо indi (s=[]) — не мержим: иначе такие семьи
+        // склеиваются в одну и собирают чужих детей
+        const m = s.length ? fams.find(x => x.s.length === s.length && x.s.every((k, i) => k === s[i])) : null;
         if (m) {
             for (const c of F.children) if (!m.children.includes(c)) m.children.push(c);
             if (m.hKey == null && F.hKey != null) m.hKey = F.hKey;
