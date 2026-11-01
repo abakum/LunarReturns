@@ -1169,7 +1169,7 @@ const trip = h => [1, 3, 5].map(i => Math.round(parseInt(h.slice(i, i + 2), 16) 
 const famSet = new Set([...twin.matchAll(/1\.5 w ([\d.]+ [\d.]+ [\d.]+) RG/g)].map(m2 => m2[1]));
 if (famSet.size !== 2)
     { failed++; console.log('✗ chartPdf: близнецы-год не различён — вертикали ' + [...famSet].join(' | ')); }
-for (const t of famSet) if (!['#e6194b', '#f58231', '#bfa100', '#3cb44b', '#1f77b4', '#f032e6', '#911eb4'].map(trip).includes(t))
+for (const t of famSet) if (!['#911eb4', '#e0cc33', '#e6194b', '#ff9d45', '#3584cc', '#3cb44b', '#f032e6'].map(trip).includes(t))
     { failed++; console.log('✗ chartPdf: цвет связи вне палитры: ' + t); }
 // ассерты: 3 родителя, родитель моложе ребёнка, неизвестное имя (точный дубль
 // строки больше не бросок — он проверяется позитивно в разделе 3в)
