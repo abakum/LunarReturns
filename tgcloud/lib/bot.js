@@ -528,15 +528,14 @@ async function rekeyPerson(chatId, oldKey, newKey) {
 // точечная правка триггера: якорь-цитата — персона; rec заменяет запись
 // ПОЛНОСТЬЮ (не заданные поля стираются), пол не трогается, ветвь и связи
 // целы (ключи переименовываются). null — якорь не персона (правки нет);
-// { error } — новое имя+дата заняты, запись не менялась
+// новый ключ занят — не отказ, а суффикс «~xref» правимой персоны
 // (ВК-копия: lunarreturns.js, editTrigger)
 export async function editTrigger(chatId, anchorKey, rec) {
     const xref = await xrefOfKey(chatId, anchorKey);
     if (!xref) return null;
-    const newKey = rec.n + " " + rec.d;
-    if (newKey !== anchorKey
+    if (rec.n + " " + rec.d !== anchorKey
         && (await indiRows(chatId)).some(r => r.xref !== xref && r.name === rec.n && r.birtD === rec.d))
-        return { error: "«" + newKey + "» уже есть — правка отменена" };
+        rec.n = rec.n.replace(/ ~\S+$/, "") + " ~" + xref;
     return { rec: await setPersonByXref(chatId, xref, rec, true) };
 }
 
@@ -1306,11 +1305,11 @@ function famsByGenerations(fams, halvesOf, kidsOf) {
 export async function gedcomText(chatId, keys) {
     const MON = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
     const gdate = d => { const [y, mo, dd] = d.split("-").map(Number); return dd + " " + MON[mo - 1] + " " + y; };
-    // хвост-метка заглушки «Имя @xref@» живёт в БД для уникальности ключей
-    // печатей (пачки/древо), но в гедкоме избыточен — xref и так в идентикаторе
-    // INDI @…@; в NAME метку снимаем (реимпорт восстановит её из файлового
-    // xref — круглый trip остаётся идемпотентным)
-    const cleanName = n => n.replace(/ @[^@]*@$/, "");
+    // хвост-метка заглушки «Имя ~xref» живёт в БД для уникальности ключей
+    // печатей (пачки/древо), но в гедкоме избыточен — xref и так в
+    // идентикаторе INDI @…@; в NAME метку снимаем (реимпорт восстановит её
+    // из файлового xref — круглый trip остаётся идемпотентным)
+    const cleanName = n => n.replace(/ ~\S+$/, "");
     // примерная дата: год-only (abt 1) — «ГГГГ», месяц-only (abt 2) — «JUN 1987»,
     // примерный день (abt 3) — «ABT <гедком>»
     const gdateAbt = (d, abt) => abt === 1 ? d.slice(0, 4)
@@ -1382,7 +1381,7 @@ export async function gedcomText(chatId, keys) {
     for (let i = 0; i < fams.length; i++) fams[i] = famsOrd[i];
     // заглушки-INDI и FAM печатаются собственными xref'ами БД (уникальны
     // по построению): round-trip .ged → .ged сохраняет xref'ы, а значит
-    // и метки «@xref@» в именах заглушек
+    // и метки «~xref» в именах заглушек
     const stubId = new Map(), stubInfo = new Map();
     const addStub = st => {
         if (!stubId.has(st.xref)) { stubId.set(st.xref, st.xref); stubInfo.set(st.xref, st); }
@@ -2001,26 +2000,23 @@ export { focusKeys, focusHasPair, focusWithSpouses, focusListKeys };
 
 // импорт разобранного гедкома = ЗАМЕНА: дерево чата очищается и заливается
 // заново (слияние больше не делаем — смешивание источников ломало базу).
-// уникальный ключ «Имя Д»: занят — примерная дата (approx) сдвигается на день
-// («ГГГГ-ММ-01»+1 → «1964-01-02»; арифметика Date UTC); точная — «~»-хвост
-// к имени («Иван 1954~» → новый ключ «Иван~ 1954»). Сдвинутая примерная дата
-// получает abt 3 (флаг примерности полного дня): иначе «Имя 1234» (abt 1,
-// хранится «1234-01-01») после сдвига дубля на «1234-01-02» печаталось бы
-// по-прежнему «1234» — сдвинутый день терялся бы (в т.ч. в выгрузке гедкома)
+// уникальный ключ «Имя Д»: занят — дубли различаются суффиксом «~xref»
+// («Иван 1954-05-10 ~I7»): дата не искажается, первая запись остаётся без
+// суффикса; xref правимой персоны уникален в чате, коллизий после
+// дописывания нет. Для фиктивных дат (yearly) — прежний сдвиг +1 год
 // (ВК-копия: lunarreturns.js, uniqueKeyOf)
-export async function uniqueKeyOf(chatId, name, birtD, approx, yearly) {
+export async function uniqueKeyOf(chatId, name, birtD, approx, yearly, xref) {
     while (true) {
         const same = (await indiRows(chatId)).find(r => r.name === name && r.birtD === birtD);
         if (!same) return { name, birtD };
-        if (approx) {
+        if (yearly) {
+            // фиктивные даты (второй проход): не близнецы — разводим по годам
             const dt = new Date(birtD + "T00:00:00Z");
-            // год — для фиктивных дат (второй проход: они не означают близнецов,
-            // два бездатных ребёнка/супруга одной даты разводим по годам);
-            // день — для коллизий настоящих дат (сдвиг дубля, abt 3)
-            if (yearly) dt.setUTCFullYear(dt.getUTCFullYear() + 1);
-            else dt.setUTCDate(dt.getUTCDate() + 1);
+            dt.setUTCFullYear(dt.getUTCFullYear() + 1);
             birtD = dt.toISOString().slice(0, 10);
-        } else name += "~";
+        } else name = name.replace(/ ~\S+$/, "") + " ~" + xref;
+        // суффикс всегда свободен: xref персоны уникален в чате (в импорте —
+        // файловый, дубль xref парсер схлопывает Map'ом; в правке — её же)
     }
 }
 
@@ -2059,10 +2055,9 @@ export async function importGedcom(chatId, g) {
     for (const ind of g.indis) {
         if (!ind.name || !(ind.birt && ind.birt.date)) continue;
         const approx = !!ind.birt.abt;
-        const u = await uniqueKeyOf(chatId, ind.name, ind.birt.date, approx);
-        // сдвинутый дубль — флаг примерности 3 (полный день с «~»): в базе
-        // хранится тот же флаг, что печатается в отчёте ниже
-        const uabt = u.birtD === ind.birt.date ? (ind.birt.abt || 0) : 3;
+        const u = await uniqueKeyOf(chatId, ind.name, ind.birt.date, approx, false, ind.__xref);
+        // дубль не сдвигается — abt исходный (дата сохранена, суффикс «~xref»)
+        const uabt = ind.birt.abt || 0;
         resolved.set(ind.__xref, u.birtD);
         if (u.name !== ind.name || u.birtD !== ind.birt.date)
             dups.push({ from: ind.name + " " + approxOut(ind.birt.date, ind.birt.abt),
@@ -2079,7 +2074,7 @@ export async function importGedcom(chatId, g) {
             plac: ind.birt && ind.birt.plac ? ind.birt.plac : null,
             deatPlac: ind.deat && ind.deat.plac ? ind.deat.plac : null,
             note: ind.note ?? null,
-            birtAbt: uabt, // дубль со сдвинутой датой — abt 3 (иначе печать прячет сдвиг)
+            birtAbt: uabt, // дубль — суффикс «~xref», дата и abt исходные
             deatAbt: (ind.deat && ind.deat.abt) || 0,
         }).run();
         byX.set(ind.__xref, ind.__xref);
@@ -2087,7 +2082,7 @@ export async function importGedcom(chatId, g) {
     }
     // единый каскад фиктивных дат до фиксированной точки — полная карта дат
     // (xref → фиктивная полная дата): датированные в файле — послеколлизионные
-    // (resolved, сдвиг дублей), бездатные поимённые в famRefs — вычисленные;
+    // (resolved), бездатные поимённые в famRefs — вычисленные;
     // два правила: у детей — прежний каскад якоря (датный сиблинг +1, свадьба
     // +1, максимум +1 среди датных — в т.ч. фиктивных — детей других семей
     // общего родителя, датный — в т.ч. уже фиктивный — родитель +20),
@@ -2162,13 +2157,13 @@ export async function importGedcom(chatId, g) {
         if (!famRefs.has(ind.__xref)) continue;
         const full = fullOf.get(ind.__xref) || null;
         if (full === null) {
-            // имя заглушки — всегда «Имя @xref@»: уникальный ключ «Имя @xref@»
+            // имя заглушки — всегда «Имя ~xref»: уникальный ключ «Имя ~xref»
             // + null у всех заглушек, тёзки различимы, метка единообразна
             // в гедкоме и пачках. Метка снимается, если уже есть (round-trip:
             // повторный .ged-импорт не должен удваивать суффикс); xref —
             // стабильная идентичность round-trip'а
-            const base = ind.name.replace(/ @[^@]*@$/, "");
-            const sname = base + " @" + ind.__xref + "@";
+            const base = ind.name.replace(/ ~\S+$/, "");
+            const sname = base + " ~" + ind.__xref;
             await db.insert(indi).values({
                 chatId, xref: ind.__xref, name: sname, birtD: null,
                 birtH: null, birtM: null, srcH: null, srcM: null,
@@ -2185,7 +2180,7 @@ export async function importGedcom(chatId, g) {
             persons++;
             continue;
         }
-        const u = await uniqueKeyOf(chatId, ind.name, full, true, true);
+        const u = await uniqueKeyOf(chatId, ind.name, full, true, true, ind.__xref);
         // фиктивная ДР от супруга — всегда birtAbt 3 (как и сдвинутый дубль):
         // в шкале PDF у такой строки нет года и прожитых лет
         const uabt = 3;

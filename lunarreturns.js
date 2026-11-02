@@ -1931,16 +1931,15 @@ function rekeyPerson(peerId, oldKey, newKey) {
 // точечная правка триггера: якорь-цитата — персона; rec заменяет запись
 // ПОЛНОСТЬЮ (не заданные поля стираются), пол не трогается, ветвь и связи
 // целы (ключи переименовываются). null — якорь не персона (правки нет);
-// { error } — новое имя+дата заняты, запись не менялась
+// новый ключ занят — не отказ, а суффикс «~xref» правимой персоны
 // (ТГ-копия: tgcloud/lib/bot.js, editTrigger)
 function editTrigger(peerId, anchorKey, rec) {
     const xref = xrefOfKey(peerId, anchorKey);
     if (!xref) return null;
-    const newKey = rec.n + " " + rec.d;
-    if (newKey !== anchorKey
+    if (rec.n + " " + rec.d !== anchorKey
         && q1("SELECT xref FROM indi WHERE chat=? AND name=? AND birt_d IS NOT NULL AND birt_d=? AND xref<>? LIMIT 1",
             peerId, rec.n, rec.d, xref))
-        return { error: "«" + newKey + "» уже есть — правка отменена" };
+        rec.n = rec.n.replace(/ ~\S+$/, "") + " ~" + xref;
     return { rec: setPersonByXref(peerId, xref, rec, true) };
 }
 
@@ -2119,26 +2118,23 @@ function treeReport(rep) {
     return body;
 }
 
-// уникальный ключ «Имя Д»: занят — примерная дата (approx) сдвигается на день
-// («ГГГГ-ММ-01»+1 → «1964-01-02»; арифметика Date UTC); точная — «~»-хвост
-// к имени («Иван 1954~» → новый ключ «Иван~ 1954»). Сдвинутая примерная дата
-// получает abt 3 (флаг примерности полного дня): иначе «Имя 1234» (abt 1,
-// хранится «1234-01-01») после сдвига дубля на «1234-01-02» печаталось бы
-// по-прежнему «1234» — сдвинутый день терялся бы (в т.ч. в выгрузке гедкома)
+// уникальный ключ «Имя Д»: занят — дубли различаются суффиксом «~xref»
+// («Иван 1954-05-10 ~I7»): дата не искажается, первая запись остаётся без
+// суффикса; xref правимой персоны уникален в чате, коллизий после
+// дописывания нет. Для фиктивных дат (yearly) — прежний сдвиг +1 год
 // (ТГ-копия: tgcloud/lib/bot.js, uniqueKeyOf)
-function uniqueKeyOf(peerId, name, birtD, approx, yearly) {
+function uniqueKeyOf(peerId, name, birtD, approx, yearly, xref) {
     while (true) {
         const same = q1("SELECT xref FROM indi WHERE chat=? AND name=? AND birt_d=?", peerId, name, birtD);
         if (!same) return { name, birtD };
-        if (approx) {
+        if (yearly) {
+            // фиктивные даты (второй проход): не близнецы — разводим по годам
             const dt = new Date(birtD + "T00:00:00Z");
-            // год — для фиктивных дат (второй проход: они не означают близнецов,
-            // два бездатных ребёнка/супруга одной даты разводим по годам);
-            // день — для коллизий настоящих дат (сдвиг дубля, abt 3)
-            if (yearly) dt.setUTCFullYear(dt.getUTCFullYear() + 1);
-            else dt.setUTCDate(dt.getUTCDate() + 1);
+            dt.setUTCFullYear(dt.getUTCFullYear() + 1);
             birtD = dt.toISOString().slice(0, 10);
-        } else name += "~";
+        } else name = name.replace(/ ~\S+$/, "") + " ~" + xref;
+        // суффикс всегда свободен: xref персоны уникален в чате (в импорте —
+        // файловый, дубль xref парсер схлопывает Map'ом; в правке — её же)
     }
 }
 
@@ -2499,10 +2495,9 @@ function importGedcom(peerId, g) {
     for (const ind of g.indis) {
         if (!ind.name || !(ind.birt && ind.birt.date)) continue;
         const approx = !!ind.birt.abt;
-        const u = uniqueKeyOf(peerId, ind.name, ind.birt.date, approx);
-        // сдвинутый дубль — флаг примерности 3 (полный день с «~»): в базе
-        // хранится тот же флаг, что печатается в отчёте ниже
-        const uabt = u.birtD === ind.birt.date ? (ind.birt.abt || 0) : 3;
+        const u = uniqueKeyOf(peerId, ind.name, ind.birt.date, approx, false, ind.__xref);
+        // дубль не сдвигается — abt исходный (дата сохранена, суффикс «~xref»)
+        const uabt = ind.birt.abt || 0;
         resolved.set(ind.__xref, u.birtD);
         if (u.name !== ind.name || u.birtD !== ind.birt.date)
             dups.push({ from: ind.name + " " + approxOut(ind.birt.date, ind.birt.abt),
@@ -2521,14 +2516,14 @@ function importGedcom(peerId, g) {
             ind.birt && ind.birt.plac ? ind.birt.plac : null,
             ind.deat && ind.deat.plac ? ind.deat.plac : null,
             ind.note ?? null,
-            uabt, // дубль со сдвинутой датой — abt 3 (иначе печать прячет сдвиг)
+            uabt, // дубль — суффикс «~xref», дата и abt исходные
             (ind.deat && ind.deat.abt) || 0);
         byId.set(ind.__xref, ind.__xref);
         persons++;
     }
     // единый каскад фиктивных дат до фиксированной точки — полная карта дат
     // (xref → фиктивная полная дата): датированные в файле — послеколлизионные
-    // (resolved, сдвиг дублей), бездатные поимённые в famRefs — вычисленные;
+    // (resolved), бездатные поимённые в famRefs — вычисленные;
     // два правила: у детей — прежний каскад якоря (датный сиблинг +1, свадьба
     // +1, максимум +1 среди датных — в т.ч. фиктивных — детей других семей
     // общего родителя, датный — в т.ч. уже фиктивный — родитель +20),
@@ -2603,13 +2598,13 @@ function importGedcom(peerId, g) {
         if (!famRefs.has(ind.__xref)) continue;
         const full = fullOf.get(ind.__xref) || null;
         if (full === null) {
-            // имя заглушки — всегда «Имя @xref@»: уникальный ключ «Имя @xref@»
+            // имя заглушки — всегда «Имя ~xref»: уникальный ключ «Имя ~xref»
             // + null у всех заглушек, тёзки различимы, метка единообразна
             // в гедкоме и пачках. Метка снимается, если уже есть (round-trip:
             // повторный .ged-импорт не должен удваивать суффикс); xref —
             // стабильная идентичность round-trip'а
-            const base = ind.name.replace(/ @[^@]*@$/, "");
-            const sname = base + " @" + ind.__xref + "@";
+            const base = ind.name.replace(/ ~\S+$/, "");
+            const sname = base + " ~" + ind.__xref;
             qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note,birt_abt,deat_abt)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
                 peerId, ind.__xref, sname, null,
@@ -2628,7 +2623,7 @@ function importGedcom(peerId, g) {
             persons++;
             continue;
         }
-        const u = uniqueKeyOf(peerId, ind.name, full, true, true);
+        const u = uniqueKeyOf(peerId, ind.name, full, true, true, ind.__xref);
         // фиктивная ДР от супруга — всегда birt_abt 3 (как и сдвинутый дубль):
         // в шкале PDF у такой строки нет года и прожитых лет
         const uabt = 3;
@@ -2722,11 +2717,11 @@ function famsByGenerations(fams, halvesOf, kidsOf) {
 function gedcomText(peerId, keys) {
     const MON = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
     const gdate = d => { const [y, mo, dd] = d.split("-").map(Number); return dd + " " + MON[mo - 1] + " " + y; };
-    // хвост-метка заглушки «Имя @xref@» живёт в БД для уникальности ключей
-    // печатей (пачки/древо), но в гедкоме избыточен — xref и так в идентикаторе
-    // INDI @…@; в NAME метку снимаем (реимпорт восстановит её из файлового
-    // xref — круглый trip остаётся идемпотентным)
-    const cleanName = n => n.replace(/ @[^@]*@$/, "");
+    // хвост-метка заглушки «Имя ~xref» живёт в БД для уникальности ключей
+    // печатей (пачки/древо), но в гедкоме избыточен — xref и так в
+    // идентикаторе INDI @…@; в NAME метку снимаем (реимпорт восстановит её
+    // из файлового xref — круглый trip остаётся идемпотентным)
+    const cleanName = n => n.replace(/ ~\S+$/, "");
     const hasKeys = Array.isArray(keys) && keys.length > 0;
     const persons = personRows(peerId).filter(r => !hasKeys || keys.includes(pkey(r)));
     const idOf = new Map(persons.map(r => [r.xref, r.xref]));
@@ -2799,7 +2794,7 @@ function gedcomText(peerId, keys) {
     for (let i = 0; i < fams.length; i++) fams[i] = famsOrd[i];
     // заглушки-INDI и FAM печатаются собственными xref'ами БД (уникальны
     // по построению): round-trip .ged → .ged сохраняет xref'ы, а значит
-    // и метки «@xref@» в именах заглушек. HUSB/WIFE по полу (без — HUSB)
+    // и метки «~xref» в именах заглушек. HUSB/WIFE по полу (без — HUSB)
     const stubId = new Map(), stubInfo = new Map();
     const addStub = st => {
         if (!stubId.has(st.xref)) { stubId.set(st.xref, st.xref); stubInfo.set(st.xref, st); }
@@ -4923,8 +4918,17 @@ async function sendTreeBackup(peerId) {
 async function replaceWithGedcom(peerId, g, backup) {
     if (backup && !(await sendTreeBackup(peerId)))
         return { ok: false, head: "💥 Не удалось выложить резерв — замена отменена, прежнее дерево цело" };
-    const r = importGedcom(peerId, g);
-    return { ok: true, head: treeReport(r) };
+    // одна транзакция: без неё каждый INSERT — свой коммит на диск, большое
+    // древо (тысячи персон) пишется минутами
+    sq().exec("BEGIN");
+    try {
+        const r = importGedcom(peerId, g);
+        sq().exec("COMMIT");
+        return { ok: true, head: treeReport(r) };
+    } catch (e) {
+        sq().exec("ROLLBACK");
+        throw e;
+    }
 }
 
 // payload — JSON-объект (после перехода на POST ВК отдаёт его объектом)
@@ -5012,7 +5016,7 @@ async function editOriginDoc(o, name, content, kb) {
             peer_id: o.peer_id, conversation_message_id: o.conversation_message_id,
             attachment: att, keyboard: kb
         });
-        console.log("editOriginDoc: вложение", att, "в сообщение д№" + o.conversation_message_id, "peer", o.peer_id);
+        console.log("editOriginDoc: вложение", att, "в сообщение д~" + o.conversation_message_id, "peer", o.peer_id);
     } catch (e) {
         console.error("editOriginDoc:", e.message, "— отношу файлом");
         const ext = /\.ged\.txt$/.test(name) ? ".ged.txt" : (/\.txt$/.test(name) ? ".txt" : "");
@@ -5153,32 +5157,34 @@ async function handleEvent(o) {
             return;
         }
         gedPending.delete(peerId);
+        // тост сразу: event_id у ВК живёт секунды, а замена большого древа
+        // идёт дольше — поздний answerEvent ВК отвергает (100 invalid
+        // event_id), и «вращение» висит на кнопке до конца работы
+        await answerEvent(o.event_id || o.id, o.user_id, peerId,
+            payload === "ged:ign" ? "не добавлено" : "идёт замена древа…");
         // .ged.txt-пачка: ЗАМЕНА дерева чата (с резервом — прежнее дерево файлом)
         if (/\.ged\.txt$/i.test(pend.name)) {
             if (payload === "ged:bak" && !(await sendTreeBackup(peerId))) {
-                await answerEvent(o.event_id || o.id, o.user_id, peerId, "не удалось выложить резерв");
+                await editOrigin(o, "💥 Не удалось выложить резерв — замена отменена, прежнее дерево цело",
+                    JSON.stringify({ inline: true, buttons: [] }));
                 return;
             }
             clearChatTree(peerId);
             const rep = applyTree(peerId, parseTree(pend.text), null);
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "древо заменено");
             await editOrigin(o, treeReport(rep), JSON.stringify({ inline: true, buttons: [] }));
             console.log("txt replace:", rep.persons, "персон,", rep.links, "детей, peer", peerId);
             return;
         }
         if (payload === "ged:ign") {
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "не добавлено");
             await editOrigin(o, "Файл не добавлен: " + pend.name, JSON.stringify({ inline: true, buttons: [] }));
             return;
         }
         const g = parseGedcom(pend.text);
         if (!g) {
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "не разобрать");
             await editOrigin(o, "Файл не добавлен: " + pend.name + " (ждём GEDCOM в UTF-8)", JSON.stringify({ inline: true, buttons: [] }));
             return;
         }
         const r = await replaceWithGedcom(peerId, g, payload === "ged:bak");
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, r.ok ? "древо добавлено" : "замена отменена");
         await editOrigin(o, r.head, JSON.stringify({ inline: true, buttons: [] }));
         console.log("ged replace:", r.head, "peer", peerId);
         return;

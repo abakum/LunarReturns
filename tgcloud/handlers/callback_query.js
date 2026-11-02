@@ -404,24 +404,27 @@ export default async function (cq, ctx) {
             return;
         }
         await db.delete(gedDrops).where(eq(gedDrops.chatId, chatId)).run();
+        // ответ сразу: callback_query короткоживущий, замена большого древа
+        // идёт дольше — поздний answer теряется, «вращение» висит на кнопке
+        await answer(data === "ged:ign" ? "не добавлено" : "идёт замена древа…");
         if (data === "ged:ign") {
             await editText("Файл не добавлен: " + row.fileName, undefined);
-            await answer("не добавлено");
             return;
         }
         // .ged.txt-пачка: ЗАМЕНА дерева чата (с резервом сначала файлом)
         if (/\.ged\.txt$/i.test(row.fileName)) {
-            if (data === "ged:bak") await sendTreeBackup(chatId);
+            if (data === "ged:bak" && !(await sendTreeBackup(chatId))) {
+                await editText("💥 Не удалось выложить резерв — замена отменена, прежнее дерево цело", undefined);
+                return;
+            }
             await clearChatTree(chatId);
             const rep = await applyTree(chatId, parseTree(row.content), null);
             await editText(treeReport(rep), undefined);
-            await answer("древо заменено");
             console.log("txt replace:", rep.persons, "персон,", rep.links, "детей, chat", chatId);
             return;
         }
         const r = await replaceWithGedcom(chatId, parseGedcom(row.content), data === "ged:bak");
         await editText(r.head, undefined);
-        await answer(r.ok ? "✅ древо добавлено" : "💥 замена отменена");
         console.log("ged replace:", data, "chat", chatId);
         return;
     }

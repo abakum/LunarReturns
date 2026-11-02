@@ -298,11 +298,16 @@ cmp('editTrigger полная замена personRows', VK.personRows(TREE_CH), 
 const hero2 = VK.personRows(TREE_CH).find(r => r.n === 'Фёдор Алексеевич' && r.d === '1661-06-09');
 if (!hero2 || hero2.h !== undefined || hero2.note !== undefined || hero2.sex !== 'M')
     { failed++; console.log('✗ editTrigger: полная замена не стёрла время/примечание\n  ' + JSON.stringify(hero2)); }
-// коллизия: правка на существующее имя+дату отклоняется, древо не меняется
+// коллизия: правка на существующее имя+дату — суффикс «~xref» правимой
+// персоны (не отказ), дата применяется, ключи связей переименовываются
 const vkColl = VK.editTrigger(TREE_CH, 'Фёдор Алексеевич 1661-06-09', { n: 'Агафья Анна', d: '1663-01-01' });
 const tgColl = await TG.editTrigger(TREE_CH, 'Фёдор Алексеевич 1661-06-09', { n: 'Агафья Анна', d: '1663-01-01' });
 cmp('editTrigger коллизия', vkColl, tgColl);
-if (!vkColl || !vkColl.error) { failed++; console.log('✗ editTrigger: коллизия не отклонена'); }
+cmp('editTrigger коллизия personRows', VK.personRows(TREE_CH), await TG.personRows(TREE_CH));
+if (!vkColl || !vkColl.rec || !/^Агафья Анна ~\S+$/.test(vkColl.rec.n) || vkColl.rec.d !== '1663-01-01')
+    { failed++; console.log('✗ editTrigger: коллизия не разрулена суффиксом ~\n  ' + JSON.stringify(vkColl)); }
+if (!VK.personRows(TREE_CH).some(r => r.n === 'Агафья Анна' && r.d === '1663-01-01'))
+    { failed++; console.log('✗ editTrigger: прежняя Агафья Анна потерялась'); }
 // якорь не найден — null (правки нет, транспорт ведёт как обычный ввод)
 cmp('editTrigger мимо якоря',
     VK.editTrigger(TREE_CH, 'Нет-Такого 1690-01-01', { n: 'Имя', d: '1690-01-01' }),
@@ -1339,18 +1344,18 @@ cmp('chartModel бездатный тёзка-якорь',
 }
 
 // ==================== 10. дубли «Имя Д» и примерные даты ====================
-// импорт .ged без склейки xref: коллизия ключа «Имя Д» — примерная дата
-// сдвигается на день (Date UTC, «1955-12-31» → «1956-01-01»), точная —
-// «~»-хвост имени; отчёт пачки — «♻️ дубль: … → …»
+// импорт .ged без склейки xref: коллизия ключа «Имя Д» — суффикс «~xref»
+// (дата и abt дубля сохраняются, первая запись без суффикса); отчёт пачки —
+// «♻️ дубль: … → …»
 const GED_DUP = ['0 HEAD',
     '0 @I1@ INDI', '1 NAME Тёзка', '1 BIRT', '2 DATE 1 JAN 1960',
     '0 @I2@ INDI', '1 NAME Тёзка', '1 BIRT', '2 DATE 1960',
     '0 @I3@ INDI', '1 NAME Тёзка', '1 BIRT', '2 DATE ABT 1 JAN 1960',
-    '0 @I4@ INDI', '1 NAME Тёзка', '1 BIRT', '2 DATE 1 JAN 1960',      // точный дубль → «~»
+    '0 @I4@ INDI', '1 NAME Тёзка', '1 BIRT', '2 DATE 1 JAN 1960',      // точный дубль → «~I4»
     '0 @I5@ INDI', '1 NAME Тёзка2', '1 BIRT', '2 DATE 30 DEC 1955',
-    '0 @I6@ INDI', '1 NAME Тёзка2', '1 BIRT', '2 DATE ABT 30 DEC 1955', // +1 день
+    '0 @I6@ INDI', '1 NAME Тёзка2', '1 BIRT', '2 DATE ABT 30 DEC 1955', // дубль abt3 → «~I6»
     '0 @I7@ INDI', '1 NAME Тёзка3', '1 BIRT', '2 DATE 31 DEC 1955',
-    '0 @I8@ INDI', '1 NAME Тёзка3', '1 BIRT', '2 DATE ABT 31 DEC 1955', // год+1 через Date UTC
+    '0 @I8@ INDI', '1 NAME Тёзка3', '1 BIRT', '2 DATE ABT 31 DEC 1955', // дубль abt3 → «~I8»
     '0 TRLR'].join('\n');
 const DUP_CH = 140;
 {
@@ -1361,27 +1366,27 @@ const DUP_CH = 140;
     cmp('importGedcom дубли report-текст', VK.treeReport(vkRep), TG.treeReport(vkRep));
     const names = VK.personRows(DUP_CH).map(r => r.n + " " + r.d).sort();
     for (const want of [
-        'Тёзка 1960-01-01', 'Тёзка 1960-01-02', 'Тёзка 1960-01-03',
-        'Тёзка~ 1960-01-01', 'Тёзка2 1955-12-30', 'Тёзка2 1955-12-31',
-        'Тёзка3 1955-12-31', 'Тёзка3 1956-01-01'])
+        'Тёзка 1960-01-01', 'Тёзка ~I2 1960-01-01', 'Тёзка ~I3 1960-01-01',
+        'Тёзка ~I4 1960-01-01', 'Тёзка2 1955-12-30', 'Тёзка2 ~I6 1955-12-30',
+        'Тёзка3 1955-12-31', 'Тёзка3 ~I8 1955-12-31'])
         if (!names.includes(want)) { failed++; console.log('✗ importGedcom дубли: нет ключа «' + want + '»: ' + names.join(' | ')); }
     // ♻️-строки в отчёте (формат абт-гранулярности: год-онли «ГГГГ»,
-    // сдвинутые полные даты с «~»-хвостом)
+    // примерный полный день с «~»-хвостом; даты дублей не сдвигаются)
     const vt = VK.treeReport(vkRep), tt = TG.treeReport(vkRep);
-    for (const s of ['♻️ дубль: Тёзка 1960 → Тёзка 1960-01-02~',
-        '♻️ дубль: Тёзка 1960-01-01~ → Тёзка 1960-01-03~',
-        '♻️ дубль: Тёзка 1960-01-01 → Тёзка~ 1960-01-01',
-        '♻️ дубль: Тёзка3 1955-12-31~ → Тёзка3 1956-01-01~'])
+    for (const s of ['♻️ дубль: Тёзка 1960 → Тёзка ~I2 1960',
+        '♻️ дубль: Тёзка 1960-01-01~ → Тёзка ~I3 1960-01-01~',
+        '♻️ дубль: Тёзка 1960-01-01 → Тёзка ~I4 1960-01-01',
+        '♻️ дубль: Тёзка2 1955-12-30~ → Тёзка2 ~I6 1955-12-30~',
+        '♻️ дубль: Тёзка3 1955-12-31~ → Тёзка3 ~I8 1955-12-31~'])
         if (!vt.includes(s) || !tt.includes(s)) { failed++; console.log('✗ дубли отчёт: нет строки «' + s + '»\n  ВК: ' + vt.split("\n").filter(x => x.includes("♻️")).join(" | ") + '\n  ТГ: ' + tt.split("\n").filter(x => x.includes("♻️")).join(" | ")); }
-    // помощник: точный и примерный сценарии (без коллизии — как есть)
-    cmp('uniqueKeyOf без коллизии', VK.uniqueKeyOf(141, 'Иван', '1963-09-27', false),
-        await TG.uniqueKeyOf(141, 'Иван', '1963-09-27', true));
-    cmp('uniqueKeyOf резерв', VK.uniqueKeyOf(DUP_CH, 'Тёзка', '1960-01-01', false),
-        await TG.uniqueKeyOf(DUP_CH, 'Тёзка', '1960-01-01', false));
-    cmp('uniqueKeyOf примерный резерв', VK.uniqueKeyOf(DUP_CH, 'Тёзка', '1960-01-02', true),
-        await TG.uniqueKeyOf(DUP_CH, 'Тёзка', '1960-01-02', true));
-    cmp('uniqueKeyOf точный резерв', VK.uniqueKeyOf(DUP_CH, 'Тёзка', '1960-01-03', false),
-        await TG.uniqueKeyOf(DUP_CH, 'Тёзка', '1960-01-03', false));
+    // помощник: точный и примерный сценарии (без коллизии — как есть;
+    // резерв — занятый ключ, суффикс из свежего xref, не занятого в БД)
+    cmp('uniqueKeyOf без коллизии', VK.uniqueKeyOf(141, 'Иван', '1963-09-27', false, false, 'Z9'),
+        await TG.uniqueKeyOf(141, 'Иван', '1963-09-27', true, false, 'Z9'));
+    cmp('uniqueKeyOf резерв', VK.uniqueKeyOf(DUP_CH, 'Тёзка', '1960-01-01', false, false, 'Z7'),
+        await TG.uniqueKeyOf(DUP_CH, 'Тёзка', '1960-01-01', false, false, 'Z7'));
+    cmp('uniqueKeyOf примерный резерв', VK.uniqueKeyOf(DUP_CH, 'Тёзка', '1960-01-01', true, false, 'Z8'),
+        await TG.uniqueKeyOf(DUP_CH, 'Тёзка', '1960-01-01', true, false, 'Z8'));
 }
 
 // примерные даты — юбилеи не оповещаются: примерная свадьба годом через
