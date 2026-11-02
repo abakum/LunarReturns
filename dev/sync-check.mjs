@@ -877,6 +877,53 @@ kidWant('Третий К', '1946-12-01', 'каскад +1 год к фиктив
     if (reb && reb.d !== undefined) { failed++; console.log('✗ бездатные дети: «Реб Н» получил дату ' + reb.d); }
 }
 
+// ==================== 3бг. первенцы жён одного родителя ==================
+// у родителя с несколькими бездатными жёнами первенец семьи без датных
+// сиблингов и свадьбы — максимум +1 среди датных (в т.ч. фиктивных) детей
+// других семей общего родителя, а не повторный «датный родитель +20»
+// (иначе все первенцы «рождаются» в один год); жёны — дата мужа по-прежнему
+const GED_WIVES = ['0 HEAD',
+    '0 @I1@ INDI', '1 NAME ПК', '1 SEX M', '1 BIRT', '2 DATE 4 MAR 1908',
+    '0 @X1@ INDI', '1 NAME ВК', '1 SEX M', '1 FAMC @F1@', '1 FAMS @F2@', '1 FAMS @F3@',
+    '0 @X2@ INDI', '1 NAME Г _', '1 SEX F', '1 FAMS @F2@',
+    '0 @X3@ INDI', '1 NAME ВиК', '1 SEX M', '1 FAMC @F2@',
+    '0 @X4@ INDI', '1 NAME Е _', '1 SEX F', '1 FAMS @F3@',
+    '0 @X5@ INDI', '1 NAME ЛК', '1 SEX F', '1 FAMC @F3@',
+    '0 @X6@ INDI', '1 NAME ВиК', '1 SEX M', '1 FAMC @F3@',
+    '0 @F1@ FAM', '1 HUSB @I1@', '1 CHIL @X1@',
+    '0 @F2@ FAM', '1 HUSB @X1@', '1 WIFE @X2@', '1 CHIL @X3@',
+    '0 @F3@ FAM', '1 HUSB @X1@', '1 WIFE @X4@', '1 CHIL @X5@', '1 CHIL @X6@',
+    '0 TRLR'].join('\n');
+const GW_CH = 16;
+VK.clearChatTree(GW_CH);
+await TG.clearChatTree(GW_CH);
+const vkImpW = VK.importGedcom(GW_CH, VK.parseGedcom(GED_WIVES));
+const tgImpW = await TG.importGedcom(GW_CH, TGP.parseGedcom(GED_WIVES));
+cmp('importGedcom жёны одного отца отчёт', vkImpW, tgImpW);
+const wivesFlat = VK.chatFlatText(GW_CH);
+cmp('importGedcom жёны одного отца пачка', wivesFlat, await TG.chatFlatText(GW_CH));
+cmp('importGedcom жёны одного отца гедком', VK.gedcomText(GW_CH), await TG.gedcomText(GW_CH));
+// round-trip: экспорт → импорт → та же пачка
+VK.importGedcom(GW_CH, VK.parseGedcom(VK.gedcomText(GW_CH)));
+await TG.importGedcom(GW_CH, TGP.parseGedcom(await TG.gedcomText(GW_CH)));
+cmp('round-trip .ged жёны одного отца', VK.chatFlatText(GW_CH), await TG.chatFlatText(GW_CH));
+if (VK.chatFlatText(GW_CH) !== wivesFlat)
+    { failed++; console.log('✗ round-trip пачка жёны одного отца:\n  ' + VK.chatFlatText(GW_CH)); }
+{
+    const wRows = VK.personRows(GW_CH);
+    const wWant = (n, d, what) => {
+        if (!wRows.some(r => r.n.startsWith(n) && r.d === d))
+            { failed++; console.log('✗ жёны одного отца ' + what + ': нет ключа «' + n + ' ' + d + '»: ' + wRows.map(r => r.n + ' ' + r.d).join(' | ')); }
+    };
+    wWant('ПК', '1908-03-04', 'датный в файле');
+    wWant('ВК', '1928-03-04', 'датный родитель +20 лет');
+    wWant('Г _', '1928-03-04', 'жена — дата мужа');
+    wWant('Е _', '1928-03-04', 'вторая жена — дата мужа');
+    wWant('ВиК', '1948-03-04', 'первенец первой семьи — родитель +20 лет');
+    wWant('ЛК', '1949-03-04', 'первенец второй семьи — дети других семей +1 год');
+    wWant('ВиК', '1950-03-04', 'второй ребёнок второй семьи — каскад +1 год');
+}
+
 // ==================== 3в. бездатный в диаграмме: точка/вертикали ========
 // бездатный муж с датированной женой: связь ребёнка — точки на всех трёх
 // (вертикаль мужа «Имя якорь» ↔ жена ↔ ребёнок), фантом между супругами

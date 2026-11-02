@@ -2530,7 +2530,9 @@ function importGedcom(peerId, g) {
     // (xref → фиктивная полная дата): датированные в файле — послеколлизионные
     // (resolved, сдвиг дублей), бездатные поимённые в famRefs — вычисленные;
     // два правила: у детей — прежний каскад якоря (датный сиблинг +1, свадьба
-    // +1, датный — в т.ч. уже фиктивный — родитель +20), у супругов — дата
+    // +1, максимум +1 среди датных — в т.ч. фиктивных — детей других семей
+    // общего родителя, датный — в т.ч. уже фиктивный — родитель +20),
+    // у супругов — дата
     // партнёра по цепочкам браков. Всё в одной карте, чтобы фиктивная ДР
     // родителя/супруга (которой нет в файле) работала якорем дальше —
     // раньше бездатные жёны такого родителя оставались заглушками
@@ -2544,13 +2546,23 @@ function importGedcom(peerId, g) {
     for (let sweep = 0; sweep < fullOf.size; sweep++) {
         let changed = false;
         // дети fam'а: якорь первого бездатного (датный — в т.ч. фиктивный —
-        // сиблинг +1 год, иначе свадьба +1 год, иначе датный родитель +20 лет),
+        // сиблинг +1 год, иначе свадьба +1 год, иначе максимум +1 среди датных
+        // детей других семей общего родителя — первенцы разных жён одного
+        // родителя не «рождаются» в один год, иначе датный родитель +20 лет),
         // каждый следующий бездатный — +1 год к предыдущей присвоенной дате
         // (у детей с разными именами коллизии нет — без каскада все получили
         // бы одну дату); повторный FAMC — первая fam (присвоенное — якорь)
         for (const f of g.fams) {
             const datedSibs = f.chil.map(kidDated).filter(Boolean).sort();
             const pars = [f.husb, f.wife].map(kidDated).filter(Boolean).sort();
+            const fpars = [f.husb, f.wife].filter(Boolean);
+            let cousMax = null; // макс. датная (в т.ч. фиктивная) дата детей семей общих родителей
+            for (const f2 of g.fams) {
+                if (f2 === f) continue;
+                if (![f2.husb, f2.wife].some(px => px && fpars.includes(px))) continue;
+                for (const d of f2.chil.map(kidDated).filter(Boolean))
+                    if (cousMax === null || d > cousMax) cousMax = d;
+            }
             let prev = null;
             for (const cx of f.chil) {
                 if (kidDated(cx) !== null) continue; // датный сиблинг — только якорь
@@ -2559,6 +2571,7 @@ function importGedcom(peerId, g) {
                 if (prev === null) {
                     if (datedSibs.length) prev = datePlusYears(datedSibs[datedSibs.length - 1], 1);
                     else if (f.marr && f.marr.date) prev = datePlusYears(f.marr.date, 1);
+                    else if (cousMax !== null) prev = datePlusYears(cousMax, 1);
                     else if (pars.length) prev = datePlusYears(pars[pars.length - 1], 20);
                     else continue;
                 } else {
