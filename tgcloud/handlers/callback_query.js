@@ -12,7 +12,7 @@ import {
     linkById, linkPairs, xrefOfKey, personRows, weddingRows, sendTreeBackup,
     upcomingText, mmddToday, focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText,
     focusWithSpouses, focusListKeys, focusSpousePairs, focusListText, focusDepth, sendGedPdf,
-    applyTree, branchFlatText, keyOfXref, cutAndGraft, treeReport, sendFlatPack,
+    applyTree, branchFlatText, keyOfXref, cutAndGraft, treeReport, sendFlatPack, hasTree,
 } from '../lib/bot.js';
 
 export default async function (cq, ctx) {
@@ -270,7 +270,7 @@ export default async function (cq, ctx) {
 
     // 🧬 — гедком-древо чата (как /gedcom); /start править нельзя — тост
     if (data === "tree") {
-        if (!(await linkPairs(chatId)).length) {
+        if (!(await hasTree(chatId))) {
             await answer("связей пока нет");
             return;
         }

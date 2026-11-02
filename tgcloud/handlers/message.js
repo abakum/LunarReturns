@@ -8,7 +8,7 @@ import {
     recordOf, replaceWithGedcom,
     linkPairs, personRows, weddingRows, sendGedPdf, focusKeys, focusHead, focusMarkup,
     focusWithSpouses, focusListKeys, focusSpousePairs, focusDepth, focusListText, mmddToday, upcomingText, upsertPerson, applyTree, cutAndGraft, treeReport,
-    editTrigger,
+    editTrigger, hasTree,
     chatFlatText, flatSearch, sendFlatPack,
 } from '../lib/bot.js';
 
@@ -71,7 +71,7 @@ async function gedDrop(chatId, doc, fromId) {
         chat_id: chatId,
         text: "🧬 Файл " + name + ": персон " + s.persons + ", семей " + s.fams
             + ", детей " + s.links + ". Заменить события чата деревом?",
-        reply_markup: dropKb((await personRows(chatId)).length > 0),
+        reply_markup: dropKb(await hasTree(chatId)),
     });
     console.log("ged drop:", name, "chat", chatId);
 }
@@ -122,7 +122,7 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
             + ", семей " + tree.weddings.length + ", детей " + tree.children.length
             + ". Заменить этим древо чата? В ответ на триггер — без замены: будет срезана и привита ветвь триггера.",
         // «Да, с резервом» — только при непустом дереве чата
-        reply_markup: dropKb((await personRows(chatId)).length > 0),
+        reply_markup: dropKb(await hasTree(chatId)),
     });
     console.log("txt drop:", name, "chat", chatId);
 }
@@ -266,7 +266,7 @@ export default async function (message, ctx) {
                 return;
             }
         }
-        if (!(await linkPairs(chatId)).length) {
+        if (!(await hasTree(chatId))) {
             await api.sendMessage({ chat_id: chatId, text: "связей пока нет" });
             return;
         }

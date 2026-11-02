@@ -791,6 +791,23 @@ VK.importGedcom(GS_CH, VK.parseGedcom(VK.gedcomText(GS_CH)));
 await TG.importGedcom(GS_CH, TGP.parseGedcom(await TG.gedcomText(GS_CH)));
 cmp('round-trip .ged бездатные', VK.chatFlatText(GS_CH), await TG.chatFlatText(GS_CH));
 
+// ==================== 3бв-1. полностью бездатное древо: гейт выгрузки ======
+// все персоны бездатные — связи «Имя Д» (edges/links) пусты, но выгрузка
+// .ged по xref возможна; гейт «связей пока нет» смотрит на fam/chil, а не
+// на численность ключевых связей
+const GED_NODATE = fs.readFileSync(path.join(ROOT, 'dev', 'fixtures', 'fam-nodate.ged'), 'utf8');
+const ND_CH = 140;
+VK.clearChatTree(ND_CH);
+await TG.clearChatTree(ND_CH);
+VK.importGedcom(ND_CH, VK.parseGedcom(GED_NODATE));
+await TG.importGedcom(ND_CH, TGP.parseGedcom(GED_NODATE));
+cmp('бездатное древо hasTree', VK.hasTree(ND_CH) ? 'да' : 'нет', (await TG.hasTree(ND_CH)) ? 'да' : 'нет');
+if (!VK.hasTree(ND_CH))
+    { failed++; console.log('✗ hasTree: бездатное древо не распознано'); }
+cmp('бездатное древо гедком', VK.gedcomText(ND_CH), await TG.gedcomText(ND_CH));
+if (!VK.gedcomText(ND_CH).includes('1 FAMS'))
+    { failed++; console.log('✗ бездатное древо: выгрузка пуста'); }
+
 // ==================== 3бв. бездатные дети: сиблинг/свадьба/родитель ======
 // приоритет: ДР последнего сиблинга +1 год → свадьба +1 год →
 // ДР младшего родителя +20 лет; каждый следующий бездатный ребёнок семьи —

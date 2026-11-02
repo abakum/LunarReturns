@@ -1649,6 +1649,14 @@ function famList(peerId) {
 function linkPairs(peerId) {
     return qa("SELECT p,c FROM links WHERE chat=?", peerId).map(l => [l.p, l.c]);
 }
+// есть ли древо чата как структура (fam с хоть одной половиной или хоть
+// один ребёнок в fam): гейт выгрузки 🧬/.ged — численность связей «Имя Д»
+// (links) для бездатных древ всегда ноль, хотя выгрузка по xref работает
+// (ТГ-копия: tgcloud/lib/bot.js, hasTree)
+function hasTree(peerId) {
+    return qa("SELECT 1 FROM fam WHERE chat=? AND (husb IS NOT NULL OR wife IS NOT NULL) LIMIT 1", peerId).length > 0
+        || qa("SELECT 1 FROM chil WHERE chat=? LIMIT 1", peerId).length > 0;
+}
 // строка-связь в прежнем виде (+adopted из chil семьи связи)
 function linkRowOf(r) {
     const cx = r.fam ? xrefOfKey(r.chat, r.c) : null;
@@ -2518,36 +2526,61 @@ function importGedcom(peerId, g) {
         byId.set(ind.__xref, ind.__xref);
         persons++;
     }
-    // фиктивные ДР бездатных поименованных детей по fam'ам — каскадом:
-    // якорь первого (ДР самого позднего датного сиблинга +1 год, иначе
-    // свадьба +1 год, иначе ДР младшего родителя +20 лет), каждый следующий
-    // бездатный — +1 год к предыдущей присвоенной дате, а не повторно к тому
-    // же якорю (у детей с разными именами коллизии нет — без каскада все
-    // получили бы одну дату); даты берутся послеколлизионные (resolved,
-    // сдвиг дублей)
-    const kidFull = new Map(); // xref бездатного ребёнка → фиктивная полная дата
-    const kidDated = cx => {
-        const p = g.indis.find(i => i.__xref === cx);
-        return p && p.name && p.birt && p.birt.date ? (resolved.get(p.__xref) || p.birt.date) : null;
-    };
-    for (const f of g.fams) {
-        const datedSibs = f.chil.map(kidDated).filter(Boolean).sort();
-        const pars = [f.husb, f.wife].map(kidDated).filter(Boolean).sort();
-        let prev = null;
-        for (const cx of f.chil) {
-            if (kidDated(cx) !== null) continue; // датный сиблинг — только якорь
-            const p = g.indis.find(i => i.__xref === cx);
-            if (!p || !p.name || kidFull.has(cx)) continue; // безымянные — мимо; повторный FAMC — первая fam
-            if (prev === null) {
-                if (datedSibs.length) prev = datePlusYears(datedSibs[datedSibs.length - 1], 1);
-                else if (f.marr && f.marr.date) prev = datePlusYears(f.marr.date, 1);
-                else if (pars.length) prev = datePlusYears(pars[pars.length - 1], 20);
-                else continue;
-            } else {
-                prev = datePlusYears(prev, 1);
+    // единый каскад фиктивных дат до фиксированной точки — полная карта дат
+    // (xref → фиктивная полная дата): датированные в файле — послеколлизионные
+    // (resolved, сдвиг дублей), бездатные поимённые в famRefs — вычисленные;
+    // два правила: у детей — прежний каскад якоря (датный сиблинг +1, свадьба
+    // +1, датный — в т.ч. уже фиктивный — родитель +20), у супругов — дата
+    // партнёра по цепочкам браков. Всё в одной карте, чтобы фиктивная ДР
+    // родителя/супруга (которой нет в файле) работала якорем дальше —
+    // раньше бездатные жёны такого родителя оставались заглушками
+    const fullOf = new Map(); // xref → фиктивная полная дата|null
+    for (const ind of g.indis) {
+        if (!ind.name) continue;
+        if (ind.birt && ind.birt.date) fullOf.set(ind.__xref, resolved.get(ind.__xref) || ind.birt.date);
+        else if (famRefs.has(ind.__xref)) fullOf.set(ind.__xref, null);
+    }
+    const kidDated = cx => fullOf.get(cx) || null;
+    for (let sweep = 0; sweep < fullOf.size; sweep++) {
+        let changed = false;
+        // дети fam'а: якорь первого бездатного (датный — в т.ч. фиктивный —
+        // сиблинг +1 год, иначе свадьба +1 год, иначе датный родитель +20 лет),
+        // каждый следующий бездатный — +1 год к предыдущей присвоенной дате
+        // (у детей с разными именами коллизии нет — без каскада все получили
+        // бы одну дату); повторный FAMC — первая fam (присвоенное — якорь)
+        for (const f of g.fams) {
+            const datedSibs = f.chil.map(kidDated).filter(Boolean).sort();
+            const pars = [f.husb, f.wife].map(kidDated).filter(Boolean).sort();
+            let prev = null;
+            for (const cx of f.chil) {
+                if (kidDated(cx) !== null) continue; // датный сиблинг — только якорь
+                const p = g.indis.find(i => i.__xref === cx);
+                if (!p || !p.name || !fullOf.has(cx)) continue; // безымянные — мимо
+                if (prev === null) {
+                    if (datedSibs.length) prev = datePlusYears(datedSibs[datedSibs.length - 1], 1);
+                    else if (f.marr && f.marr.date) prev = datePlusYears(f.marr.date, 1);
+                    else if (pars.length) prev = datePlusYears(pars[pars.length - 1], 20);
+                    else continue;
+                } else {
+                    prev = datePlusYears(prev, 1);
+                }
+                fullOf.set(cx, prev);
+                changed = true;
             }
-            kidFull.set(cx, prev);
         }
+        // супруги: дата партнёра (первая fam с датированной — в т.ч. фиктивной
+        // — половиной); раньше датированный в файле супруг имел приоритет —
+        // его послеколлизионная дата и так в fullOf, отдельный приоритет лишён
+        for (const ind of g.indis) {
+            if (!fullOf.has(ind.__xref) || fullOf.get(ind.__xref) !== null) continue;
+            for (const f of g.fams) {
+                if (f.husb !== ind.__xref && f.wife !== ind.__xref) continue;
+                const sx = f.husb === ind.__xref ? f.wife : f.husb;
+                const v = (sx && fullOf.get(sx)) || null;
+                if (v !== null) { fullOf.set(ind.__xref, v); changed = true; break; }
+            }
+        }
+        if (!changed) break;
     }
     // второй проход: бездатные супруги и дети — фиктивная полная дата,
     // birt_abt 3 (в шкале PDF нет года и прожитых лет); коллизия фиктивных
@@ -2555,19 +2588,18 @@ function importGedcom(peerId, g) {
     for (const ind of g.indis) {
         if (!ind.name || (ind.birt && ind.birt.date)) continue;
         if (!famRefs.has(ind.__xref)) continue;
-        let full = null;
-        for (const f of g.fams) {
-            if (f.husb !== ind.__xref && f.wife !== ind.__xref) continue;
-            const sx = f.husb === ind.__xref ? f.wife : f.husb;
-            const sp = sx && g.indis.find(i => i.__xref === sx);
-            if (sp && sp.birt && sp.birt.date) { full = resolved.get(sx) || sp.birt.date; break; }
-        }
-        if (full === null) full = kidFull.get(ind.__xref) || null;
+        const full = fullOf.get(ind.__xref) || null;
         if (full === null) {
-            // бездатный ребёнок/супруг бездатного — заглушка (birt_d NULL), как раньше
+            // имя заглушки — всегда «Имя @xref@»: уникальный ключ «Имя @xref@»
+            // + null у всех заглушек, тёзки различимы, метка единообразна
+            // в гедкоме и пачках. Метка снимается, если уже есть (round-trip:
+            // повторный .ged-импорт не должен удваивать суффикс); xref —
+            // стабильная идентичность round-trip'а
+            const base = ind.name.replace(/ @[^@]*@$/, "");
+            const sname = base + " @" + ind.__xref + "@";
             qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note,birt_abt,deat_abt)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-                peerId, ind.__xref, ind.name, null,
+                peerId, ind.__xref, sname, null,
                 null, null, null, null,
                 ind.deat && ind.deat.date ? ind.deat.date : null,
                 null, null,
@@ -2677,28 +2709,33 @@ function famsByGenerations(fams, halvesOf, kidsOf) {
 function gedcomText(peerId, keys) {
     const MON = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
     const gdate = d => { const [y, mo, dd] = d.split("-").map(Number); return dd + " " + MON[mo - 1] + " " + y; };
+    // хвост-метка заглушки «Имя @xref@» живёт в БД для уникальности ключей
+    // печатей (пачки/древо), но в гедкоме избыточен — xref и так в идентикаторе
+    // INDI @…@; в NAME метку снимаем (реимпорт восстановит её из файлового
+    // xref — круглый trip остаётся идемпотентным)
+    const cleanName = n => n.replace(/ @[^@]*@$/, "");
     const hasKeys = Array.isArray(keys) && keys.length > 0;
     const persons = personRows(peerId).filter(r => !hasKeys || keys.includes(pkey(r)));
-    const idOf = new Map(persons.map((r, i) => [pkey(r), "I" + (i + 1)]));
-    const sexOf = new Map(persons.map(r => [pkey(r), r.sex || null]));
-    // усыновления: «Имя Д» ребёнка → xref семьи (chil.adopted)
+    const idOf = new Map(persons.map(r => [r.xref, r.xref]));
+    const sexOf = new Map(persons.map(r => [r.xref, r.sex || null]));
+    // усыновления: xref ребёнка → xref семьи (chil.adopted)
     const adoptedOf = new Map();
-    for (const c of qa("SELECT fam, indi FROM chil WHERE chat=? AND adopted=1", peerId)) {
-        const k = keyOfXref(peerId, c.indi);
-        if (k) adoptedOf.set(k, c.fam);
-    }
+    for (const c of qa("SELECT fam, indi FROM chil WHERE chat=? AND adopted=1", peerId))
+        adoptedOf.set(c.indi, c.fam);
     // примерная дата: год-only (abt 1) — «ГГГГ», месяц-only (abt 2) — «JUN 1987»,
     // примерный день (abt 3) — «ABT <гедком>»
     const gdateAbt = (d, abt) => abt === 1 ? d.slice(0, 4)
         : abt === 2 ? MON[Number(d.slice(5, 7)) - 1] + " " + d.slice(0, 4)
         : abt === 3 ? "ABT " + gdate(d)
         : gdate(d);
-    // семьи → {fx — список xref (после схлопывания), pkeys — датированные
-    // родители-ключи, stubs — [{xref,name,deat,dp}] — бездатные супруги,
-    // kstubs — те же дети, children — ключи, marr, div}
+    // семьи → {xref, par — [{x, k}] датированные половины (k — ключ, только
+    // для фильтра фрагмента), stubs — [{xref,name,deat,dp}] — бездатные
+    // супруги, kstubs — те же дети, chd — датированные дети, marr, div}:
+    // семья НЕ схлопывается — каждая строка fam БД даёт ровно одну FAM
+    // (у двух жён одного мужа остаются две FAM, а не один FAM с двумя WIFE)
     const fams = [];
     for (const f of qa("SELECT * FROM fam WHERE chat=? ORDER BY rowid", peerId)) {
-        const pkeys = [], stubs = [], kstubs = [], children = [];
+        const par = [], chd = [], stubs = [], kstubs = [];
         const stubOf = x => {
             const i = indiOf(peerId, x);
             if (!i || !i.name) return null;
@@ -2708,74 +2745,61 @@ function gedcomText(peerId, keys) {
         for (const x of [f.husb, f.wife]) {
             if (!x) continue;
             const k = keyOfXref(peerId, x);
-            if (k) pkeys.push(k);
+            if (k) par.push({ x, k });
             else {
                 const st = stubOf(x);
-                if (st && !stubs.some(s => s.xref === x)) stubs.push(st);
+                if (st) stubs.push(st);
             }
         }
         for (const r of qa("SELECT indi FROM chil WHERE chat=? AND fam=? ORDER BY rowid", peerId, f.xref)) {
             const k = keyOfXref(peerId, r.indi);
-            if (k) children.push(k);
+            if (k) chd.push({ x: r.indi, k });
             else {
                 const st = stubOf(r.indi);
-                if (st && !kstubs.some(s => s.xref === r.indi)) kstubs.push(st);
+                if (st) kstubs.push(st);
             }
         }
         let marr = f.marr_d ? { d: f.marr_d, ...(f.marr_abt ? { abt: 1 } : {}), ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null;
         let div = f.div_d ? { d: f.div_d, ...(f.div_abt ? { abt: 1 } : {}), ...(f.div_plac ? { plac: f.div_plac } : {}) } : null;
         const fnote = f.note || null;
         if (hasKeys) {
-            // фрагмент: семья остаётся при ХОТЬ ОДНОЙ половине в keys (как
-            // в пачке chatFlatText — famBody печатает свадьбы половин из
-            // keys): бездетные свадьбы и семьи с детьми за пределами keys
-            // тоже идут, иначе пачка .ged.txt и гедком .ged одной пачки
-            // расходились бы (round-trip терял свадьбы и ломал глубины).
-            // famc за радиусом (в keys лишь ребёнок) — мимо: в пачке таких
-            // строк нет, глубины он не меняет
-            const ps = pkeys.filter(p => keys.includes(p));
+            // фрагмент: семья остаётся при ХОТЬ ОДНОЙ датированной половине
+            // в keys (как в пачке chatFlatText — famBody печатает свадьбы
+            // половин из keys): бездетные свадьбы и семьи с детьми за
+            // пределами keys тоже идут, иначе пачка .ged.txt и гедком .ged
+            // одной пачки расходились бы (round-trip терял свадьбы и ломал
+            // глубины). famc за радиусом (в keys лишь ребёнок) — мимо:
+            // в пачке таких строк нет, глубины он не меняет
+            const ps = par.filter(p => keys.includes(p.k));
             if (!ps.length) continue;
-            const cs = children.filter(c => keys.includes(c));
-            pkeys.length = 0; pkeys.push(...ps);
-            children.length = 0; children.push(...cs);
+            par.length = 0; par.push(...ps);
+            chd.length = 0; chd.push(...chd.filter(c => keys.includes(c.k)));
             // фрагмент — датированные персоны из keys; заглушки-половины/дети — как есть
-        } else if (!pkeys.length && !stubs.length && !kstubs.length && !children.length) continue;
-        const s = pkeys.slice().sort();
-        // семьи без известных половин (pkeys пуст, обе половины — заглушки) не
-        // мержатся: иначе все s=[] склеиваются в одну FAM с сотнями FAMS у заглушек
-        const m = s.length ? fams.find(x => x.s.length === s.length && x.s.every((p, i) => p === s[i])) : null;
-        if (m) {
-            m.fx.push(f.xref);
-            for (const c of children) if (!m.children.includes(c)) m.children.push(c);
-            for (const st of stubs) if (!m.stubs.some(x => x.xref === st.xref)) m.stubs.push(st);
-            for (const st of kstubs) if (!m.kstubs.some(x => x.xref === st.xref)) m.kstubs.push(st);
-            if (!m.marr) m.marr = marr;
-            if (!m.div) m.div = div;
-            if (!m.fnote) m.fnote = fnote;
-        } else fams.push({ s, fx: [f.xref], pkeys, stubs, kstubs, children, marr, div, fnote });
+        } else if (!par.length && !stubs.length && !kstubs.length && !chd.length) continue;
+        fams.push({ xref: f.xref, par, chd, stubs, kstubs, marr, div, fnote });
     }
     // поколения: семьи родителей раньше семей детей — каноническая нумерация
     // FAM независимо от порядка вставки (см. famsByGenerations)
     const famsOrd = famsByGenerations(fams,
-        f => [...f.pkeys, ...f.stubs.map(s => s.xref)],
-        f => [...f.children, ...f.kstubs.map(s => s.xref)]);
+        f => [...f.par.map(p => p.x), ...f.stubs.map(s => s.xref)],
+        f => [...f.chd.map(c => c.x), ...f.kstubs.map(s => s.xref)]);
     for (let i = 0; i < fams.length; i++) fams[i] = famsOrd[i];
-    // заглушкам — X-номера; FAM — по порядку; HUSB/WIFE по полу (без — HUSB)
-    let stubN = 0;
+    // заглушки-INDI и FAM печатаются собственными xref'ами БД (уникальны
+    // по построению): round-trip .ged → .ged сохраняет xref'ы, а значит
+    // и метки «@xref@» в именах заглушек. HUSB/WIFE по полу (без — HUSB)
     const stubId = new Map(), stubInfo = new Map();
     const addStub = st => {
-        if (!stubId.has(st.xref)) { stubId.set(st.xref, "X" + (++stubN)); stubInfo.set(st.xref, st); }
+        if (!stubId.has(st.xref)) { stubId.set(st.xref, st.xref); stubInfo.set(st.xref, st); }
     };
     for (const f of fams) {
         for (const st of f.stubs) addStub(st);
         for (const st of f.kstubs) addStub(st);
     }
-    const fidOf = new Map(fams.map((f, i) => [f, "F" + (i + 1)]));
-    const adoptedHere = (f, k) => f.fx.some(x => adoptedOf.get(k) === x);
+    const fidOf = new Map(fams.map(f => [f, f.xref]));
     const out = ["0 HEAD", "1 SOUR LunarReturns", "1 GEDC", "2 VERS 5.5.1", "2 FORM LINEAGE-LINKED", "1 CHAR UTF-8"];
     for (const r of persons) {
-        out.push("0 @" + idOf.get(pkey(r)) + "@ INDI");
-        out.push("1 NAME " + r.n);
+        out.push("0 @" + idOf.get(r.xref) + "@ INDI");
+        out.push("1 NAME " + cleanName(r.n));
         if (r.sex) out.push("1 SEX " + r.sex);
         out.push("1 BIRT", "2 DATE " + gdateAbt(r.d, r.abt));
         if (r.srcH !== undefined) out.push("2 TIME " + String(r.srcH).padStart(2, "0") + ":" + String(r.srcM).padStart(2, "0"));
@@ -2792,17 +2816,17 @@ function gedcomText(peerId, keys) {
                 out.push((i ? "2 CONT " : "1 NOTE ") + segs[i]);
         }
         for (const f of fams) {
-            if (f.children.includes(pkey(r))) {
+            if (f.chd.some(c => c.x === r.xref)) {
                 out.push("1 FAMC @" + fidOf.get(f) + "@");
-                if (adoptedHere(f, pkey(r))) out.push("1 ADOP", "2 FAMC @" + fidOf.get(f) + "@");
+                if (adoptedOf.get(r.xref) === f.xref) out.push("1 ADOP", "2 FAMC @" + fidOf.get(f) + "@");
             }
-            if (f.pkeys.includes(pkey(r))) out.push("1 FAMS @" + fidOf.get(f) + "@");
+            if (f.par.some(p => p.x === r.xref)) out.push("1 FAMS @" + fidOf.get(f) + "@");
         }
     }
     // заглушки (бездатные супруги/дети): имя + пол + смерть/место, если известны
     for (const [x, st] of stubInfo) {
         out.push("0 @" + stubId.get(x) + "@ INDI");
-        out.push("1 NAME " + st.name);
+        out.push("1 NAME " + cleanName(st.name));
         if (st.sex) out.push("1 SEX " + st.sex);
         if (st.deat) {
             out.push("1 DEAT", "2 DATE " + gdateAbt(st.deat, st.dabt));
@@ -2817,14 +2841,14 @@ function gedcomText(peerId, keys) {
         out.push("0 @" + fidOf.get(f) + "@ FAM");
         // по практике 5.5.1: сначала HUSB, затем WIFE; пол заглушек — из записи
         const all = [
-            ...f.pkeys.map(k => ({ ref: idOf.get(k), sex: sexOf.get(k) })),
+            ...f.par.map(p => ({ ref: idOf.get(p.x), sex: sexOf.get(p.x) })),
             ...f.stubs.map(s => ({ ref: stubId.get(s.xref), sex: s.sex || null })),
         ];
         for (const x of all.filter(x => x.sex !== "F")) out.push("1 HUSB @" + x.ref + "@");
         for (const x of all.filter(x => x.sex === "F")) out.push("1 WIFE @" + x.ref + "@");
-        for (const c of f.children) {
-            out.push("1 CHIL @" + idOf.get(c) + "@");
-            if (adoptedHere(f, c)) out.push("2 PEDI adopted");
+        for (const c of f.chd) {
+            out.push("1 CHIL @" + idOf.get(c.x) + "@");
+            if (adoptedOf.get(c.x) === f.xref) out.push("2 PEDI adopted");
         }
         for (const s of f.kstubs) out.push("1 CHIL @" + stubId.get(s.xref) + "@");
         if (f.marr) {
@@ -3985,7 +4009,9 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
                     message: packFits ? headTxt : undefined, attachment: atts.join(","), keyboard: kb
                 });
                 console.log("ged artifacts edited into origin:", base + ".ged", "peer", peerId);
-                if (chartErr) await messagesSend(peerId, "💥 Диаграмма не построена: " + chartErr);
+                // бездатное древо — PDF нет по построению («chart: персоны
+                // пусты»), это не ошибка, алерта не шлём
+                if (chartErr && !chartErr.includes("персоны пусты")) await messagesSend(peerId, "💥 Диаграмма не построена: " + chartErr);
                 return;
             } catch (e) {
                 console.error("editOriginAtts:", e.message, "— отношу файлом");
@@ -3994,7 +4020,7 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
         await messagesSend(peerId, headTxt, msgId, convMsgId, null, atts.join(","));
         console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : "")
             + (pack ? (packFits ? " (пачка текстом)" : " + " + base + ".ged.txt") : ""), "peer", peerId);
-        if (chartErr) await messagesSend(peerId, "💥 Диаграмма не построена: " + chartErr);
+        if (chartErr && !chartErr.includes("персоны пусты")) await messagesSend(peerId, "💥 Диаграмма не построена: " + chartErr);
         return;
     } catch (e) {
         console.error("doc upload:", e.message);
@@ -4238,7 +4264,15 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const LOG_RAW = !!process.env.LOG_VK; // сырые ответы VK API и Long Poll
 
 async function vkApi(method, params) {
-    const qs = new URLSearchParams(Object.assign({ access_token: token, v: VK_VERSION }, params));
+    // undefined-параметры не передаём вовсе: URLSearchParams превратил бы их
+    // в строки «undefined» (ВК показывает их как текст сообщения); вложенные
+    // объекты (клавиатуры) — строкуем
+    const clean = {};
+    for (const [k, v] of Object.entries(params)) {
+        if (v === undefined) continue;
+        clean[k] = v && typeof v === "object" && !Buffer.isBuffer(v) ? JSON.stringify(v) : v;
+    }
+    const qs = new URLSearchParams(Object.assign({ access_token: token, v: VK_VERSION }, clean));
     if (LOG_RAW) console.log(">> " + method, qs.toString().replace(/access_token=[^&]+/, "access_token=…"));
     // POST с form-body — как в vksdk/pinguin: клавиатуры в query string
     // (GET) ВК портит («unknown fields» на каждой кнопке)
@@ -4462,15 +4496,16 @@ async function handleGedDrop(peerId, doc, msgId, convMsgId, fromId) {
     }
     const s = gedStats(g);
     gedPending.set(peerId, { name, text, fromId, ts: Date.now() });
-    // «Да, с резервом» — только при непустом дереве чата (есть персона с датой)
-    const hasTree = !!q1("SELECT xref FROM indi WHERE chat=? AND birt_d IS NOT NULL LIMIT 1", peerId);
+    // «Да, с резервом» — только при непустом дереве чата (fam/chil есть,
+    // бездатное древо тоже резервировать можно)
+    const hasSomeTree = hasTree(peerId);
     const btn = (label, c) => ({
         action: { type: "callback", label, payload: JSON.stringify({ c }) }, color: "secondary"
     });
     const kb = JSON.stringify({ inline: true, buttons: [[
         btn("Нет", "ged:ign"),
         btn("Да", "ged:rep"),
-        ...(hasTree ? [btn("Да, с резервом", "ged:bak")] : []),
+        ...(hasSomeTree ? [btn("Да, с резервом", "ged:bak")] : []),
     ]] });
     await messagesSend(peerId, "🧬 Файл " + name + ": персон " + s.persons + ", семей " + s.fams
         + ", детей " + s.links + ". Заменить события чата деревом?", msgId, convMsgId, kb);
@@ -4514,15 +4549,16 @@ async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
         return;
     }
     gedPending.set(peerId, { name, text, fromId, ts: Date.now() });
-    // «Да, с резервом» — только при непустом дереве чата (есть персона с датой)
-    const hasTree = !!q1("SELECT xref FROM indi WHERE chat=? AND birt_d IS NOT NULL LIMIT 1", peerId);
+    // «Да, с резервом» — только при непустом дереве чата (fam/chil есть,
+    // бездатное древо тоже резервировать можно)
+    const hasSomeTree = hasTree(peerId);
     const btn = (label, c) => ({
         action: { type: "callback", label, payload: JSON.stringify({ c }) }, color: "secondary"
     });
     const kb = JSON.stringify({ inline: true, buttons: [[
         btn("Нет", "ged:ign"),
         btn("Да", "ged:rep"),
-        ...(hasTree ? [btn("Да, с резервом", "ged:bak")] : []),
+        ...(hasSomeTree ? [btn("Да, с резервом", "ged:bak")] : []),
     ]] });
     await messagesSend(peerId, "📄 Файл " + name + ": персон " + new Set(tree.persons
         .map(p => p.rec.n + "|" + (p.rec.d ?? ""))).size
@@ -4676,7 +4712,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
                 return;
             }
         }
-        if (!linkPairs(peerId).length) { await messagesSend(peerId, "связей пока нет", msgId, convMsgId); return; }
+        if (!hasTree(peerId)) { await messagesSend(peerId, "связей пока нет", msgId, convMsgId); return; }
         await sendGedArtifacts(peerId, undefined, "🧬 Гедком-древо чата", msgId, convMsgId);
         return;
     }
@@ -5210,7 +5246,7 @@ async function handleEvent(o) {
         }
         await editOrigin(o, flat, await peerKeyboard(peerId, o.user_id));
     } else if (payload === "tree") { // 🧬 — гедком-древо чата (как /gedcom)
-        if (!linkPairs(peerId).length) {
+        if (!hasTree(peerId)) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "связей пока нет");
             return;
         }
@@ -5598,5 +5634,5 @@ module.exports.__test = {
     clearChatTree, recordOf, recordAnyOf, chartPdf, chartModel, chartFor, fileBaseOf, b64ToBytes, parseTtf,
     gedcomText, importGedcom, jubileeText, setLinkCand, setLinkCmid, weddingByFx, upsertWedding, linkRowOf,
     chatFlatText, flatTreeText, branchFlatText, subsetBranch, flatRows, flatSearch,
-    cutAndGraft, setPersonByXref, editTrigger, rootOf, uniqueKeyOf, upcomingEvents,
+    cutAndGraft, setPersonByXref, editTrigger, rootOf, uniqueKeyOf, upcomingEvents, hasTree,
 };
