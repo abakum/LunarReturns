@@ -1092,8 +1092,9 @@ function focusKeys(pairs, key, radius) {
             if (nu > radius || nd > radius) return;
             // fynny-ромб: боковая родня (u,d ≥ 1) — по числу слов цепочки
             // (u+d−1 ≤ radius; ярлыки-цепочки — lib/kinship.js, fynny);
-            // радиус 5 — «показать всех» (прежний ромб, без лимита слов)
-            if (fynny && radius < 5 && nu && nd && nu + nd - 1 > radius) return;
+            // 5-й радиус — обычный (слова ≤ 5), «показать всех» снято
+            // (PDF был слишком велик и долог)
+            if (fynny && nu && nd && nu + nd - 1 > radius) return;
             for (const x of (adj.get(k) || [])) {
                 let arr = best.get(x);
                 if (!arr) best.set(x, arr = []);
@@ -1132,11 +1133,11 @@ function focusWithSpouses(keys, spousePairs) {
 // остаётся, только если его ярлык-цепочка влезает в радиус (супруг героя
 // «муж/жена» — всегда; «жена брата» — с 2️⃣, «жена сына сына» — с 3️⃣…);
 // экспорту (🧬/PDF) нужна полная связность — там focusWithSpouses без лимита;
-// радиус 5 — «показать всех» (без словесного лимита, как в focusKeys)
+// 5-й радиус — обычный, как остальные (слова ≤ 5; «показать всех» снято)
 function focusListKeys(pairs, spousePairs, key, radius, sexOf) {
     const core = new Set(focusKeys(pairs, key, radius));
     const keys = focusWithSpouses(core, spousePairs);
-    if (!fynny || radius >= 5) return keys;
+    if (!fynny) return keys;
     // доклеенный супруг остаётся, только если ярлык непуст и влезает:
     // бюджет браковых шагов kinLabel = radius (цепочки длиннее радиуса
     // всё равно отфильтруются); пустой ярлык — исключён (не «1 слово»)
@@ -1159,10 +1160,10 @@ export const focusLabel = rangeLevel;
 // fynny-достижимость родни персоны key (0 = ни родителей, ни потомков) —
 // для доступности цифр радиуса и шапки «радиус не глубже имеющихся связей»:
 // нужный радиус узла — прямая линия max(u,d), боковая (u,d ≥ 1) — u+d−1
-// (число слов цепочки); результат min(5, max needed) с ранним выходом при 5
-// (5️⃣ = «показать всех» покрывает и «слова 6+», как троюродный u4d3).
-// Так цифры 2️⃣3️⃣ видны у «горизонтальных» героев (кузены без дедов),
-// а 5️⃣ — только когда есть родня за пределами 4 слов / глубже 4 поколений
+// (число слов цепочки); результат min(5, max needed) с ранним выходом при 5;
+// узлы с нужным радиусом за 5 (слова 6+, глубже 5 поколений) — вне всех
+// радиусов. Так цифры 2️⃣3️⃣ видны у «горизонтальных» героев (кузены без
+// дедов), а 5️⃣ — только когда есть родня за пределами 4 слов/поколений
 export function focusDepth(pairs, key) {
     const kidsOf = new Map(), parentsOf = new Map();
     for (const [p, c] of pairs) {
@@ -1172,8 +1173,8 @@ export function focusDepth(pairs, key) {
         parentsOf.get(c).push(p);
     }
     // обход состояний (узел, вверх, вниз) с недоминируемыми векторами —
-    // как в focusKeys; векторы с needed > 5 не хранятся (5️⃣ их покрывает),
-    // итог — max по узлам их минимального нужного радиуса
+    // как в focusKeys; векторы с needed > 5 не хранятся (за пределами всех
+    // радиусов), итог — max по узлам их минимального нужного радиуса
     const best = new Map([[key, [[0, 0]]]]);
     const dominated = (arr, u, d) => arr.some(s => s[0] <= u && s[1] <= d);
     let five = false;
@@ -1189,7 +1190,7 @@ export function focusDepth(pairs, key) {
                 for (let i = arr.length - 1; i >= 0; i--)
                     if (nu <= arr[i][0] && nd <= arr[i][1]) arr.splice(i, 1);
                 arr.push([nu, nd]);
-                if (nu + nd > 5) five = true; // прямая (u или d) = 5 — «показать всех»
+                if (nu + nd > 5) five = true; // прямая глубже 5 — 5️⃣ максимум
                 queue.push([x, nu, nd]);
             }
         };

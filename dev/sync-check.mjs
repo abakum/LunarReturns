@@ -617,8 +617,10 @@ if (fkeysOf(VK, 2).includes(kinKeys['Тесть']))
     { failed++; console.log('✗ focusListKeys r2: «муж сестры отца» (3 слова) не влезает'); }
 if (!fkeysOf(VK, 3).includes(kinKeys['Тесть']))
     { failed++; console.log('✗ focusListKeys r3: «муж сестры отца» (3 слова) влезает'); }
-if (!fkeysOf(VK, 5).includes(kinKeys['Жена Дядьки']) || !fkeysOf(VK, 5).includes(kinKeys['Муж Кузины']))
-    { failed++; console.log('✗ focusListKeys r5: «показать всех» — все супруги'); }
+// радиус 5 — обычный (слова ≤ 5): «жена брата отца отца» (4) остаётся,
+// «муж дочки брата отца отца отца» (6 слов) — вне
+if (!fkeysOf(VK, 5).includes(kinKeys['Жена Дядьки']) || fkeysOf(VK, 5).includes(kinKeys['Муж Кузины']))
+    { failed++; console.log('✗ focusListKeys r5: слова ≤ 5'); }
 
 // ==================== 8. focusListText: список с датой смерти и родством ====================
 const kinItems = [
@@ -668,8 +670,8 @@ for (const r of [1, 2]) {
 // состав по радиусам (ромб, fynny): r1 — родители и сиблинги (u+d−1 ≤ 1),
 // r2 — деды, тётя, племянник (кузены u2d2 — 3 слова, с r3), r3 — прадеды,
 // дядьки/тётьи, кузены, внучатые, r4 — ДвПлем (u2d3), Брат Прадеда (u4d1),
-// Правнучатый (u1d4); r5 — «показать всех» (прежний ромб: Кузина u4d2,
-// Троюродный u4d3, ДвВнуч u2d4)
+// Правнучатый (u1d4); r5 — обычный (слова ≤ 5): Кузина u4d2 (5 слов),
+// ДвВнуч u2d4 (5 слов) — в, Троюродный u4d3 (6 слов) — уже нет
 const kinAt = (which, r) => which.focusKeys(kinPairs, sonKey, r);
 for (const r of [1, 2, 3, 4, 5]) cmp('фокус-множество радиус ' + r, kinAt(VK, r), kinAt(TG, r));
 if (kinAt(VK, 1).includes(kinKeys['Дед'])) { failed++; console.log('✗ r1 содержит деда'); }
@@ -698,9 +700,10 @@ if (!kinAt(VK, 4).includes(kinKeys['Брат Прадеда'])) { failed++; cons
 if (kinAt(VK, 4).includes(kinKeys['Кузина'])) { failed++; console.log('✗ r4 содержит кузину (u4d2 — 5 слов)'); }
 if (kinAt(VK, 4).includes(kinKeys['Троюродный'])) { failed++; console.log('✗ r4 содержит троюродного (u4d3)'); }
 if (kinAt(VK, 4).includes(kinKeys['ДвВнуч'])) { failed++; console.log('✗ r4 содержит двоюродного внучатого (u2d4)'); }
-// радиус 5 — «показать всех»: прежний ромб (u,d ≤ 5)
+// радиус 5 — обычный: слова ≤ 5 (Кузина u4d2 — 5; троюродный u4d3 — 6, вне)
 if (!kinAt(VK, 5).includes(kinKeys['Кузина'])) { failed++; console.log('✗ r5 без кузины (u4d2)'); }
-if (!kinAt(VK, 5).includes(kinKeys['Троюродный'])) { failed++; console.log('✗ r5 без троюродного (u4d3)'); }
+if (!kinAt(VK, 5).includes(kinKeys['ДвВнуч'])) { failed++; console.log('✗ r5 без ДвВнуч (u2d4)'); }
+if (kinAt(VK, 5).includes(kinKeys['Троюродный'])) { failed++; console.log('✗ r5 содержит троюродного (u4d3, 6 слов)'); }
 if (!kinAt(VK, 5).includes(kinKeys['ДвВнуч'])) { failed++; console.log('✗ r5 без двоюродного внучатого (u2d4)'); }
 if (!kinAt(VK, 5).includes(kinKeys['Прапрадед'])) { failed++; console.log('✗ r5 без прапрадеда (u4d0)'); }
 if (kinAt(VK, 3).includes(kinKeys['Брат Прадеда'])) { failed++; console.log('✗ r3 содержит брата прадеда (u4)'); }

@@ -1035,7 +1035,8 @@ function parseTree(text) {
 // для доступности цифр радиуса и шапки «радиус не глубже имеющихся связей»:
 // нужный радиус узла — прямая линия max(u,d), боковая (u,d ≥ 1) — u+d−1
 // (число слов цепочки); результат min(5, max needed) с ранним выходом при 5
-// (5️⃣ = «показать всех» покрывает и «слова 6+», как троюродный u4d3).
+// узлы с нужным радиусом за 5 (слова 6+, глубже 5 поколений) — вне всех
+// радиусов.
 // Так цифры 2️⃣3️⃣ видны у «горизонтальных» героев (кузены без дедов),
 // а 5️⃣ — только когда есть родня за пределами 4 слов / глубже 4 поколений.
 // В ТГ — focusDepth в lib/bot.js.
@@ -1048,7 +1049,8 @@ function focusDepth(pairs, key) {
         parentsOf.get(c).push(p);
     }
     // обход состояний (узел, вверх, вниз) с недоминируемыми векторами —
-    // как в focusKeys; векторы с needed > 5 не хранятся (5️⃣ их покрывает),
+    // как в focusKeys; векторы с needed > 5 не хранятся (за пределами всех
+    // радиусов),
     // итог — max по узлам их минимального нужного радиуса
     const best = new Map([[key, [[0, 0]]]]);
     const dominated = (arr, u, d) => arr.some(s => s[0] <= u && s[1] <= d);
@@ -1065,7 +1067,7 @@ function focusDepth(pairs, key) {
                 for (let i = arr.length - 1; i >= 0; i--)
                     if (nu <= arr[i][0] && nd <= arr[i][1]) arr.splice(i, 1);
                 arr.push([nu, nd]);
-                if (nu + nd > 5) five = true; // прямая (u или d) = 5 — «показать всех»
+                if (nu + nd > 5) five = true; // прямая глубже 5 — 5️⃣ максимум
                 queue.push([x, nu, nd]);
             }
         };
@@ -1104,8 +1106,9 @@ function focusKeys(pairs, key, radius) {
         const step = (adj, nu, nd) => {
             if (nu > radius || nd > radius) return;
             // fynny-ромб: боковая родня (u,d ≥ 1) — по числу слов цепочки
-            // (u+d−1 ≤ radius); радиус 5 — «показать всех» (прежний ромб)
-            if (fynny && radius < 5 && nu && nd && nu + nd - 1 > radius) return;
+            // (u+d−1 ≤ radius); 5-й радиус — обычный (слова ≤ 5),
+            // «показать всех» снято (PDF был слишком велик и долог)
+            if (fynny && nu && nd && nu + nd - 1 > radius) return;
             for (const x of (adj.get(k) || [])) {
                 let arr = best.get(x);
                 if (!arr) best.set(x, arr = []);
@@ -1145,12 +1148,12 @@ function focusWithSpouses(keys, spousePairs) {
 // остаётся, только если его ярлык-цепочка влезает в радиус (супруг героя
 // «муж/жена» — всегда; «жена брата» — с 2️⃣, «жена сына сына» — с 3️⃣…);
 // экспорту (🧬/PDF) нужна полная связность — там focusWithSpouses без лимита;
-// радиус 5 — «показать всех» (без словесного лимита, как в focusKeys).
+// 5-й радиус — обычный, как остальные (слова ≤ 5; «показать всех» снято).
 // Дословная копия — tgcloud/lib/bot.js.
 function focusListKeys(pairs, spousePairs, key, radius, sexOf) {
     const core = new Set(focusKeys(pairs, key, radius));
     const keys = focusWithSpouses(core, spousePairs);
-    if (!fynny || radius >= 5) return keys;
+    if (!fynny) return keys;
     // доклеенный супруг остаётся, только если ярлык непуст и влезает:
     // бюджет браковых шагов kinLabel = radius (цепочки длиннее радиуса
     // всё равно отфильтруются); пустой ярлык — исключён (не «1 слово»)
@@ -1180,7 +1183,7 @@ function focusListKeys(pairs, spousePairs, key, radius, sexOf) {
 // падеже (оно про to), остальные — родительном; при неизвестном поле —
 // нейтральные «родитель/ребёнок/сиблинг». Ромб фильтра (focusKeys ниже)
 // при fynny = 1 режет боковую родню по числу слов цепочки (u+d−1 ≤ radius),
-// радиус 5 — «показать всех». Дословная копия — tgcloud/lib/kinship.js.
+// 5-й радиус — обычный, как остальные. Дословная копия — tgcloud/lib/kinship.js.
 
 const fynny = 1;
 
@@ -3499,9 +3502,9 @@ function chartModel(title, rows, links, rel = null, marriages = null) {
     const allYears = [
         ...people.map(p => p.yr),
         ...people.filter(p => p.dy !== null).map(p => p.dy),
-        // без даты смерти бар ограничен 80 годами или сегодня — ось X должна
+        // без даты смерти бар ограничен 100 годами или сегодня — ось X должна
         // их покрыть
-        ...people.filter(p => p.dy === null).map(p => Math.min(p.yr + 80, TODAY_Y)),
+        ...people.filter(p => p.dy === null).map(p => Math.min(p.yr + 100, TODAY_Y)),
         ...links.map(l => yrOf(byKey.get(l.child))),
     ];
     // колонка подписей «Связь год»: под самую длинную строку, все — одной строкой
@@ -3612,10 +3615,10 @@ function chartModel(title, rows, links, rel = null, marriages = null) {
         const cy = plotTop + p.y0 + p.h / 2;
         p.cy = cy;
         draws.push({ k: "text", x: KW - 8, y: cy + 3.5, s: p.label, size: 10, fill: "#333333", anchor: "end" });
-        // без даты смерти — до 80 лет от рождения, но не дальше сегодня
+        // без даты смерти — до 100 лет от рождения, но не дальше сегодня
         // (прожитая жизнь); с известной датой смерти за баром пишем N —
         // сколько лет прожито; без даты смерти — ничего
-        const end = p.dy ?? Math.max(p.yr, Math.min(p.yr + 80, TODAY_Y));
+        const end = p.dy ?? Math.max(p.yr, Math.min(p.yr + 100, TODAY_Y));
         const x1 = xS(p.yr), x2 = xS(end);
         const bar = p.r.sex === "M" ? BAR_M : p.r.sex === "F" ? BAR_F : BAR_N;
         // выноска («отступ»): тонкая линия от колонки подписей до имени;

@@ -214,9 +214,9 @@ export function chartModel(title, rows, links, rel = null, marriages = null) {
     const allYears = [
         ...people.map(p => p.yr),
         ...people.filter(p => p.dy !== null).map(p => p.dy),
-        // без даты смерти бар ограничен 80 годами или сегодня — ось X должна
+        // без даты смерти бар ограничен 100 годами или сегодня — ось X должна
         // их покрыть
-        ...people.filter(p => p.dy === null).map(p => Math.min(p.yr + 80, TODAY_Y)),
+        ...people.filter(p => p.dy === null).map(p => Math.min(p.yr + 100, TODAY_Y)),
         ...links.map(l => yrOf(byKey.get(l.child))),
     ];
     // колонка подписей «Связь год»: под самую длинную строку, все — одной строкой
@@ -327,10 +327,10 @@ export function chartModel(title, rows, links, rel = null, marriages = null) {
         const cy = plotTop + p.y0 + p.h / 2;
         p.cy = cy;
         draws.push({ k: "text", x: KW - 8, y: cy + 3.5, s: p.label, size: 10, fill: "#333333", anchor: "end" });
-        // без даты смерти — до 80 лет от рождения, но не дальше сегодня
+        // без даты смерти — до 100 лет от рождения, но не дальше сегодня
         // (прожитая жизнь); с известной датой смерти за баром пишем N —
         // сколько лет прожито; без даты смерти — ничего
-        const end = p.dy ?? Math.max(p.yr, Math.min(p.yr + 80, TODAY_Y));
+        const end = p.dy ?? Math.max(p.yr, Math.min(p.yr + 100, TODAY_Y));
         const x1 = xS(p.yr), x2 = xS(end);
         const bar = p.r.sex === "M" ? BAR_M : p.r.sex === "F" ? BAR_F : BAR_N;
         // выноска («отступ»): тонкая линия от колонки подписей до имени;
