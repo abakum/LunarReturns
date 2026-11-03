@@ -1516,6 +1516,13 @@ CREATE TABLE IF NOT EXISTS settings(
     bud INTEGER NOT NULL DEFAULT 0, cath INTEGER NOT NULL DEFAULT 0, jud INTEGER NOT NULL DEFAULT 0,
     bell INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`);
+    // WAL: запись в разы быстрее и чтения не блокируются записью; цена —
+    // при обрыве питания может откатиться последний коммит (для бота ок).
+    // busy_timeout — дождаться чужой записи вместо мгновенного «locked».
+    // synchronous=NORMAL — на соединение; journal_mode=WAL персистентный
+    sdb.exec("PRAGMA journal_mode=WAL");
+    sdb.exec("PRAGMA synchronous=NORMAL");
+    sdb.exec("PRAGMA busy_timeout=3000");
     for (const [t, c, ty] of [["indi", "note", "TEXT"], ["fam", "note", "TEXT"],
         ["indi", "deat_plac", "TEXT"],
         // признаки примерных дат (юбилеи по ним не оповещаются)
@@ -4376,6 +4383,21 @@ async function longPollInit() {
     console.log("long poll ready", lp.server);
 }
 
+// параллельная обработка по чатам: обновление разных peer_id идёт
+// одновременно (тяжёлая замена древа в одном чате не останавливает
+// остальные), внутри одного чата — строго по порядку (состояние древа,
+// gedPending и toggle-логика кнопок опираются на последовательность).
+// Синхронные участки БД-мутаций не перемежаются await'ами — гонок
+// между чатами нет; узкое место (event loop на sync-SQLite) смягчают
+// транзакция и WAL
+const peerChains = new Map(); // peerId -> промис последней задачи чата
+const byPeer = (peerId, run) => {
+    const next = (peerChains.get(peerId) || Promise.resolve()).then(run);
+    peerChains.set(peerId, next.catch(() => {}));
+    return next.catch(e => console.error("handle:", e.message, "\n",
+        (e.stack || "").split("\n").slice(1, 4).join("\n")));
+};
+
 // один запрос long poll; обрабатывает пришедшие message_new
 async function longPollStep() {
     const u = new URL(lp.server);
@@ -4398,40 +4420,41 @@ async function longPollStep() {
         if (groupId && Number(upd.group_id) !== groupId) continue;
         try {
             if (upd.type === "message_new" && upd.object) {
-                if (groupId && Number(upd.group_id) !== groupId) continue;
                 const msg = upd.object.message || upd.object;
                 if (!msg || msg.peer_id === undefined) continue;
-                if (msg.action) { // сервисное: вход/выход участника и т.п.
-                    console.log("action:", msg.action.type, "peer", msg.peer_id, "member", msg.action.member_id ?? "");
-                    if (msg.action.type === "chat_invite_user" && msg.action.member_id !== -groupId) {
-                        await messagesSend(msg.peer_id, HELP, 0, msg.conversation_message_id,
-                            (ownerId && msg.action.member_id === ownerId) ? ownerKeyboard() : bellKeyboard());
+                byPeer(msg.peer_id, async () => {
+                    if (msg.action) { // сервисное: вход/выход участника и т.п.
+                        console.log("action:", msg.action.type, "peer", msg.peer_id, "member", msg.action.member_id ?? "");
+                        if (msg.action.type === "chat_invite_user" && msg.action.member_id !== -groupId) {
+                            await messagesSend(msg.peer_id, HELP, 0, msg.conversation_message_id,
+                                (ownerId && msg.action.member_id === ownerId) ? ownerKeyboard() : bellKeyboard());
+                        }
+                        return;
                     }
-                    continue;
-                }
-                // дроп .ged-документа → вопрос «Да/Нет» (до разбора текста:
-                // сообщение может быть без текста, caption не разбираем)
-                const gedDoc = (msg.attachments || []).filter(a => a && a.type === "doc" && a.doc)
-                    .map(a => a.doc).find(d => String(d.ext || "").toLowerCase() === "ged" || /\.ged$/i.test(String(d.title || "")));
-                if (gedDoc) {
-                    await handleGedDrop(msg.peer_id, gedDoc, msg.id, msg.conversation_message_id, msg.from_id);
-                    continue;
-                }
-                // дроп .ged.txt-документа с пачкой «плоское древо» (см. handleTxtDrop);
-                // голый .txt — мимо (не разбираем, ждём .ged или .ged.txt)
-                const txtDoc = (msg.attachments || []).filter(a => a && a.type === "doc" && a.doc)
-                    .map(a => a.doc).find(d => /\.ged\.txt$/i.test(String(d.title || "")));
-                if (txtDoc) {
-                    await handleTxtDrop(msg.peer_id, txtDoc, msg.id, msg.conversation_message_id, msg.from_id, msg.reply_message || null);
-                    continue;
-                }
-                if (!msg.text && !msg.payload) continue;
-                await handleMessage(msg.peer_id, String(msg.text || ""), msg.date, msg.id, msg.conversation_message_id, msg.from_id, unpay(msg.payload || ""), msg.reply_message || null);
+                    // дроп .ged-документа → вопрос «Да/Нет» (до разбора текста:
+                    // сообщение может быть без текста, caption не разбираем)
+                    const gedDoc = (msg.attachments || []).filter(a => a && a.type === "doc" && a.doc)
+                        .map(a => a.doc).find(d => String(d.ext || "").toLowerCase() === "ged" || /\.ged$/i.test(String(d.title || "")));
+                    if (gedDoc) {
+                        await handleGedDrop(msg.peer_id, gedDoc, msg.id, msg.conversation_message_id, msg.from_id);
+                        return;
+                    }
+                    // дроп .ged.txt-документа с пачкой «плоское древо» (см. handleTxtDrop);
+                    // голый .txt — мимо (не разбираем, ждём .ged или .ged.txt)
+                    const txtDoc = (msg.attachments || []).filter(a => a && a.type === "doc" && a.doc)
+                        .map(a => a.doc).find(d => /\.ged\.txt$/i.test(String(d.title || "")));
+                    if (txtDoc) {
+                        await handleTxtDrop(msg.peer_id, txtDoc, msg.id, msg.conversation_message_id, msg.from_id, msg.reply_message || null);
+                        return;
+                    }
+                    if (!msg.text && !msg.payload) return;
+                    await handleMessage(msg.peer_id, String(msg.text || ""), msg.date, msg.id, msg.conversation_message_id, msg.from_id, unpay(msg.payload || ""), msg.reply_message || null);
+                });
             } else if (upd.type === "message_event" && upd.object) {
-                await handleEvent(upd.object);
+                byPeer(upd.object.peer_id, () => handleEvent(upd.object));
             } else if (upd.type && upd.type.includes("reaction") && upd.object) {
                 console.log("reaction upd:", JSON.stringify(upd.object).slice(0, 400));
-                await handleReaction(upd.object);
+                byPeer(upd.object.peer_id, () => handleReaction(upd.object));
             }
         } catch (e) {
             console.error("handle:", e.message, "\n", (e.stack || "").split("\n").slice(1, 4).join("\n"));
