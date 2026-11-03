@@ -1137,8 +1137,11 @@ function focusListKeys(pairs, spousePairs, key, radius, sexOf) {
     const core = new Set(focusKeys(pairs, key, radius));
     const keys = focusWithSpouses(core, spousePairs);
     if (!fynny || radius >= 5) return keys;
+    // доклеенный супруг остаётся, только если ярлык непуст и влезает:
+    // бюджет браковых шагов kinLabel = radius (цепочки длиннее радиуса
+    // всё равно отфильтруются); пустой ярлык — исключён (не «1 слово»)
     return keys.filter(s => core.has(s)
-        || kinLabel(pairs, spousePairs, sexOf, key, s).split(" ").length <= radius);
+        || (l => l && l.split(" ").length <= radius)(kinLabel(pairs, spousePairs, sexOf, key, s, radius)));
 }
 
 // супруги персон чата: fam с двумя датированными родителями — пары точные
@@ -1212,13 +1215,13 @@ export const focusHead = (key, radius, dd) =>
 // «Имя Д [Д(смерти)] [ЧЧ:ММ] родство»; items — записи {n, d, h, m, dd};
 // params — (items, keys, key, pairs, spousePairs, sexOf, byFullDate, mmddToday);
 // byFullDate=false — «от сегодня»: ММ-ДД ≥ mmddToday, true — все по полной дате
-export function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "") {
+export function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "", depth = 2) {
     const set = new Set(keys);
     const map = rs => rs
         .map(r => r.n + " " + r.d
             + (r.dd ? " " + r.dd : "")
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "")
-            + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d); return l ? " " + l : ""; })())
+            + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d, depth); return l ? " " + l : ""; })())
         .join("\n");
     const sortKey = r => r.d + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
     if (byFullDate) return map(items

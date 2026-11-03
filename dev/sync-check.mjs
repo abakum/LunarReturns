@@ -597,8 +597,8 @@ if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, sonKey, kinKeys['�
 cmp('kinLabel племянник мужа',
     VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, 'Мать 1956-05-05', kinKeys['Двоюродный']),
     TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, 'Мать 1956-05-05', kinKeys['Двоюродный']));
-if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, 'Мать 1956-05-05', kinKeys['Двоюродный']) !== 'племянник мужа')
-    { failed++; console.log('✗ kinLabel племянник мужа'); }
+if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, 'Мать 1956-05-05', kinKeys['Двоюродный']) !== 'сын сестры мужа')
+    { failed++; console.log('✗ kinLabel племянник мужа (fynny: «сын сестры мужа»)'); }
 cmp('kinLabel отец жены сына сына',
     VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Отец Снохи']),
     TGK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'], kinKeys['Отец Снохи']));

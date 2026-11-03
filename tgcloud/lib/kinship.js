@@ -24,61 +24,81 @@
 
 export const fynny = 1;
 
-export function kinLabel(pairs, spousePairs, sexOf, from, to, depth = 0) {
-    if (from === to) return "";
-    const blood = kinBlood(pairs, sexOf, from, to);
-    if (blood) return fynny ? kinChain(pairs, sexOf, from, to) : blood;
-    // кровь не прослеживается — супруги: «муж/жена + родство партнёра»
-    // (жена внука, муж дочки…) и «родство партнёра + муж/жена» (отец жены,
-    // племянник мужа…); у супруга цитируемого партнёр = from → просто
-    // «муж»/«жена»; партнёр вне родни — без ярлыка
-    for (const [x, y] of spousePairs || []) {
-        const partner = x === to ? y : y === to ? x : null;
-        if (partner === null) continue; // to — не супруг ни одной из пар
-        if ((x === from && y === to) || (y === from && x === to)) {
-            const s = sexOf ? sexOf(to) : null;
-            return s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
+// depth — «бюджет браковых шагов»: каждый переход через супруга (ярлык
+// партнёра по браку или «to — родня X, X — супруг») съедает 1; дефолт 2 =
+// прежнее поведение (не глубже двух браковых шагов — иначе «муж жены
+// мужа…» зациклится); радиусная фильтрация зовёт с budget = radius —
+// любой ярлык ≤ radius слов строится ≤ radius браковыми шагами, а цепочки
+// длиннее radius всё равно отфильтруются. Перебор кандидатов разматывается
+// мемо-кэшем (to, depth) — без него комбинаторика супругов взрывается
+export function kinLabel(pairs, spousePairs, sexOf, from, to, depth = 2) {
+    // from, pairs, spousePairs, sexOf постоянны на весь вычисл — кэш их не учитывает
+    const memo = new Map();
+    const label = (to, depth) => {
+        if (from === to || depth < 0) return "";
+        const key = to + "|" + depth;
+        if (memo.has(key)) return memo.get(key);
+        const r = calc(to, depth);
+        memo.set(key, r);
+        return r;
+    };
+    const calc = (to, depth) => {
+        const blood = kinBlood(pairs, sexOf, from, to);
+        if (blood) return fynny ? kinChain(pairs, sexOf, from, to) : blood;
+        let best = "";                                  // кратчайший из кандидатов
+        const nwords = l => l.split(" ").length;
+        const put = cand => { if (cand && (!best || nwords(cand) < nwords(best))) best = cand; };
+        // кровь не прослеживается — супруги: «муж/жена + родство партнёра»
+        // (жена внука, муж дочки…); у супруга цитируемого партнёр = from →
+        // просто «муж»/«жена»; партнёр вне родни — без ярлыка; среди супругов
+        // to выбираем кратчайший ярлык (несколько браков)
+        for (const [x, y] of spousePairs || []) {
+            const partner = x === to ? y : y === to ? x : null;
+            if (partner === null) continue; // to — не супруг ни одной из пар
+            if ((x === from && y === to) || (y === from && x === to)) {
+                const s = sexOf ? sexOf(to) : null;
+                return s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
+            }
+            const l = fynny ? label(partner, depth - 1)
+                : kinBlood(pairs, sexOf, from, partner);
+            if (l) {
+                const s = sexOf ? sexOf(to) : null;
+                const who = s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
+                put(who + " " + genLabel(l));
+            }
         }
-        // родство партнёра — по крови
-        const l = fynny ? kinChain(pairs, sexOf, from, partner)
-            : kinBlood(pairs, sexOf, from, partner);
-        if (l) {
-            const s = sexOf ? sexOf(to) : null;
-            const who = s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
-            return who + " " + genLabel(l);
+        // «родство партнёра + супруг»: to — кровный родственник X (сиблинг,
+        // ребёнок или родитель to), а X связан с цитируемым — часто через
+        // брак: «отец жены», «племянник мужа», «отец жены внука»; ярлык X
+        // к цитируемому — в родительном падеже; в fynny звено to—X — тоже
+        // цепочка реальных шагов (kinChain), никаких «внук/дядя/двоюродный»
+        if (depth > 0) {
+            const kidsOf = new Map(), parentsOf = new Map();
+            for (const [p, c] of pairs) {
+                if (!kidsOf.has(p)) kidsOf.set(p, []);
+                kidsOf.get(p).push(c);
+                if (!parentsOf.has(c)) parentsOf.set(c, []);
+                parentsOf.get(c).push(p);
+            }
+            // кандидаты: сиблинги to (дают «племянник мужа»), дети («отец
+            // жены»), дядья/тётья to и родители — выигрывает кратчайший
+            const sibs = new Set(), uncles = new Set();
+            for (const par of parentsOf.get(to) || []) {
+                for (const c of kidsOf.get(par) || []) if (c !== to) sibs.add(c);
+                for (const gp of parentsOf.get(par) || [])
+                    for (const c of kidsOf.get(gp) || []) if (c !== par) uncles.add(c);
+            }
+            for (const X of [...sibs, ...(kidsOf.get(to) || []), ...uncles, ...(parentsOf.get(to) || [])]) {
+                if (X === from) continue;
+                // to — родня X; в fynny звено — цепочка реальных шагов
+                const rl = fynny ? kinChain(pairs, sexOf, X, to) : kinBlood(pairs, sexOf, X, to);
+                const pl = rl ? label(X, depth - 1) : "";
+                if (pl) put(rl + " " + genLabel(pl));
+            }
         }
-    }
-    // «родство партнёра + супруг»: to — кровный родственник X (сиблинг,
-    // ребёнок или родитель to), а X связан с цитируемым — часто через брак:
-    // «отец жены», «племянник мужа», «отец жены внука», «мать двоюродного
-    // брата»; ярлык X к цитируемому — в родительном падеже; depth —
-    // ограничитель браковых шагов (иначе «муж жены мужа…» зациклится)
-    if (depth < 2) {
-        const kidsOf = new Map(), parentsOf = new Map();
-        for (const [p, c] of pairs) {
-            if (!kidsOf.has(p)) kidsOf.set(p, []);
-            kidsOf.get(p).push(c);
-            if (!parentsOf.has(c)) parentsOf.set(c, []);
-            parentsOf.get(c).push(p);
-        }
-        // порядок кандидатов: сиблинги to (дают «племянник мужа»), дети
-        // («отец жены»), дядья/тётьи to (сиблинги родителей — тоже
-        // «племянник мужа»), родители — первые дающие оба звена выигрывают
-        const sibs = new Set(), uncles = new Set();
-        for (const par of parentsOf.get(to) || []) {
-            for (const c of kidsOf.get(par) || []) if (c !== to) sibs.add(c);
-            for (const gp of parentsOf.get(par) || [])
-                for (const c of kidsOf.get(gp) || []) if (c !== par) uncles.add(c);
-        }
-        for (const X of [...sibs, ...(kidsOf.get(to) || []), ...uncles, ...(parentsOf.get(to) || [])]) {
-            if (X === from) continue;
-            const rl = kinBlood(pairs, sexOf, X, to);   // to — родня X
-            const pl = rl
-                ? kinLabel(pairs, spousePairs, sexOf, from, X, depth + 1) : "";
-            if (pl) return rl + " " + genLabel(pl);
-        }
-    }
-    return "";
+        return best;
+    };
+    return label(to, depth);
 }
 
 // кровное родство (без супруговых переходов): ближайший общий предок (a↑b↓),

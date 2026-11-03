@@ -1151,8 +1151,11 @@ function focusListKeys(pairs, spousePairs, key, radius, sexOf) {
     const core = new Set(focusKeys(pairs, key, radius));
     const keys = focusWithSpouses(core, spousePairs);
     if (!fynny || radius >= 5) return keys;
+    // доклеенный супруг остаётся, только если ярлык непуст и влезает:
+    // бюджет браковых шагов kinLabel = radius (цепочки длиннее радиуса
+    // всё равно отфильтруются); пустой ярлык — исключён (не «1 слово»)
     return keys.filter(s => core.has(s)
-        || kinLabel(pairs, spousePairs, sexOf, key, s).split(" ").length <= radius);
+        || (l => l && l.split(" ").length <= radius)(kinLabel(pairs, spousePairs, sexOf, key, s, radius)));
 }
 
 // kinship.js — ярлыки родства «кто цитируемому кто»: мать, сын, внучка,
@@ -1181,61 +1184,81 @@ function focusListKeys(pairs, spousePairs, key, radius, sexOf) {
 
 const fynny = 1;
 
-function kinLabel(pairs, spousePairs, sexOf, from, to, depth = 0) {
-    if (from === to) return "";
-    const blood = kinBlood(pairs, sexOf, from, to);
-    if (blood) return fynny ? kinChain(pairs, sexOf, from, to) : blood;
-    // кровь не прослеживается — супруги: «муж/жена + родство партнёра»
-    // (жена внука, муж дочки…) и «родство партнёра + муж/жена» (отец жены,
-    // племянник мужа…); у супруга цитируемого партнёр = from → просто
-    // «муж»/«жена»; партнёр вне родни — без ярлыка
-    for (const [x, y] of spousePairs || []) {
-        const partner = x === to ? y : y === to ? x : null;
-        if (partner === null) continue; // to — не супруг ни одной из пар
-        if ((x === from && y === to) || (y === from && x === to)) {
-            const s = sexOf ? sexOf(to) : null;
-            return s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
+// depth — «бюджет браковых шагов»: каждый переход через супруга (ярлык
+// партнёра по браку или «to — родня X, X — супруг») съедает 1; дефолт 2 =
+// прежнее поведение (не глубже двух браковых шагов — иначе «муж жены
+// мужа…» зациклится); радиусная фильтрация зовёт с budget = radius —
+// любой ярлык ≤ radius слов строится ≤ radius браковыми шагами, а цепочки
+// длиннее radius всё равно отфильтруются. Перебор кандидатов разматывается
+// мемо-кэшем (to, depth) — без него комбинаторика супругов взрывается
+function kinLabel(pairs, spousePairs, sexOf, from, to, depth = 2) {
+    // from, pairs, spousePairs, sexOf постоянны на весь вычисл — кэш их не учитывает
+    const memo = new Map();
+    const label = (to, depth) => {
+        if (from === to || depth < 0) return "";
+        const key = to + "|" + depth;
+        if (memo.has(key)) return memo.get(key);
+        const r = calc(to, depth);
+        memo.set(key, r);
+        return r;
+    };
+    const calc = (to, depth) => {
+        const blood = kinBlood(pairs, sexOf, from, to);
+        if (blood) return fynny ? kinChain(pairs, sexOf, from, to) : blood;
+        let best = "";                                  // кратчайший из кандидатов
+        const nwords = l => l.split(" ").length;
+        const put = cand => { if (cand && (!best || nwords(cand) < nwords(best))) best = cand; };
+        // кровь не прослеживается — супруги: «муж/жена + родство партнёра»
+        // (жена внука, муж дочки…); у супруга цитируемого партнёр = from →
+        // просто «муж»/«жена»; партнёр вне родни — без ярлыка; среди супругов
+        // to выбираем кратчайший ярлык (несколько браков)
+        for (const [x, y] of spousePairs || []) {
+            const partner = x === to ? y : y === to ? x : null;
+            if (partner === null) continue; // to — не супруг ни одной из пар
+            if ((x === from && y === to) || (y === from && x === to)) {
+                const s = sexOf ? sexOf(to) : null;
+                return s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
+            }
+            const l = fynny ? label(partner, depth - 1)
+                : kinBlood(pairs, sexOf, from, partner);
+            if (l) {
+                const s = sexOf ? sexOf(to) : null;
+                const who = s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
+                put(who + " " + genLabel(l));
+            }
         }
-        // родство партнёра — по крови
-        const l = fynny ? kinChain(pairs, sexOf, from, partner)
-            : kinBlood(pairs, sexOf, from, partner);
-        if (l) {
-            const s = sexOf ? sexOf(to) : null;
-            const who = s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
-            return who + " " + genLabel(l);
+        // «родство партнёра + супруг»: to — кровный родственник X (сиблинг,
+        // ребёнок или родитель to), а X связан с цитируемым — часто через
+        // брак: «отец жены», «племянник мужа», «отец жены внука»; ярлык X
+        // к цитируемому — в родительном падеже; в fynny звено to—X — тоже
+        // цепочка реальных шагов (kinChain), никаких «внук/дядя/двоюродный»
+        if (depth > 0) {
+            const kidsOf = new Map(), parentsOf = new Map();
+            for (const [p, c] of pairs) {
+                if (!kidsOf.has(p)) kidsOf.set(p, []);
+                kidsOf.get(p).push(c);
+                if (!parentsOf.has(c)) parentsOf.set(c, []);
+                parentsOf.get(c).push(p);
+            }
+            // кандидаты: сиблинги to (дают «племянник мужа»), дети («отец
+            // жены»), дядья/тётья to и родители — выигрывает кратчайший
+            const sibs = new Set(), uncles = new Set();
+            for (const par of parentsOf.get(to) || []) {
+                for (const c of kidsOf.get(par) || []) if (c !== to) sibs.add(c);
+                for (const gp of parentsOf.get(par) || [])
+                    for (const c of kidsOf.get(gp) || []) if (c !== par) uncles.add(c);
+            }
+            for (const X of [...sibs, ...(kidsOf.get(to) || []), ...uncles, ...(parentsOf.get(to) || [])]) {
+                if (X === from) continue;
+                // to — родня X; в fynny звено — цепочка реальных шагов
+                const rl = fynny ? kinChain(pairs, sexOf, X, to) : kinBlood(pairs, sexOf, X, to);
+                const pl = rl ? label(X, depth - 1) : "";
+                if (pl) put(rl + " " + genLabel(pl));
+            }
         }
-    }
-    // «родство партнёра + супруг»: to — кровный родственник X (сиблинг,
-    // ребёнок или родитель to), а X связан с цитируемым — часто через брак:
-    // «отец жены», «племянник мужа», «отец жены внука», «мать двоюродного
-    // брата»; ярлык X к цитируемому — в родительном падеже; depth —
-    // ограничитель браковых шагов (иначе «муж жены мужа…» зациклится)
-    if (depth < 2) {
-        const kidsOf = new Map(), parentsOf = new Map();
-        for (const [p, c] of pairs) {
-            if (!kidsOf.has(p)) kidsOf.set(p, []);
-            kidsOf.get(p).push(c);
-            if (!parentsOf.has(c)) parentsOf.set(c, []);
-            parentsOf.get(c).push(p);
-        }
-        // порядок кандидатов: сиблинги to (дают «племянник мужа»), дети
-        // («отец жены»), дядья/тётьи to (сиблинги родителей — тоже
-        // «племянник мужа»), родители — первые дающие оба звена выигрывают
-        const sibs = new Set(), uncles = new Set();
-        for (const par of parentsOf.get(to) || []) {
-            for (const c of kidsOf.get(par) || []) if (c !== to) sibs.add(c);
-            for (const gp of parentsOf.get(par) || [])
-                for (const c of kidsOf.get(gp) || []) if (c !== par) uncles.add(c);
-        }
-        for (const X of [...sibs, ...(kidsOf.get(to) || []), ...uncles, ...(parentsOf.get(to) || [])]) {
-            if (X === from) continue;
-            const rl = kinBlood(pairs, sexOf, X, to);   // to — родня X
-            const pl = rl
-                ? kinLabel(pairs, spousePairs, sexOf, from, X, depth + 1) : "";
-            if (pl) return rl + " " + genLabel(pl);
-        }
-    }
-    return "";
+        return best;
+    };
+    return label(to, depth);
 }
 
 // кровное родство (без супруговых переходов): ближайший общий предок (a↑b↓),
@@ -3465,7 +3488,7 @@ function chartModel(title, rows, links, rel = null, marriages = null) {
     // (abt >= 15: EST — от супруга или сдвинутый дубль) год тоже не печатается
     const kin = rel && rel.hero
         ? new Map(people.map(p =>
-            [p.key, kinLabel(rel.pairs || [], rel.spouses || [], k2 => (rel.sex || {})[k2] ?? null, rel.hero, p.key)]))
+            [p.key, kinLabel(rel.pairs || [], rel.spouses || [], k2 => (rel.sex || {})[k2] ?? null, rel.hero, p.key, rel.range || undefined)]))
         : null;
     if (kin && rel.range) kin.set(rel.hero, rangeLevel(rel.range));
     people.forEach((p, i) => {
@@ -4659,16 +4682,17 @@ async function focusKeyboard(peerId, userId, key, radius, depth) {
 
 // список событий по множеству фокуса с ярлыками родства (kinLabel):
 // «Имя Д [Д(смерти)] [ЧЧ:ММ] родство»; items — записи {n, d, h, m, dd};
-// params — (items, keys, key, pairs, spousePairs, sexOf, byFullDate, mmddToday);
+// params — (items, keys, key, pairs, spousePairs, sexOf, byFullDate, mmddToday, depth);
 // byFullDate=false — круговой порядок «от сегодня» (как religiousYear),
-// true — все по полной дате ГГГГ-ММ-ДД (подтверждение удаления)
-function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "") {
+// true — все по полной дате ГГГГ-ММ-ДД (подтверждение удаления);
+// depth — бюджет браковых шагов kinLabel (= радиус списка, дефолт 2)
+function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "", depth = 2) {
     const set = new Set(keys);
     const map = rs => rs
         .map(r => r.n + " " + r.d
             + (r.dd ? " " + r.dd : "")
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "")
-            + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d); return l ? " " + l : ""; })())
+            + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d, depth); return l ? " " + l : ""; })())
         .join("\n");
     const sortKey = r => r.d + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
     if (byFullDate) return map(items
@@ -4709,7 +4733,7 @@ function focusText(peerId, key, radius, bell, dd, byFull = false) {
     const { mo, d: dToday } = mskNowParts();
     const mmdd = String(mo).padStart(2, "0") + "-" + String(dToday).padStart(2, "0");
     const body = bell
-        ? (focusListText(bellItems, keys, key, pairs, spPairs, k => sexMap.get(k) ?? null, byFull, mmdd)
+        ? (focusListText(bellItems, keys, key, pairs, spPairs, k => sexMap.get(k) ?? null, byFull, mmdd, radius)
             || "(в радиусе нет событий)")
         : gedcomText(peerId, keys);
     return focusHead(key, radius, dd) + "\n" + body;

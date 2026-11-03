@@ -370,7 +370,7 @@ export default async function (cq, ctx) {
         if (bell) {
             const pairs = await linkPairs(chatId);
             const spPairs = await focusSpousePairs(chatId);
-            body = focusListText(await bellItems(), keys, row.pkey, pairs, spPairs, await sexOf(), byFull, mmddToday())
+            body = focusListText(await bellItems(), keys, row.pkey, pairs, spPairs, await sexOf(), byFull, mmddToday(), radius)
                 || "(в радиусе нет событий)";
         }
         const full = head + (body ? "\n" + body : "");

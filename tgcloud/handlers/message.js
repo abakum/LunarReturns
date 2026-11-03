@@ -224,7 +224,7 @@ export default async function (message, ctx) {
                     k => sexMap.get(k) ?? null);
                 const items = [...await personRows(chatId), ...await weddingRows(chatId)];
                 const body = focusListText(items, keys, key, pairs,
-                    spPairs, k => sexMap.get(k) ?? null, false, mmddToday())
+                    spPairs, k => sexMap.get(k) ?? null, false, mmddToday(), r)
                     || "(в радиусе нет событий)";
                 await api.sendMessage({ chat_id: chatId,
                     text: focusHead(key, r, rec.dd) + "\n" + body });
