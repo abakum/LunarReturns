@@ -200,7 +200,7 @@ export function chartModel(title, rows, links, rel = null, marriages = null) {
     // rel.range — rangeLevel(L)); у остальных строк — прежние индивидуальные
     // ярлыки родства (как в 🔔-списке); у героя и вне родни (без героя/
     // диапазона) — подпись «Год»; бездатным год неизвестен, у фиктивных ДР
-    // (abt 3: от супруга или сдвинутый дубль) год тоже не печатается
+    // (abt >= 15: EST — от супруга или сдвинутый дубль) год тоже не печатается
     const kin = rel && rel.hero
         ? new Map(people.map(p =>
             [p.key, kinLabel(rel.pairs || [], rel.spouses || [], k2 => (rel.sex || {})[k2] ?? null, rel.hero, p.key)]))
@@ -208,7 +208,7 @@ export function chartModel(title, rows, links, rel = null, marriages = null) {
     if (kin && rel.range) kin.set(rel.hero, rangeLevel(rel.range));
     people.forEach((p, i) => {
         p.row = i;
-        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + (p.r.birth != null && p.r.abt !== 3 ? p.yr : ""); })();
+        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + (p.r.birth != null && (p.r.abt ?? 0) < 15 ? p.yr : ""); })();
     });
     const rowOf = new Map(people.map(p => [p.key, p]));
     const allYears = [
@@ -342,7 +342,7 @@ export function chartModel(title, rows, links, rel = null, marriages = null) {
         // имя героя чарта — жирным
         draws.push({ k: "text", x: x1 - 6, y: cy + 3.5, s: p.r.name, size: 10, fill: "#111111", anchor: "end", bold: rel != null && p.key === rel.hero });
         draws.push({ k: "rrect", x: x1, y: cy - BAR_H / 2, w: Math.max(2, x2 - x1), h: BAR_H, r: 2, fill: bar });
-        if (p.dy !== null && p.r.birth != null && p.r.abt !== 3) // известная смерть — N прожитых лет за баром (у фиктивной ДР abt 3 — не пишем)
+        if (p.dy !== null && p.r.birth != null && (p.r.abt ?? 0) < 15) // известная смерть — N прожитых лет за баром (у фиктивной ДР abt>=15, EST — не пишем)
             draws.push({ k: "text", x: x2 + 4, y: cy + 3.5, s: String(p.dy - p.yr), size: 10, fill: bar });
     }
     // связи родитель→ребёнок (в год рождения ребёнка), точки на строках;

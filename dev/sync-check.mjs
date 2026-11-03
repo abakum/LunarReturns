@@ -95,7 +95,7 @@ const GEDCOM = [
 cmp('parseGedcom', VK.parseGedcom(GEDCOM), TGP.parseGedcom(GEDCOM));
 cmp('gedStats', VK.gedStats(VK.parseGedcom(GEDCOM)), TGP.gedStats(TGP.parseGedcom(GEDCOM)));
 // неполные даты не ломают импорт: «1624» → 1624-01-01, «ABT MAR 1662» →
-// 1662-03-01 (первым числом известного месяца/года, квалификатор срезан)
+// 1662-03-01 (первым числом известного месяца/года, ABT → abt 4)
 const gUnf = VK.parseGedcom(GEDCOM);
 const unfB = gUnf.indis.find(i => i.__xref === 'I4');
 const unfM = gUnf.indis.find(i => i.__xref === 'I5');
@@ -773,7 +773,7 @@ const stubFlat = VK.chatFlatText(GS_CH);
 const STUB_FLAT_EXPECT = '-Иван Г 1960-05-10 (Пермь) 2020-05-05 (Пермь)\n'
     + '+1983-06-04\n'
     + 'Мария С 1960-05-10~ (Сарапул) 2020-02-03 (Курск)\n'
-    + '--Сын Бездатный 1984-06-04~ 1990-05-05 (Москва)\n' // свадьба +1 год (birt_abt 3)
+    + '--Сын Бездатный 1984-06-04~ 1990-05-05 (Москва)\n' // свадьба +1 год (birt_abt 15, EST-день)
     + '=Ольга Д 1955-03-01 2001-01-01 (Кладбище)';
 if (stubFlat !== STUB_FLAT_EXPECT)
     { failed++; console.log('✗ пачка бездатные/места:\n  ' + stubFlat); }
@@ -1353,9 +1353,9 @@ const GED_DUP = ['0 HEAD',
     '0 @I3@ INDI', '1 NAME Тёзка', '1 BIRT', '2 DATE ABT 1 JAN 1960',
     '0 @I4@ INDI', '1 NAME Тёзка', '1 BIRT', '2 DATE 1 JAN 1960',      // точный дубль → «~I4»
     '0 @I5@ INDI', '1 NAME Тёзка2', '1 BIRT', '2 DATE 30 DEC 1955',
-    '0 @I6@ INDI', '1 NAME Тёзка2', '1 BIRT', '2 DATE ABT 30 DEC 1955', // дубль abt3 → «~I6»
+    '0 @I6@ INDI', '1 NAME Тёзка2', '1 BIRT', '2 DATE ABT 30 DEC 1955', // дубль ABT → «~I6»
     '0 @I7@ INDI', '1 NAME Тёзка3', '1 BIRT', '2 DATE 31 DEC 1955',
-    '0 @I8@ INDI', '1 NAME Тёзка3', '1 BIRT', '2 DATE ABT 31 DEC 1955', // дубль abt3 → «~I8»
+    '0 @I8@ INDI', '1 NAME Тёзка3', '1 BIRT', '2 DATE ABT 31 DEC 1955', // дубль ABT → «~I8»
     '0 TRLR'].join('\n');
 const DUP_CH = 140;
 {
@@ -1370,14 +1370,15 @@ const DUP_CH = 140;
         'Тёзка ~I4 1960-01-01', 'Тёзка2 1955-12-30', 'Тёзка2 ~I6 1955-12-30',
         'Тёзка3 1955-12-31', 'Тёзка3 ~I8 1955-12-31'])
         if (!names.includes(want)) { failed++; console.log('✗ importGedcom дубли: нет ключа «' + want + '»: ' + names.join(' | ')); }
-    // ♻️-строки в отчёте (формат абт-гранулярности: год-онли «ГГГГ»,
-    // примерный полный день с «~»-хвостом; даты дублей не сдвигаются)
+    // ♻️-строки в отчёте (формат abt: гранулярность — урезание «ГГГГ»/
+    // «ГГГГ-ММ», квалификатор — суффикс «?» ABT / «~» EST; даты дублей
+    // не сдвигаются)
     const vt = VK.treeReport(vkRep), tt = TG.treeReport(vkRep);
     for (const s of ['♻️ дубль: Тёзка 1960 → Тёзка ~I2 1960',
-        '♻️ дубль: Тёзка 1960-01-01~ → Тёзка ~I3 1960-01-01~',
+        '♻️ дубль: Тёзка 1960-01-01? → Тёзка ~I3 1960-01-01?',
         '♻️ дубль: Тёзка 1960-01-01 → Тёзка ~I4 1960-01-01',
-        '♻️ дубль: Тёзка2 1955-12-30~ → Тёзка2 ~I6 1955-12-30~',
-        '♻️ дубль: Тёзка3 1955-12-31~ → Тёзка3 ~I8 1955-12-31~'])
+        '♻️ дубль: Тёзка2 1955-12-30? → Тёзка2 ~I6 1955-12-30?',
+        '♻️ дубль: Тёзка3 1955-12-31? → Тёзка3 ~I8 1955-12-31?'])
         if (!vt.includes(s) || !tt.includes(s)) { failed++; console.log('✗ дубли отчёт: нет строки «' + s + '»\n  ВК: ' + vt.split("\n").filter(x => x.includes("♻️")).join(" | ") + '\n  ТГ: ' + tt.split("\n").filter(x => x.includes("♻️")).join(" | ")); }
     // помощник: точный и примерный сценарии (без коллизии — как есть;
     // резерв — занятый ключ, суффикс из свежего xref, не занятого в БД)
@@ -1413,8 +1414,8 @@ const W_CH = 142;
 }
 
 // round-trip .ged с примерными датами: «1972», «MAR 1980», «ABT 3 APR 1980»
-// сохраняют гранулярность abt (1 год / 2 месяц / 3 день), год-онли экспортируется
-// «2 DATE ГГГГ», месяц — «JUN 1987», примерный день — «ABT …»
+// сохраняют abt (2 год / 1 месяц / 3 ABT-день), год-онли экспортируется
+// «2 DATE ГГГГ», месяц — «JUN 1987», ABT-день — «ABT …», ABT-год — «ABT ГГГГ»
 const ABT_CH = 143;
 {
     const GED_ABT = ['0 HEAD',
@@ -1428,22 +1429,62 @@ const ABT_CH = 143;
     cmp('importGedcom abt отчёт', vkRep, tgRep);
     cmp('importGedcom abt personRows', VK.personRows(ABT_CH), await TG.personRows(ABT_CH));
     cmp('importGedcom abt weddingRows', VK.weddingRows(ABT_CH), await TG.weddingRows(ABT_CH));
-    // гранулярность: 1 — год, 2 — месяц, 3 — примерный день
+    // abt = Q*3+G: 2 — год, 1 — месяц, 3 — ABT-день
     const abts = VK.personRows(ABT_CH).map(r => r.n + ":" + r.abt).join(",");
-    if (abts !== 'Годик:1,Месяцов:2,Квалификатор:3') { failed++; console.log('✗ abt-гранулярность: ' + abts); }
-    if (VK.weddingRows(ABT_CH)[0].mabt !== 1) { failed++; console.log('✗ abt-гранулярность свадьбы'); }
+    if (abts !== 'Годик:2,Месяцов:1,Квалификатор:3') { failed++; console.log('✗ abt-гранулярность: ' + abts); }
+    if (VK.weddingRows(ABT_CH)[0].mabt !== 5) { failed++; console.log('✗ abt-гранулярность свадьбы'); }
     cmp('abt гедком', VK.gedcomText(ABT_CH), await TG.gedcomText(ABT_CH));
     cmp('abt пачка', VK.chatFlatText(ABT_CH), await TG.chatFlatText(ABT_CH));
     // round-trip: экспорт → импорт → то же дерево
     const vkGed = VK.gedcomText(ABT_CH), tgGed = await TG.gedcomText(ABT_CH);
     if (!vkGed.includes('2 DATE 1972') || !vkGed.includes('2 DATE ABT 3 APR 1980')
-        || !vkGed.includes('2 DATE 1985') || vkGed.includes('2 DATE ABT 1985') || vkGed.includes('2 DATE ABT 1 JAN 1972')
+        || !vkGed.includes('2 DATE ABT 1985') || vkGed.includes('2 DATE ABT 1 JAN 1972')
         || !vkGed.includes('2 DATE MAR 1980') || vkGed.includes('2 DATE ABT MAR 1980'))
         { failed++; console.log('✗ abt гедком-экспорт:\n' + vkGed); }
     VK.importGedcom(ABT_CH, VK.parseGedcom(vkGed));
     await TG.importGedcom(ABT_CH, TGP.parseGedcom(tgGed));
     cmp('abt round-trip personRows', VK.personRows(ABT_CH), await TG.personRows(ABT_CH));
     cmp('abt round-trip пачка', VK.chatFlatText(ABT_CH), await TG.chatFlatText(ABT_CH));
+}
+
+// квалификаторы CAL/BEF/AFT/EST: импорт гедкома даёт свой abt (6–17), экспорт
+// возвращает префикс на любой гранулярности (round-trip без потерь); в тексте —
+// суффиксы «~» EST, «<» BEF, «>» AFT
+{
+    const QL_CH = 147;
+    const GED_Q = ['0 HEAD',
+        '0 @I1@ INDI', '1 NAME Вычисл', '1 BIRT', '2 DATE CAL 6 MAY 1234',
+        '0 @I2@ INDI', '1 NAME Дошел', '1 BIRT', '2 DATE BEF JUN 1900',
+        '0 @I3@ INDI', '1 NAME Послен', '1 BIRT', '2 DATE AFT 1940',
+        '0 @I4@ INDI', '1 NAME Оценкин', '1 BIRT', '2 DATE EST 3 APR 1980',
+        '0 @F1@ FAM', '1 HUSB @I1@', '1 WIFE @I2@', '1 MARR', '2 DATE EST 1985',
+        '0 TRLR'].join('\n');
+    const vkRep = VK.importGedcom(QL_CH, VK.parseGedcom(GED_Q));
+    const tgRep = await TG.importGedcom(QL_CH, TGP.parseGedcom(GED_Q));
+    cmp('importGedcom квалификаторы отчёт', vkRep, tgRep);
+    cmp('importGedcom квалификаторы personRows', VK.personRows(QL_CH), await TG.personRows(QL_CH));
+    const qabts = VK.personRows(QL_CH).map(r => r.n + ":" + r.abt).join(",");
+    if (qabts !== 'Вычисл:6,Дошел:10,Послен:14,Оценкин:15')
+        { failed++; console.log('✗ квалификаторы abt: ' + qabts); }
+    cmp('квалификаторы гедком', VK.gedcomText(QL_CH), await TG.gedcomText(QL_CH));
+    const vkGedQ = VK.gedcomText(QL_CH);
+    for (const s of ['2 DATE CAL 6 MAY 1234', '2 DATE BEF JUN 1900', '2 DATE AFT 1940',
+        '2 DATE EST 3 APR 1980', '2 DATE EST 1985'])
+        if (!vkGedQ.includes(s)) { failed++; console.log('✗ квалификаторы экспорт: нет «' + s + '»\n' + vkGedQ); }
+    VK.importGedcom(QL_CH, VK.parseGedcom(vkGedQ));
+    await TG.importGedcom(QL_CH, TGP.parseGedcom(vkGedQ));
+    cmp('квалификаторы round-trip personRows', VK.personRows(QL_CH), await TG.personRows(QL_CH));
+    cmp('квалификаторы round-trip пачка', VK.chatFlatText(QL_CH), await TG.chatFlatText(QL_CH));
+    // суффиксы в тексте: «~» EST (15), «<» BEF (9), «>» AFT (12)
+    for (const [txt, d, abt] of [['Оценка 1980-04-03~', '1980-04-03', 15],
+        ['Раньше 1980-04-03<', '1980-04-03', 9], ['Позже 1980-04-03>', '1980-04-03', 12],
+        ['Раньше-год 1980<', '1980-01-01', 11], ['Позже-год 1980>', '1980-01-01', 14]]) {
+        const [qv, qt] = [VK.parseTrigger(txt).rec, TGP.parseTrigger(txt).rec];
+        if (JSON.stringify(qv) !== JSON.stringify(qt))
+            { failed++; console.log('✗ суффикс «' + txt + '»: ' + JSON.stringify(qv) + ' vs ' + JSON.stringify(qt)); }
+        if (qv.d !== d || qv.abt !== abt)
+            { failed++; console.log('✗ суффикс «' + txt + '» разбор: ' + JSON.stringify(qv)); }
+    }
 }
 
 // гранулярность примерных дат в пачке/вводе: месяц — «ГГГГ-ММ» (а не
@@ -1456,14 +1497,14 @@ const ABT_CH = 143;
     };
     const [pv, pt] = P("Месяц1 1987-06");
     if (JSON.stringify(pv) !== JSON.stringify(pt)) { failed++; console.log('✗ 1987-06: ' + JSON.stringify(pv) + ' vs ' + JSON.stringify(pt)); }
-    expect("1987-06 разбор", pv, "1987-06-01", 2);
+    expect("1987-06 разбор", pv, "1987-06-01", 1);
     const [cv, ct] = P("Месяц2 198706");
     if (JSON.stringify(cv) !== JSON.stringify(ct)) { failed++; console.log('✗ 198706: ' + JSON.stringify(cv) + ' vs ' + JSON.stringify(ct)); }
-    expect("198706 разбор", cv, "1987-06-01", 2);
+    expect("198706 разбор", cv, "1987-06-01", 1);
     const [tv, tt] = P("Годовик 1987");
     if (JSON.stringify(tv) !== JSON.stringify(tt)) { failed++; console.log('✗ 1987: ' + JSON.stringify(tv) + ' vs ' + JSON.stringify(tt)); }
-    expect("1987 разбор", tv, "1987-01-01", 1);
-    // JAN 1987 (гедком) и «1987-01» — одно и то же в БД: {1987-01-01, abt 2} —
+    expect("1987 разбор", tv, "1987-01-01", 2);
+    // JAN 1987 (гедком) и «1987-01» — одно и то же в БД: {1987-01-01, abt 1} —
     // проверяем через импорт гедкома в обеих сторонах
     const GED_JAN = ['0 HEAD',
         '0 @I1@ INDI', '1 NAME Январка', '1 BIRT', '2 DATE JAN 1987',
@@ -1473,7 +1514,7 @@ const ABT_CH = 143;
     await TG.importGedcom(GR_CH + 2, TGP.parseGedcom(GED_JAN));
     cmp('JAN/ABT гедком-импорт', VK.personRows(GR_CH + 2), await TG.personRows(GR_CH + 2));
     const jabs = VK.personRows(GR_CH + 2).map(r => r.n + ":" + r.abt + ":" + r.d).join(",");
-    if (jabs !== 'Январка:2:1987-01-01,Квалифик:3:1987-06-15')
+    if (jabs !== 'Январка:1:1987-01-01,Квалифик:3:1987-06-15')
         { failed++; console.log('✗ JAN/ABT Гранулярность: ' + jabs); }
     // реальный цикл «пачка → древо → пачка»: месяц печатается без «-01» и «~»
     const TREE = ["- Имя 1970-01-01", "+ 1987-06", "Тёзка 1987-06", "-", "Пол 1990"].join('\n');

@@ -128,8 +128,8 @@ async function nextFamXref(chatId, pref) {
 // ---- виды: «Имя Д» и «Имя+Имя Д» — выборка из дерева ----
 
 // строка indi (с birt_d) в виде записи-события {n,d,h,m,srcH,srcM,dd,dh,dm,dsrcH,dsrcM,sex,plac,xref}
-// abt/dabt — гранулярность примерности ДР/смерти (1 год/2 месяц/3 «~»):
-// юбилеи по ним не оповещаются
+// abt/dabt — квалификатор×гранулярность ДР/смерти (abt = Q*3+G, см.
+// lib/parse.js): юбилеи по abt!=0 не оповещаются
 const recOfIndi = r => {
     const o = { n: r.name, d: r.birtD };
     if (r.birtAbt) o.abt = r.birtAbt;
@@ -1310,12 +1310,17 @@ export async function gedcomText(chatId, keys) {
     // идентикаторе INDI @…@; в NAME метку снимаем (реимпорт восстановит её
     // из файлового xref — круглый trip остаётся идемпотентным)
     const cleanName = n => n.replace(/ ~\S+$/, "");
-    // примерная дата: год-only (abt 1) — «ГГГГ», месяц-only (abt 2) — «JUN 1987»,
-    // примерный день (abt 3) — «ABT <гедком>»
-    const gdateAbt = (d, abt) => abt === 1 ? d.slice(0, 4)
-        : abt === 2 ? MON[Number(d.slice(5, 7)) - 1] + " " + d.slice(0, 4)
-        : abt === 3 ? "ABT " + gdate(d)
-        : gdate(d);
+    // примерная дата в гедком: гранулярность — форма даты (год-only «ГГГГ»,
+    // месяц-only «JUN 1987», полный день «6 MAY 1234»), квалификатор —
+    // префикс на любой гранулярности («ABT MAY 1985», «EST 1985»)
+    const ABT_TAG = { 1: "ABT", 2: "CAL", 3: "BEF", 4: "AFT", 5: "EST" };
+    const gdateAbt = (d, abt) => {
+        const a = abt || 0, q = Math.floor(a / 3), g = a % 3;
+        const s = g === 2 ? d.slice(0, 4)
+            : g === 1 ? MON[Number(d.slice(5, 7)) - 1] + " " + d.slice(0, 4)
+            : gdate(d);
+        return (ABT_TAG[q] ? ABT_TAG[q] + " " : "") + s;
+    };
     const hasKeys = Array.isArray(keys) && keys.length > 0;
     const persons = (await personRows(chatId)).filter(r => !hasKeys || keys.includes(pkey(r)));
     const idOf = new Map(persons.map(r => [r.xref, r.xref]));
@@ -1655,8 +1660,8 @@ export function flatTreeText(persons, fams, canonical = false) {
     // Место — в скобках за своей датой (рождения/смерти): грамматика пачки
     // трактует время как местное в месте, поэтому с местом выводится
     // исходное время (если было), без места — московское, как прежде
-    // примерная дата — гранулярно (approxOut): 1 — «ГГГГ», 2 — «ГГГГ-ММ»,
-    // 3 — «~»-хвост за полной датой
+    // примерная дата — гранулярно с суффиксом квалификатора (approxOut):
+    // «1234», «1234-05», «1234-05-06~»/«1234-05?»/«1234=»…
     const dOut = approxOut;
     const tail = r => [
         r.d !== undefined ? dOut(r.d, r.abt) : undefined,
@@ -2020,10 +2025,14 @@ export async function uniqueKeyOf(chatId, name, birtD, approx, yearly, xref) {
     }
 }
 
-// примерная дата текстом: abt 1 — только год, 2 — год+месяц, 3 — «~» за
-// полной датой (так же печатаются коллизии ключа в отчёте импорта)
+// примерная дата текстом: гранулярность G — урезание («1234», «1234-05»),
+// квалификатор Q — суффикс за датой: «?» ABT, «=» CAL, «<» BEF, «>» AFT,
+// «~» EST (на любой гранулярности: «1234-05-06?», «1234-05?», «1234~»);
+// точная дата — как есть (так же печатаются коллизии ключа в отчёте импорта)
+const ABT_MARK = { 1: "?", 2: "=", 3: "<", 4: ">", 5: "~" };
 function approxOut(d, abt) {
-    return abt === 1 ? d.slice(0, 4) : abt === 2 ? d.slice(0, 7) : d + (abt ? "~" : "");
+    const a = abt || 0, q = Math.floor(a / 3), g = a % 3;
+    return d.slice(0, 10 - g * 3) + (ABT_MARK[q] || "");
 }
 
 // та же дата через N лет (29 фев → 1 мар в невисокосный год — само собой)
@@ -2037,7 +2046,7 @@ function datePlusYears(d, years) {
 // fam — по одному на каждый FAM файла с точными xref'ами (без слипания
 // семей ребёнка); свадьбы живут на fam — точная привязка супругов;
 // бездатные импортируются, когда упомянуты в семье — с фиктивной датой
-// (супруг: дата половины; ребёнок: каскад сиблинг/свадьба/родитель, birtD abt 3),
+// (супруг: дата половины; ребёнок: каскад сиблинг/свадьба/родитель, birtAbt 15 — EST-день),
 // без варианта — заглушки-персоны (birtD null); безымянные — мимо.
 // Возвращает краткий отчёт. Повторный импорт лечит любые старые данные
 export async function importGedcom(chatId, g) {
@@ -2150,7 +2159,9 @@ export async function importGedcom(chatId, g) {
         if (!changed) break;
     }
     // второй проход: бездатные супруги и дети — фиктивная полная дата,
-    // birtAbt 3 (в шкале PDF нет года и прожитых лет); коллизия фиктивных
+    // birtAbt 15 (EST-день: в шкале PDF нет года и прожитых лет, печать —
+    // «1234-05-06~»); полная точность сохраняет round-trip .ged.txt
+    // (экспорт «EST 6 MAY 1234»); коллизия фиктивных
     // дат — +1 год (не близнецы); безымянные — мимо
     for (const ind of g.indis) {
         if (!ind.name || (ind.birt && ind.birt.date)) continue;
@@ -2181,9 +2192,10 @@ export async function importGedcom(chatId, g) {
             continue;
         }
         const u = await uniqueKeyOf(chatId, ind.name, full, true, true, ind.__xref);
-        // фиктивная ДР от супруга — всегда birtAbt 3 (как и сдвинутый дубль):
-        // в шкале PDF у такой строки нет года и прожитых лет
-        const uabt = 3;
+        // фиктивная ДР от супруга — всегда birtAbt 15 (EST-день, как и
+        // сдвинутый дубль): в шкале PDF у такой строки нет года и прожитых
+        // лет; полная точность — для round-trip .ged.txt
+        const uabt = 15;
         if (u.name !== ind.name || u.birtD !== full)
             dups.push({ from: ind.name, to: u.name + " " + approxOut(u.birtD, uabt) });
         await db.insert(indi).values({
@@ -2195,7 +2207,8 @@ export async function importGedcom(chatId, g) {
             plac: ind.birt && ind.birt.plac ? ind.birt.plac : null,
             deatPlac: ind.deat && ind.deat.plac ? ind.deat.plac : null,
             note: ind.note ?? null,
-            birtAbt: uabt, // дубль со сдвинутой датой — abt 3 (иначе печать прячет сдвиг)
+            birtAbt: uabt, // дубль со сдвинутой датой — abt 15 (EST-день; сдвиг виден в
+                // печати, дублей дополнительно различает суффикс «~xref»)
             deatAbt: (ind.deat && ind.deat.abt) || 0,
         }).run();
         byX.set(ind.__xref, ind.__xref);

@@ -491,27 +491,30 @@ function explicitZoneMinutes(s) {
 // Без \b вокруг группы зоны: в юникод-режиме \b ASCII-only и не срабатывает
 // на кириллице («МСК+2» без скобок не разбиралось).
 // 1: имя; 2-4: дата рождения (месяц/день могут отсутствовать: «1663» →
-// 1663-01-01, «1663-07» → 1663-07-01), 5: «~» — примерная дата, 6-7: время,
+// 1663-01-01, «1663-07» → 1663-07-01), 5: «~»/«<»/«>» — квалификатор
+// (EST/BEF/AFT), 6-7: время,
 // 8: место/зона в скобках,
 // 9: место/зона без скобок; 10-17: то же для смерти — необязательный второй
 // хвост; 18: хвост строки — примечание целиком.
-// Неполная дата или «~» за датой — примерная (abt 1/2/3 — год/месяц/день):
-// юбилеи по ней не оповещаются; «1954» без «~» — примерный сам по себе.
+// Неполная дата — примерная; «~»/«<»/«>» за датой — квалификатор EST/BEF/AFT:
+// юбилеи по abt!=0 не оповещаются; «1954» и сам по себе примерный
+// (год без месяца/дня).
 // Скобки сразу за датой/временем — место (PLAC): известный город — время
 // пересчитывается по его зоне, неизвестный — время московское; без времени —
 // 12:00. «МСК+2»/«UTC+5» (в скобках) — смещение, не место: время корректируется
 // без PLAC. Скобки в хвосте (не сразу за датой) — примечание.
 // «^» — маркер примечания: разбор идёт до первого «^», всё после него —
 // примечание дословно (дата в его начале — не дата смерти).
-const DATE_TAIL = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?(~)?(?:\\s+(\\d{1,2})(?:[:.\\u0433](\\d{2}))?)?\\s*(?:\\(\\s*([^)]+?)\\s*\\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\\s*[+-]\\s*\\d{1,2}))?";
+const DATE_TAIL = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?([~<>])?(?:\\s+(\\d{1,2})(?:[:.\\u0433](\\d{2}))?)?\\s*(?:\\(\\s*([^)]+?)\\s*\\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\\s*[+-]\\s*\\d{1,2}))?";
 const TRIGGER_RE = new RegExp("^(.+?)\\s+" + DATE_TAIL + "(?:\\s+" + DATE_TAIL + ")?(?:\\s+(.+))?\\s*$", "iu");
 // строка свадьбы плоского древа — только даты: «дата [дата развода] [прим]»
 // строка свадьбы плоского древа: «дата [дата развода] (место) [прим]» — без
-// времени/зоны (свадьбе оно не нужно); «~» за датой — примерная (как в
-// TRIGGER_RE); пара в скобках — место, голый хвост —
+// времени/зоны (свадьбе оно не нужно); «~»/«<»/«>» за датой —
+// EST/BEF/AFT (как в TRIGGER_RE); abt — квалификатор×гранулярность (ниже);
+// пара в скобках — место, голый хвост —
 // примечание (вывод — тем же порядком: даты, место в скобках, примечание);
 // «^» — маркер примечания (как в TRIGGER_RE): после него — дословно
-const WDATE = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?(~)?";
+const WDATE = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?([~<>])?";
 const WEDDING_RE = new RegExp("^" + WDATE + "(?:\\s+" + WDATE + ")?(?:\\s*\\(([^)]*)\\))?(?:\\s+(.+))?\\s*$", "iu");
 
 // ГГГГММДД[ ЧЧ:ММ][ зона] → дата/время в МСК; без времени и зоны — только d
@@ -536,13 +539,23 @@ function dateTimeToMsk(y, mo, dd, hh, mm, givenTime, diffMin, hasZone) {
     return rec;
 }
 
-// разобрать одну группу «дата [~] [время] [зона]» из групп m[gi..gi+7];
+// abt — квалификатор×гранулярность, abt = Q*3 + G: G — гранулярность
+// (день=0, месяц=1, год=2), Q — квалификатор (нет=0, ABT=1, CAL=2, BEF=3,
+// AFT=4, EST=5). «6 MAY 1234» → 0, «MAY 1234» → 1, «1234» → 2, «ABT …» →
+// 3–5, «CAL …» → 6–8, «BEF …» → 9–11, «AFT …» → 12–14, «EST …» → 15–17.
+// Точная дата — undefined (в БД 0); юбилеи по любому abt!=0 не оповещаются
+const ABT_Q = { abt: 1, cal: 2, bef: 3, aft: 4, est: 5 };
+// суффикс за текстовой датой → Q: «~» EST, «<» BEF, «>» AFT (ABT/CAL —
+// только префикс гедкома)
+const ABT_SUF = { "~": 5, "<": 3, ">": 4 };
+const abtOf = (g, q) => { const a = (q || 0) * 3 + (g || 0); return a || undefined; };
+
+// разобрать одну группу «дата [~|<|>] [время] [зона]» из групп m[gi..gi+7];
 // месяц/день могут отсутствовать («1663» → 1663-01-01, «1663-07» → 1663-07-01);
-// abt — гранулярность примерности: 1 — только год, 2 — год+месяц,
-// 3 — полный день с «~»; точная дата — undefined (юбилеи по abt не оповещаются)
+// abt — квалификатор×гранулярность (см. abtOf выше); точная дата — undefined
 function parseDateGroups(m, gi, what) {
     const hasMo = m[gi + 1] !== undefined, hasDd = m[gi + 2] !== undefined;
-    const abt = !hasMo ? 1 : !hasDd ? 2 : m[gi + 3] === "~" ? 3 : undefined;
+    const abt = abtOf(!hasMo ? 2 : !hasDd ? 1 : 0, ABT_SUF[m[gi + 3]]);
     const y = Number(m[gi]), mo = hasMo ? Number(m[gi + 1]) : 1, dd = hasDd ? Number(m[gi + 2]) : 1;
     if (y < 1000 || y > 9999) return { error: "некорректный год" + what + ": " + m[gi] };
     if (mo < 1 || mo > 12 || dd < 1 || dd > 31)
@@ -616,7 +629,7 @@ function parseTrigger(text) {
     const b = parseDateGroups(m, 2, "");
     if (b.error) return { n, error: b.error };
     const rec = Object.assign({ n }, b.rec);
-    if (b.abt) rec.abt = b.abt; // примерная ДР (гранулярность 1/2/3) — юбилеи не оповещаются
+    if (b.abt) rec.abt = b.abt; // примерная/квалифицированная ДР (abt!=0) — юбилеи не оповещаются
     if (b.city) rec.plac = b.city; // место — только для гедком (PLAC)
     let tailNote = (b.tailNote || ""); // скобки после даты рождения
     let note = b.note;
@@ -637,26 +650,25 @@ function parseTrigger(text) {
 }
 
 // ============================== ГЕДКОМ-ИМПОРТ ==============================
-// «10 MAY 1985» → {iso:"1985-05-10"}; «MAR 1985» → {iso:"1985-03-01", abt:2};
-// «1985» → {iso:"1985-01-01", abt:1} (неполная дата — первым числом известного
-// месяца/года); квалификаторы ABT/EST/CAL/BEF/AFT срезаются и дают abt:3 на
-// полной дате — примерная дата, юбилеи не оповещаются. abt — гранулярность:
-// 1 год, 2 месяц, 3 день (у год/месяц-дат квалификатор ничего не меняет)
+// «10 MAY 1985» → {iso:"1985-05-10"}; «MAR 1985» → {iso:"1985-03-01", abt:1};
+// «1985» → {iso:"1985-01-01", abt:2} (неполная дата — первым числом известного
+// месяца/года); квалификатор ABT/EST/CAL/BEF/AFT даёт свой Q в abt = Q*3+G
+// (см. abtOf выше): юбилеи по abt!=0 не оповещаются
 const GED_MONTHS = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 };
 function gdateToISO(s) {
     const t0 = String(s).trim();
-    const mq = t0.match(/^(?:abt|est|cal|bef|aft)\s+/i);
+    const mq = t0.match(/^(abt|est|cal|bef|aft)\s+/i);
     const t = mq ? t0.slice(mq[0].length) : t0;
-    const qabt = mq ? 3 : undefined;
+    const q = mq ? ABT_Q[mq[1].toLowerCase()] : 0;
     let m = t.match(/(\d{1,2})\s+([A-Za-z]{3})\.?\s+(\d{4})/);
     if (m) {
         const mo = GED_MONTHS[m[2].toUpperCase()];
-        return mo ? { iso: m[3] + "-" + String(mo).padStart(2, "0") + "-" + String(m[1]).padStart(2, "0"), abt: qabt } : null;
+        return mo ? { iso: m[3] + "-" + String(mo).padStart(2, "0") + "-" + String(m[1]).padStart(2, "0"), abt: abtOf(0, q) } : null;
     }
     m = t.match(/^([A-Za-z]{3})\.?\s+(\d{4})$/);
     const mo = m && GED_MONTHS[m[1].toUpperCase()];
-    if (mo) return { iso: m[2] + "-" + String(mo).padStart(2, "0") + "-01", abt: 2 };
-    return /^\d{4}$/.test(t) ? { iso: t + "-01-01", abt: 1 } : null;
+    if (mo) return { iso: m[2] + "-" + String(mo).padStart(2, "0") + "-01", abt: abtOf(1, q) };
+    return /^\d{4}$/.test(t) ? { iso: t + "-01-01", abt: abtOf(2, q) } : null;
 }
 
 // валидный гедком → { indis, fams }; иначе null. Берёт только
@@ -829,8 +841,8 @@ function parseTreeLine(line) {
 
 // разбор дат свадьбы (WEDDING_RE) → {rec:{d,plac,dd,plac2},note} | {err}
 // группа 1: дата свадьбы 2: дата развода 3: место (пара в скобках)
-// 4: примечание; место принадлежит свадьбе; abt — гранулярность примерности
-// (1 год / 2 месяц / 3 день с «~») — в rec; «^» — маркер примечания (хвост после
+// 4: примечание; место принадлежит свадьбе; «~»/«<»/«>» за датой —
+// EST/BEF/AFT (abt в rec); «^» — маркер примечания (хвост после
 // него — дословно, дата в начале — не развод)
 const wdate = (m, gi, what) => {
     const y = Number(m[gi]), mo = Number(m[gi + 1] ?? "01"), dd = Number(m[gi + 2] ?? "01");
@@ -838,7 +850,7 @@ const wdate = (m, gi, what) => {
     if (mo < 1 || mo > 12 || dd < 1 || dd > 31)
         return { error: "некорректная дата" + what + ": " + m[gi] + (m[gi + 1] ?? "") + (m[gi + 2] ?? "") };
     const pad = (x) => String(x).padStart(2, "0");
-    const abt = m[gi + 1] === undefined ? 1 : m[gi + 2] === undefined ? 2 : m[gi + 3] === "~" ? 3 : undefined;
+    const abt = abtOf(m[gi + 1] === undefined ? 2 : m[gi + 2] === undefined ? 1 : 0, ABT_SUF[m[gi + 3]]);
     return { d: y + "-" + pad(mo) + "-" + pad(dd), abt };
 };
 function weddingRecOf(s) {
@@ -864,10 +876,14 @@ function weddingRecOf(s) {
     return { rec, note: note && hat ? note + " " + hat : (note || hat) };
 }
 
-// примерная дата текстом: abt 1 — только год, 2 — год+месяц, 3 — «~» за
-// полной датой (так же печатаются коллизии ключа в отчёте импорта)
+// примерная дата текстом: гранулярность G — урезание («1234», «1234-05»),
+// квалификатор Q — суффикс за датой: «?» ABT, «=» CAL, «<» BEF, «>» AFT,
+// «~» EST (на любой гранулярности: «1234-05-06?», «1234-05?», «1234~»);
+// точная дата — как есть (так же печатаются коллизии ключа в отчёте импорта)
+const ABT_MARK = { 1: "?", 2: "=", 3: "<", 4: ">", 5: "~" };
 function approxOut(d, abt) {
-    return abt === 1 ? d.slice(0, 4) : abt === 2 ? d.slice(0, 7) : d + (abt ? "~" : "");
+    const a = abt || 0, q = Math.floor(a / 3), g = a % 3;
+    return d.slice(0, 10 - g * 3) + (ABT_MARK[q] || "");
 }
 
 // метка пачки РОМБА (chatFlatText по keys — .ged.txt третьего прицепа 🧬):
@@ -1645,8 +1661,8 @@ function famView(peerId, fx) {
         parents: [f.husb, f.wife].filter(Boolean).map(x => keyOfXref(peerId, x)).filter(Boolean),
         children: qa("SELECT indi FROM chil WHERE chat=? AND fam=? ORDER BY rowid", peerId, f.xref)
             .map(r => keyOfXref(peerId, r.indi)).filter(Boolean),
-        marr: f.marr_d ? { d: f.marr_d, ...(f.marr_abt ? { abt: 1 } : {}), ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null,
-        div: f.div_d ? { d: f.div_d, ...(f.div_abt ? { abt: 1 } : {}), ...(f.div_plac ? { plac: f.div_plac } : {}) } : null,
+        marr: f.marr_d ? { d: f.marr_d, ...(f.marr_abt ? { abt: f.marr_abt } : {}), ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null,
+        div: f.div_d ? { d: f.div_d, ...(f.div_abt ? { abt: f.div_abt } : {}), ...(f.div_plac ? { plac: f.div_plac } : {}) } : null,
     };
 }
 function famList(peerId) {
@@ -2484,7 +2500,7 @@ function datePlusYears(d, years) {
 // fam — по одному на каждый FAM файла с точными xref'ами (без слипания
 // семей ребёнка); свадьбы живут на fam — точная привязка супругов;
 // бездатные импортируются, когда упомянуты в семье — с фиктивной датой
-// (супруг: дата половины; ребёнок: каскад сиблинг/свадьба/родитель, birt_abt 3),
+// (супруг: дата половины; ребёнок: каскад сиблинг/свадьба/родитель, birt_abt 15 — EST-день),
 // без варианта — заглушки-персоны (birt_d NULL); безымянные — мимо.
 // Возвращает краткий отчёт. Повторный импорт лечит любые старые данные
 function importGedcom(peerId, g) {
@@ -2598,7 +2614,9 @@ function importGedcom(peerId, g) {
         if (!changed) break;
     }
     // второй проход: бездатные супруги и дети — фиктивная полная дата,
-    // birt_abt 3 (в шкале PDF нет года и прожитых лет); коллизия фиктивных
+    // birt_abt 15 (EST-день: в шкале PDF нет года и прожитых лет, печать —
+    // «1234-05-06~»); полная точность сохраняет round-trip .ged.txt
+    // (экспорт «EST 6 MAY 1234»); коллизия фиктивных
     // дат — +1 год (не близнецы); безымянные — мимо
     for (const ind of g.indis) {
         if (!ind.name || (ind.birt && ind.birt.date)) continue;
@@ -2631,9 +2649,10 @@ function importGedcom(peerId, g) {
             continue;
         }
         const u = uniqueKeyOf(peerId, ind.name, full, true, true, ind.__xref);
-        // фиктивная ДР от супруга — всегда birt_abt 3 (как и сдвинутый дубль):
-        // в шкале PDF у такой строки нет года и прожитых лет
-        const uabt = 3;
+        // фиктивная ДР от супруга — всегда birt_abt 15 (EST-день, как и
+        // сдвинутый дубль): в шкале PDF у такой строки нет года и прожитых
+        // лет; полная точность — для round-trip .ged.txt
+        const uabt = 15;
         if (u.name !== ind.name || u.birtD !== full)
             dups.push({ from: ind.name, to: u.name + " " + approxOut(u.birtD, uabt) });
         qr(`INSERT INTO indi(chat,xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note,birt_abt,deat_abt)
@@ -2648,7 +2667,8 @@ function importGedcom(peerId, g) {
             ind.birt && ind.birt.plac ? ind.birt.plac : null,
             ind.deat && ind.deat.plac ? ind.deat.plac : null,
             ind.note ?? null,
-            uabt, // дубль со сдвинутой датой — abt 3 (иначе печать прячет сдвиг)
+            uabt, // дубль со сдвинутой датой — abt 15 (EST-день; сдвиг виден в
+                // печати, дублей дополнительно различает суффикс «~xref»)
             (ind.deat && ind.deat.abt) || 0);
         byId.set(ind.__xref, ind.__xref);
         persons++;
@@ -2737,12 +2757,17 @@ function gedcomText(peerId, keys) {
     const adoptedOf = new Map();
     for (const c of qa("SELECT fam, indi FROM chil WHERE chat=? AND adopted=1", peerId))
         adoptedOf.set(c.indi, c.fam);
-    // примерная дата: год-only (abt 1) — «ГГГГ», месяц-only (abt 2) — «JUN 1987»,
-    // примерный день (abt 3) — «ABT <гедком>»
-    const gdateAbt = (d, abt) => abt === 1 ? d.slice(0, 4)
-        : abt === 2 ? MON[Number(d.slice(5, 7)) - 1] + " " + d.slice(0, 4)
-        : abt === 3 ? "ABT " + gdate(d)
-        : gdate(d);
+    // примерная дата в гедком: гранулярность — форма даты (год-only «ГГГГ»,
+    // месяц-only «JUN 1987», полный день «6 MAY 1234»), квалификатор —
+    // префикс на любой гранулярности («ABT MAY 1985», «EST 1985»)
+    const ABT_TAG = { 1: "ABT", 2: "CAL", 3: "BEF", 4: "AFT", 5: "EST" };
+    const gdateAbt = (d, abt) => {
+        const a = abt || 0, q = Math.floor(a / 3), g = a % 3;
+        const s = g === 2 ? d.slice(0, 4)
+            : g === 1 ? MON[Number(d.slice(5, 7)) - 1] + " " + d.slice(0, 4)
+            : gdate(d);
+        return (ABT_TAG[q] ? ABT_TAG[q] + " " : "") + s;
+    };
     // семьи → {xref, par — [{x, k}] датированные половины (k — ключ, только
     // для фильтра фрагмента), stubs — [{xref,name,deat,dp}] — бездатные
     // супруги, kstubs — те же дети, chd — датированные дети, marr, div}:
@@ -2774,8 +2799,8 @@ function gedcomText(peerId, keys) {
                 if (st) kstubs.push(st);
             }
         }
-        let marr = f.marr_d ? { d: f.marr_d, ...(f.marr_abt ? { abt: 1 } : {}), ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null;
-        let div = f.div_d ? { d: f.div_d, ...(f.div_abt ? { abt: 1 } : {}), ...(f.div_plac ? { plac: f.div_plac } : {}) } : null;
+        let marr = f.marr_d ? { d: f.marr_d, ...(f.marr_abt ? { abt: f.marr_abt } : {}), ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null;
+        let div = f.div_d ? { d: f.div_d, ...(f.div_abt ? { abt: f.div_abt } : {}), ...(f.div_plac ? { plac: f.div_plac } : {}) } : null;
         const fnote = f.note || null;
         if (hasKeys) {
             // фрагмент: семья остаётся при ХОТЬ ОДНОЙ датированной половине
@@ -3063,8 +3088,8 @@ function flatTreeText(persons, fams, canonical = false) {
     // Место — в скобках за своей датой (рождения/смерти): грамматика пачки
     // трактует время как местное в месте, поэтому с местом выводится
     // исходное время (если было), без места — московское, как прежде
-    // примерная дата — гранулярно (approxOut): 1 — «ГГГГ», 2 — «ГГГГ-ММ»,
-    // 3 — «~»-хвост за полной датой
+    // примерная дата — гранулярно с суффиксом квалификатора (approxOut):
+    // «1234», «1234-05», «1234-05-06~»/«1234-05?»/«1234=»…
     const dOut = approxOut;
     const tail = r => [
         r.d !== undefined ? dOut(r.d, r.abt) : undefined,
@@ -3437,7 +3462,7 @@ function chartModel(title, rows, links, rel = null, marriages = null) {
     // rel.range — rangeLevel(L)); у остальных строк — прежние индивидуальные
     // ярлыки родства (как в 🔔-списке); у героя и вне родни (без героя/
     // диапазона) — подпись «Год»; бездатным год неизвестен, у фиктивных ДР
-    // (abt 3: от супруга или сдвинутый дубль) год тоже не печатается
+    // (abt >= 15: EST — от супруга или сдвинутый дубль) год тоже не печатается
     const kin = rel && rel.hero
         ? new Map(people.map(p =>
             [p.key, kinLabel(rel.pairs || [], rel.spouses || [], k2 => (rel.sex || {})[k2] ?? null, rel.hero, p.key)]))
@@ -3445,7 +3470,7 @@ function chartModel(title, rows, links, rel = null, marriages = null) {
     if (kin && rel.range) kin.set(rel.hero, rangeLevel(rel.range));
     people.forEach((p, i) => {
         p.row = i;
-        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + (p.r.birth != null && p.r.abt !== 3 ? p.yr : ""); })();
+        p.label = (() => { const l = kin ? kin.get(p.key) : ""; return (l ? l + " " : "") + (p.r.birth != null && (p.r.abt ?? 0) < 15 ? p.yr : ""); })();
     });
     const rowOf = new Map(people.map(p => [p.key, p]));
     const allYears = [
@@ -3579,7 +3604,7 @@ function chartModel(title, rows, links, rel = null, marriages = null) {
         // имя героя чарта — жирным
         draws.push({ k: "text", x: x1 - 6, y: cy + 3.5, s: p.r.name, size: 10, fill: "#111111", anchor: "end", bold: rel != null && p.key === rel.hero });
         draws.push({ k: "rrect", x: x1, y: cy - BAR_H / 2, w: Math.max(2, x2 - x1), h: BAR_H, r: 2, fill: bar });
-        if (p.dy !== null && p.r.birth != null && p.r.abt !== 3) // известная смерть — N прожитых лет за баром (у фиктивной ДР abt 3 — не пишем)
+        if (p.dy !== null && p.r.birth != null && (p.r.abt ?? 0) < 15) // известная смерть — N прожитых лет за баром (у фиктивной ДР abt>=15, EST — не пишем)
             draws.push({ k: "text", x: x2 + 4, y: cy + 3.5, s: String(p.dy - p.yr), size: 10, fill: bar });
     }
     // связи родитель→ребёнок (в год рождения ребёнка), точки на строках;
