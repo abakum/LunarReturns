@@ -141,7 +141,9 @@ async function sendFocus(chat, chatId, key, radius, dd, replyTo = 0, body = "", 
     const head = focusHead(key, radius, dd);
     const first = await api.sendMessage({
         chat_id: chatId,
-        text: (ng ? NOT_FOR_GRAFT + "\n" : "") + head + (body ? "\n" + body : ""),
+        // перелив с героем: порядок строк — герой, метка, тело
+        // (правило — коммент у NOT_FOR_GRAFT в lib/bot.js)
+        text: head + (ng ? "\n" + NOT_FOR_GRAFT : "") + (body ? "\n" + body : ""),
         reply_markup: markup,
         ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
     });
@@ -157,6 +159,31 @@ async function sendFocus(chat, chatId, key, radius, dd, replyTo = 0, body = "", 
     }
     console.log("focus:", key, "chat", chatId);
     return first;
+}
+
+// прицеп .txt/.ged.txt ответом на сообщение с ⏳ (панель, поиск): документ +
+// правка текста (⏳ снят); провал — правка «…✂️💥 err» (часы сняты)
+// (правило метки NOT_FOR_GRAFT — коммент у константы в lib/bot.js)
+async function holdReply(chatId, first, holdTxt, finalTxt, content, name) {
+    try {
+        await api.sendDocument({
+            chat_id: chatId,
+            document: new InputFile(
+                new TextEncoder().encode("\uFEFF" + content), name, { type: "text/plain" }),
+            ...(first && first.message_id
+                ? { reply_parameters: { message_id: first.message_id,
+                    allow_sending_without_reply: true } } : {}),
+        });
+        if (first && first.message_id)
+            await api.editMessageText({ chat_id: chatId,
+                message_id: first.message_id, text: finalTxt });
+    } catch (e) {
+        console.error("hold document:", e.message);
+        if (first && first.message_id)
+            await api.editMessageText({ chat_id: chatId,
+                message_id: first.message_id,
+                text: holdTxt.replace("\n✂️⏳", "\n✂️💥 " + e.message) }).catch(() => {});
+    }
 }
 
 export default async function (message, ctx) {
@@ -353,28 +380,19 @@ export default async function (message, ctx) {
                         shown += "\n✂️⏳";
                     }
                     const first = await sendFocus(message.chat, chatId, key, 1,
-                        rec.dd, message.message_id, shown, rest);
+                        rec.dd, message.message_id, shown,
+                        // метка — только на перелив (файл); влезающая ветвь —
+                        // как ответ на «-+=», без метки
+                        rest);
                     if (rest && first && first.message_id) {
-                        (async () => {
-                            try {
-                                await api.sendDocument({
-                                    chat_id: chatId,
-                                    document: new InputFile(
-                                        new TextEncoder().encode(
-                                            "\uFEFF" + (pack.trimStart().toLowerCase()
-                                                .startsWith(NOT_FOR_GRAFT.toLowerCase())
-                                                ? pack : NOT_FOR_GRAFT + "\n" + pack)),
-                                        fileBaseOf(head) + ".ged.txt", { type: "text/plain" }),
-                                    reply_parameters: { message_id: first.message_id,
-                                        allow_sending_without_reply: true },
-                                });
-                                // ⏳ снят, ✂️ остаётся (полное — в файле)
-                                await api.editMessageText({ chat_id: chatId,
-                                    message_id: first.message_id,
-                                    text: NOT_FOR_GRAFT + "\n" + head + "\n" +
-                                        shown.replace("\n✂️⏳", "\n✂️") });
-                            } catch (e) { console.error("panel document:", e.message); }
-                        })();
+                        // порядок строк — герой, метка, пачка (правило — коммент
+                        // у NOT_FOR_GRAFT в lib/bot.js)
+                        const holdTxt = head + "\n" + NOT_FOR_GRAFT + "\n" + shown;
+                        const finalTxt = holdTxt.replace("\n✂️⏳", "\n✂️");
+                        // в прицепе полная ветвь (форма «-+=») — метка не нужна:
+                        // она лишь запретила бы реплай файла на триггер
+                        holdReply(chatId, first, holdTxt, finalTxt,
+                            pack, fileBaseOf(head) + ".ged.txt");
                     }
                     console.log("flat search:", JSON.stringify(text), "-> фокус", key, "чат", chatId);
                     return;
@@ -389,32 +407,28 @@ export default async function (message, ctx) {
             const head = "Найдено " + hits.length + " строк "
                 + (needle ? (sub ? "с подстрокой " : "начинающихся с ") + needle
                           : "с маркером «" + mark + "»");
-            // не влезает: голова + ✂️⏳ первым сообщением, ВЕСЬ список —
-            // файлом .txt асинхронно ответом на него (как панель выше, как ВК),
+            // не влезает: метка + ✂️⏳ первым сообщением, ВЕСЬ список —
+            // файлом .txt асинхронно ответом на него (как панель выше, как ВК;
+            // текст — только метка, без «Найдено…», имя файла — из head),
             // потом ⏳ снят (✂️ остаётся)
             const found = hits.join("\n");
             if (found.length > 4000) {
+                // целые строки до ~4000 знака — в текст (как у панели выше,
+                // как у 🧬), остальное — в файл; ✂️⏳ → после файла ✂️
+                let inner = "";
+                for (const l of found.split("\n")) {
+                    if (NOT_FOR_GRAFT.length + 1 + inner.length + 1 + l.length > 4000) break;
+                    inner += (inner ? "\n" : "") + l;
+                }
+                const holdTxt = NOT_FOR_GRAFT + (inner ? "\n" + inner : "") + "\n✂️⏳";
+                const finalTxt = NOT_FOR_GRAFT + (inner ? "\n" + inner : "") + "\n✂️";
                 const first = await api.sendMessage({
-                    chat_id: chatId, text: NOT_FOR_GRAFT + "\n" + head + "\n✂️⏳" });
-                (async () => {
-                    try {
-                        await api.sendDocument({
-                            chat_id: chatId,
-                            document: new InputFile(
-                                new TextEncoder().encode("\uFEFF" + found),
-                                fileBaseOf(head) + ".txt", { type: "text/plain" }),
-                            ...(first && first.message_id
-                                ? { reply_parameters: { message_id: first.message_id,
-                                    allow_sending_without_reply: true } } : {}),
-                        });
-                        if (first && first.message_id)
-                            await api.editMessageText({ chat_id: chatId,
-                                message_id: first.message_id,
-                                text: NOT_FOR_GRAFT + "\n" + head + "\n✂️" });
-                    } catch (e) { console.error("search document:", e.message); }
-                })();
+                    chat_id: chatId, text: holdTxt });
+                holdReply(chatId, first, holdTxt, finalTxt,
+                    NOT_FOR_GRAFT + "\n" + found, fileBaseOf(head) + ".txt");
             } else {
-                await sendLong(chatId, found, undefined, head);
+                // метка «не для прививки» — на любой ответ поиска
+                await sendLong(chatId, NOT_FOR_GRAFT + "\n" + found, undefined, head);
             }
             console.log("flat search:", JSON.stringify(text), "->", hits.length, "строк, чат", chatId);
             return;

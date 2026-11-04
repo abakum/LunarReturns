@@ -371,11 +371,12 @@ export default async function (cq, ctx) {
             if (!pack) { await answer("ветвь пуста"); return; }
             const fKb0 = focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth);
             if (pack.length > 4000) {
-                // голова + ✂️⏳ (не влезает — полное в файле); ВЕСЬ пачка —
-                // файлом ответом на это сообщение, потом ⏳ снят
-                await editText(NOT_FOR_GRAFT + "\n" + head + "\n✂️⏳", fKb0);
+                // перелив: порядок строк — герой, метка (правило — коммент
+                // у NOT_FOR_GRAFT в lib/bot.js); ВЕСЬ пачка — файлом ответом
+                // на это сообщение, потом ⏳ снят
+                await editText(head + "\n" + NOT_FOR_GRAFT + "\n✂️⏳", fKb0);
                 await tailDoc(pack, head, ".ged.txt",
-                    NOT_FOR_GRAFT + "\n" + head + "\n✂️");
+                    head + "\n" + NOT_FOR_GRAFT + "\n✂️");
                 return;
             }
             await editText(head + "\n" + pack, fKb0);

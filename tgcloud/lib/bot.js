@@ -2370,33 +2370,38 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0) {
     if (!pack) return false;
     const reply = replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {};
     // метка «не для прививки»: у пачки ромба (древо чата) она уже есть —
-    // первой строкой; у ветви героя её нет — добавляем ТОЛЬКО при переливе
-    const mark = pack.trimStart().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase())
-        ? "" : NOT_FOR_GRAFT + "\n";
+    // первой строкой пачки; влезающая ветвь — как ответ на «-+=», БЕЗ метки
+    // (прививка ей дозволена); в переливе метка есть всегда (текст усечён).
+    // Порядок строк: голова/герой, метка, пачка (правило — коммент у
+    // NOT_FOR_GRAFT выше)
+    const marked = pack.trimStart().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase());
+    const mark = marked ? "" : NOT_FOR_GRAFT + "\n";
     if (pack.length <= 4000) {
         await api.sendMessage({ chat_id: chatId,
-            text: mark + (head ? head + "\n" : "") + pack, ...reply });
+            text: (head ? head + "\n" : "") + pack, ...reply });
         return true;
     }
     const base = fileBaseOf(head || "Древо чата") + ".ged.txt";
     try {
-        // не влезает: метка + голова + ✂️⏳ первым сообщением (полное — в
-        // файле; у ромба метка и так первая строка пачки в файле), файл —
-        // ответом на него же, потом ⏳ снят (✂️ остаётся)
+        // не влезает: голова + метка + ✂️⏳ первым сообщением (порядок строк —
+        // герой/голова, метка; полное — в файле; у ромба метка и так первая
+        // строка пачки в файле), файл — ответом на него же, потом ⏳ снят
+        // (✂️ остаётся)
         const hold = await api.sendMessage({
-            chat_id: chatId, text: NOT_FOR_GRAFT + "\n" + (head ? head + "\n" : "") + "✂️⏳", ...reply });
-        // BOM — чтобы Windows-редакторы открывались как UTF-8
-        const content = "\uFEFF" + (mark ? NOT_FOR_GRAFT + "\n" + pack : pack);
+            chat_id: chatId, text: (head ? head + "\n" : "") + mark + "✂️⏳", ...reply });
+        // BOM — чтобы Windows-редакторы открывали как UTF-8
+        const content = "\uFEFF" + pack;
         await api.sendDocument({
             chat_id: chatId,
             document: new InputFile(new TextEncoder().encode(content), base, { type: "text/plain" }),
             ...(hold && hold.message_id
-                ? { reply_parameters: { message_id: hold.message_id, allow_sending_without_reply: true } } : reply),
+                ? { reply_parameters: { message_id: hold.message_id,
+                    allow_sending_without_reply: true } } : reply),
         });
         if (hold && hold.message_id)
             await api.editMessageText({ chat_id: chatId,
                 message_id: hold.message_id,
-                text: NOT_FOR_GRAFT + "\n" + (head ? head + "\n" : "") + "✂️" });
+                text: (head ? head + "\n" : "") + mark + "✂️" });
     } catch (e) {
         console.error("tail document:", e.message);
         await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось выложить файл " + base, ...reply });
