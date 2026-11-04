@@ -4058,9 +4058,11 @@ async function vkUploadDoc(peerId, title, content) {
                 j = JSON.parse(text);
             } catch {
                 lastErr = new Error("docs upload: HTTP " + res.status + " " + text.slice(0, 120).replace(/\s+/g, " "));
+                console.error("ged upload attempt", attempt, title + ":", lastErr.message);
             }
         } catch (e) {
             lastErr = e; // сеть/таймаут — повторить
+            console.error("ged upload attempt", attempt, title + ":", e.message);
         }
     }
     if (!j) throw lastErr || new Error("docs upload: пустой ответ");
@@ -4126,16 +4128,20 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
     (async () => {
     try {
         let pdf = null, persons = 0, chartErr = null;
+        let t0 = Date.now();
         try {
             const res = chartFor(peerId, keys, chartHead, heroKey, rm ? Number(rm[1]) : null);
             persons = res.persons;
             pdf = res.pdf;
         } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
+        if (Date.now() - t0 > 1000) console.log("ged chart:", (Date.now() - t0) + "ms");
+        t0 = Date.now();
         const atts = [await vkUploadDoc(peerId, base + ".ged", g)];
-        if (pdf) atts.push(await vkUploadDoc(peerId, base + ".pdf", Buffer.from(pdf, "latin1")));
+        console.log("ged upload:", base + ".ged", (Date.now() - t0) + "ms");
+        if (pdf) { t0 = Date.now(); atts.push(await vkUploadDoc(peerId, base + ".pdf", Buffer.from(pdf, "latin1"))); console.log("ged upload:", base + ".pdf", (Date.now() - t0) + "ms"); }
         // .ged.txt-пачка — третьим прицепом ТОЛЬКО когда текстом не вместилась;
         // влезла — её текст уже в сообщении, прицепляем только .ged+.pdf
-        if (overflow) atts.push(await vkUploadDoc(peerId, base + ".ged.txt", "\uFEFF" + pack));
+        if (overflow) { t0 = Date.now(); atts.push(await vkUploadDoc(peerId, base + ".ged.txt", "\uFEFF" + pack)); console.log("ged upload:", base + ".ged.txt", (Date.now() - t0) + "ms"); }
         // ВК-кварк: messages.edit с message+attachment применяет вложение, но
         // не текст; правка без attachment СБРАСЫВАЕТ вложения — поэтому в
         // текстовую правку вложения включаем повторно
@@ -4146,9 +4152,13 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
             tlex.conversation_message_id = origin.conversation_message_id; }
         else { clique.message_id = sent; tlex.message_id = sent; }
         try {
+            t0 = Date.now();
             await vkApi("messages.edit", clique);
+            console.log("ged edit: attachment", (Date.now() - t0) + "ms");
             try {
+                t0 = Date.now();
                 await vkApi("messages.edit", tlex);
+                console.log("ged edit: text", (Date.now() - t0) + "ms");
             } catch (e2) {
                 console.error("ged origin text:", e2.message, "— правлю текст без клавиатуры");
                 const bare = { ...tlex }; delete bare.keyboard;
