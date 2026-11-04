@@ -1377,7 +1377,8 @@ export async function gedcomText(chatId, keys) {
             const ps = par.filter(p => keys.includes(p.k));
             if (!ps.length) continue;
             par.length = 0; par.push(...ps);
-            chd.length = 0; chd.push(...chd.filter(c => keys.includes(c.k)));
+            const ks = chd.filter(c => keys.includes(c.k));
+            chd.length = 0; chd.push(...ks);
             // фрагмент — датированные персоны из keys; заглушки-половины/дети — как есть
         } else if (!par.length && !stubs.length && !kstubs.length && !chd.length) continue;
         fams.push({ xref: f.xref, par, chd, stubs, kstubs, marr, div, fnote });

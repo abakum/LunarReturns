@@ -449,6 +449,11 @@ for (const r of [1, 2, 3, 5]) {
     cmp('focusKeys радиус ' + r, vkK, tgK);
     cmp('gedcomText фокус радиус ' + r, VK.gedcomText(FOCUS_CH, vkK), await TG.gedcomText(FOCUS_CH, tgK));
 }
+// фрагмент-гедком не рвёт родственные связи: в .ged радиуса есть CHIL/FAMC
+// (регресс: chd обнулялся до фильтра по keys — дети терялись всегда)
+const fragGed = VK.gedcomText(FOCUS_CH, VK.focusKeys(focusPairs, son, 2));
+if (!fragGed.includes('1 CHIL @') || !fragGed.includes('1 FAMC @') || !fragGed.includes('1 FAMS @'))
+    { failed++; console.log('✗ фрагмент .ged без CHIL/FAMC/FAMS:\n  ' + fragGed.split('\n').filter(l => /^0 @|1 (CHIL|FAMC|FAMS)/.test(l)).join('\n  ')); }
 // радиус 1 у Сына: предки (Отец, Мать, Чужой) + их потомки (Сын, Дочь)
 cmp('focusKeys r1 состав', [...VK.focusKeys(focusPairs, son, 1)].sort(),
     ['Сын 1980-06-06', 'Дочь 1982-07-07', 'Отец 1955-03-03', 'Мать 1956-05-05', 'Чужой 1990-09-09'].sort());
