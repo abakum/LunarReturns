@@ -88,6 +88,7 @@ const T = mod.__test;
 // ---- фейковый VK API: журнал сообщений чата + кнопки + документы ----
 const msgs = [];               // { cmid, fromBot, text, kb } — по порядку появления
 let cmid0 = 10;                // conversation_message_id
+let mid0 = 1000;               // message_id (peer-local, как_vk отдает messages.send)
 const cmidByNum = () => msgs.map(m => m.cmid);
 const kbButtons = kb => JSON.parse(kb).buttons.flat();
 const files = [""];            // маршруты /file/<n> — дропы !ged/!txt
@@ -133,16 +134,17 @@ const srv = http.createServer((req, res) => {
             if (method === 'messages.send') {
                 // новый ответ бота; reply — если messagesSend с forward/reply_to
                 const cmid = ++cmid0;
-                const m = { cmid, fromBot: true, text: String(p.message || ''), kb: p.keyboard || null };
+                const m = { cmid, mid: ++mid0, fromBot: true, text: String(p.message || ''), kb: p.keyboard || null };
                 if (p.forward) { try { m.reply = 'д №' + JSON.parse(p.forward).conversation_message_ids[0]; } catch { /* — */ } }
                 if (p.reply_to) m.reply = 'д №' + p.reply_to;
                 msgs.push(m);
                 showBot(m);
-                return json({ response: 12345 });
+                return json({ response: m.mid });
             }
             if (method === 'messages.edit') {
                 const cmid = Number(p.conversation_message_id);
-                const m = msgs.find(x => x.cmid === cmid);
+                const mid = Number(p.message_id);
+                const m = msgs.find(x => (cmid && x.cmid === cmid) || (mid && x.mid === mid));
                 if (!m) return json({ response: 1 });
                 if (p.attachment) { m.text = (p.message !== undefined ? String(p.message) + '\n' : '') + '📎 вложение ' + String(p.attachment); showBot(m, true); }
                 else if (p.message !== undefined) { m.text = String(p.message); showBot(m, true); }

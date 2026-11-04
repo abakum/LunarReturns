@@ -893,6 +893,11 @@ function approxOut(d, abt) {
 // как комментарии — на состав и обратимость пачки метка не влияет
 const NOT_FOR_GRAFT = "#not for cut and graft";
 
+// контент файла для перелива: BOM + метка «не для прививки», если пачка её ещё не несёт
+const withGraftMark = t =>
+    t.replace(/^\uFEFF/, "").trimStart().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase())
+        ? t : NOT_FOR_GRAFT + "\n" + t;
+
 // строки → семантика: { persons, weddings, children, errors }
 // persons[i]: {sex:'M'|'F'|null, rec:{n,d,...}|{n}, note, nameOnly, spouseLine}
 // weddings[i]: {m: idx|null, f: idx|null, rec:{d,plac,dd,plac2}, note}
@@ -3296,6 +3301,40 @@ function flatSearch(flat, query) {
     });
 }
 
+// ==================== поиск: единственное попадание → фокус ====================
+
+// строку-попадание поиска «/Имя» в персону {n, d}: маркеры сняты, хвост
+// (даты/время, место «(…)», примечание «^…») отрезается — имя до первого
+// такого токена; строка свадьбы («+…» или начинающаяся с даты/места)
+// и пустые — null. Чистая логика — дословно в обеих копиях (dev/sync-check.mjs)
+function flatHitPerson(line) {
+    const l = String(line).trim();
+    if (!l) return null;
+    const m = (l.match(/^([-+=])\1*/) || [""])[0];
+    if (m[0] && m[0].includes("+")) return null;        // строка свадьбы
+    const toks = l.slice(m.length).trim().split(/\s+/);
+    let i = 0;
+    while (i < toks.length && !/^[\d(^]/.test(toks[i])) i++;
+    if (i === 0) return null;                           // тело с даты/места
+    return { n: toks.slice(0, i).join(" "),
+        d: i < toks.length && /^\d/.test(toks[i]) ? toks[i] : null };
+}
+
+// ключ персоны (из persons = personRows(chatId)) по строке-попаданию —
+// для фокус-панели вместо списка; имя разыскивается дословно, дата — через
+// approxOut (приблизительнные и урезанные даты совпадают по печати);
+// не резолвится (не персона, имя не найдено, дата не совпала, тёзка без
+// даты в строке) — null. Чистая логика — дословно в обеих копиях
+function flatHitKey(line, persons) {
+    const hit = flatHitPerson(line);
+    if (!hit) return null;
+    const same = persons.filter(r => r.n === hit.n);
+    if (!same.length) return null;
+    if (hit.d === null) return same.length === 1 ? pkey(same[0]) : null;
+    const byD = same.find(r => approxOut(r.d, r.abt) === hit.d);
+    return byD ? pkey(byD) : null;
+}
+
 // ============================== ГЕДКОМ → PDF ==============================
 // Диаграмма «линии жизни»: бары рождения–смерти (без даты смерти — до правого
 // края), связи родитель→ребёнок в год рождения ребёнка. Отправляется файлом
@@ -4041,6 +4080,10 @@ async function vkUploadDoc(peerId, title, content) {
 // в пределах радиуса; всему древу чата пачки нет (его «-+=» и так весь)
 // origin (тап 🧬 на «/»-сообщении) — правка исходного сообщения с вложениями
 // (текст и назначение не меняются, как у «-+=»); без origin — отдельным сообщением
+// 🧬: радиусное древо — три прицепа (.ged, .pdf, .ged.txt-пачка). Сначала —
+// мгновенное сообщение с ⏳: влезает пачка — её текст «без ножниц, с часами»,
+// не влезает — метка + голова + ✂️⏳; затем асинхронно строятся/грузятся
+// файлы (это долго) и правкой цепляются к тому же сообщению, ⏳ снимается
 async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = null, origin = null, kb = null) {
     const g = gedcomText(peerId, keys);
     // заголовок чарта без цифры уровня (кейкап оставлен только фокусу);
@@ -4049,49 +4092,84 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
     const chartHead = head0.replace(/^\d\u20E3\s*/, "");
     const rm = /^(\d)\u20E3/.exec(head0);
     const base = fileBaseOf(head0);
-    // третий прицеп (радиусные 🧬 и /gedcomN): пачка ромба — chatFlatText по keys;
-    // она идёт только файлом (пачка <4000 — текстом сообщения)
+    // пачка ромба — chatFlatText по keys (метка NOT_FOR_GRAFT — первой строкой)
     const pack = Array.isArray(keys) && keys.length ? chatFlatText(peerId, keys) : "";
-    let pdf = null, persons = 0, chartErr = null;
+    const packFits = !!pack && pack.length < 4000;
+    const overflow = !!pack && !packFits;
+    // перелив: голова, метка, обрезанный внутренний текст пачки (первая
+    // строка пачки — метка, её не двоим; целые строки до ~4000 знака) и
+    // ✂️⏳ в конце; после прицепов — то же с ✂️ без часов
+    let inner = "";
+    if (overflow) {
+        const lines = pack.split("\n")
+            .filter((l, i) => !(i === 0 && l.trim().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase())));
+        for (const l of lines) {
+            if (head.length + 1 + NOT_FOR_GRAFT.length + 1 + inner.length + 1 + l.length > 4000) break;
+            inner += (inner ? "\n" : "") + l;
+        }
+    }
+    const headTxt = head + (packFits ? "\n" + pack : "");
+    const holdTxt = overflow ? head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️⏳" : headTxt + "\n⏳";
+    const finalTxt = overflow ? head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️" : headTxt;
+    // 1) мгновенно: текст + ⏳ (правкой исходника фокуса или новым сообщением)
+    let sent = 0;
     try {
-        const res = chartFor(peerId, keys, chartHead, heroKey, rm ? Number(rm[1]) : null);
-        persons = res.persons;
-        pdf = res.pdf;
-    } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
+        if (origin) {
+            try { await editOrigin(origin, holdTxt, kb); sent = -1; }
+            catch (e) { sent = await messagesSend(peerId, holdTxt, msgId, convMsgId, null); }
+        } else {
+            sent = await messagesSend(peerId, holdTxt, msgId, convMsgId, null);
+        }
+    } catch (e) { console.error("ged hold:", e.message); }
+    console.log("ged hold:", base, overflow ? "✂️⏳" : "⏳", "peer", peerId);
+    // 2) асинхронно: pdf и прицепы; когда готовы — ⏳ снят, всё цепляется тем же сообщением
+    (async () => {
     try {
-        // пачка <4000 — текстом (сообщение с прицепами), иначе — файлом .ged.txt
-        const packFits = !!pack && pack.length < 4000;
+        let pdf = null, persons = 0, chartErr = null;
+        try {
+            const res = chartFor(peerId, keys, chartHead, heroKey, rm ? Number(rm[1]) : null);
+            persons = res.persons;
+            pdf = res.pdf;
+        } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
         const atts = [await vkUploadDoc(peerId, base + ".ged", g)];
         if (pdf) atts.push(await vkUploadDoc(peerId, base + ".pdf", Buffer.from(pdf, "latin1")));
-        if (pack && !packFits) atts.push(await vkUploadDoc(peerId, base + ".ged.txt", "\uFEFF" + pack));
-        const headTxt = head + (packFits ? "\n" + pack : "");
-        if (origin) {
+        // .ged.txt-пачка — третьим прицепом ТОЛЬКО когда текстом не вместилась;
+        // влезла — её текст уже в сообщении, прицепляем только .ged+.pdf
+        if (overflow) atts.push(await vkUploadDoc(peerId, base + ".ged.txt", "\uFEFF" + pack));
+        // ВК-кварк: messages.edit с message+attachment применяет вложение, но
+        // не текст; правка без attachment СБРАСЫВАЕТ вложения — поэтому в
+        // текстовую правку вложения включаем повторно
+        const clique = { peer_id: peerId, attachment: atts.join(","), keyboard: kb };
+        const tlex = { peer_id: peerId, attachment: atts.join(","), keyboard: kb,
+            message: finalTxt };
+        if (origin && sent === -1) { clique.conversation_message_id = origin.conversation_message_id;
+            tlex.conversation_message_id = origin.conversation_message_id; }
+        else { clique.message_id = sent; tlex.message_id = sent; }
+        try {
+            await vkApi("messages.edit", clique);
             try {
-                // правим сообщение фокуса: текст (заголовок + пачка, если
-                // влезает) и прицепы — всё в одном сообщении; не влезает —
-                // прицепы .ged+.pdf+.ged.txt, текст не трогаем
-                await vkApi("messages.edit", {
-                    peer_id: origin.peer_id, conversation_message_id: origin.conversation_message_id,
-                    message: packFits ? headTxt : undefined, attachment: atts.join(","), keyboard: kb
-                });
-                console.log("ged artifacts edited into origin:", base + ".ged", "peer", peerId);
-                // бездатное древо — PDF нет по построению («chart: персоны
-                // пусты»), это не ошибка, алерта не шлём
-                if (chartErr && !chartErr.includes("персоны пусты")) await messagesSend(peerId, "💥 Диаграмма не построена: " + chartErr);
-                return;
-            } catch (e) {
-                console.error("editOriginAtts:", e.message, "— отношу файлом");
+                await vkApi("messages.edit", tlex);
+            } catch (e2) {
+                console.error("ged origin text:", e2.message, "— правлю текст без клавиатуры");
+                const bare = { ...tlex }; delete bare.keyboard;
+                try { await vkApi("messages.edit", bare); } catch {}
             }
+            console.log("ged artifacts edited into origin:", base + ".ged", "peer", peerId);
+        } catch (e) {
+            console.error("editOriginAtts:", e.message, "— отношу файлом");
+            await messagesSend(peerId, finalTxt, 0, 0, null, atts.join(","));
         }
-        await messagesSend(peerId, headTxt, msgId, convMsgId, null, atts.join(","));
         console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : "")
-            + (pack ? (packFits ? " (пачка текстом)" : " + " + base + ".ged.txt") : ""), "peer", peerId);
+            + (overflow ? " + " + base + ".ged.txt" : ""), "peer", peerId);
+        // бездатное древо — PDF нет по построению («chart: персоны
+        // пусты»), это не ошибка, алерта не шлём
         if (chartErr && !chartErr.includes("персоны пусты")) await messagesSend(peerId, "💥 Диаграмма не построена: " + chartErr);
         return;
     } catch (e) {
         console.error("doc upload:", e.message);
         await messagesSend(peerId, "💥 Не удалось выложить файлы: " + e.message);
     }
+    })();
 }
 
 // ============================== НАСТРОЙКИ ==============================
@@ -4849,8 +4927,33 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         const pack = key ? branchFlatText(peerId, key) : chatFlatText(peerId);
         if (!pack) { await messagesSend(peerId, key ? "ветвь пуста" : "связей пока нет", msgId, convMsgId); return; }
         if (pack.length >= 4000) {
-            const doc = await vkUploadDoc(peerId, fileBaseOf(head || "Древо чата") + ".ged.txt", "\uFEFF" + pack);
-            await messagesSend(peerId, head, msgId, convMsgId, null, doc);
+            // голова + ✂️⏳ первым сообщением (полное — в файле); ВЕСЬ пачка —
+            // файлом асинхронно: upload долгий, ответ — сразу; файл правкой
+            // приклеивается к тому же сообщению (⏳ снят, ✂️ остаётся),
+            // мимо — отдельным сообщением
+            const head0 = head || "Древо чата";
+            const ngHead0 = NOT_FOR_GRAFT + "\n" + head0;
+            const sent = await messagesSend(peerId, ngHead0 + "\n✂️⏳", msgId, convMsgId);
+            (async () => {
+                try {
+                    const att = await vkUploadDoc(peerId,
+                        fileBaseOf(head0) + ".ged.txt", "\uFEFF" + withGraftMark(pack));
+                    try {
+                        await vkApi("messages.edit", {
+                            peer_id: peerId, message_id: sent, attachment: att });
+                        // правка без attachment сбрасывает вложения — повторяем
+                        await vkApi("messages.edit", {
+                            peer_id: peerId, message_id: sent, attachment: att,
+                            message: ngHead0 + "\n✂️" });
+                    } catch (e) {
+                        console.error("links edit:", e.message, "— отношу файлом");
+                        try { await vkApi("messages.edit", {
+                            peer_id: peerId, message_id: sent, message: ngHead0 + "\n✂️" }); } catch {}
+                        await messagesSend(peerId, head0, msgId, convMsgId, null, att);
+                    }
+                    console.log("links doc:", att, "peer", peerId);
+                } catch (e) { console.error("links doc upload:", e.message); }
+            })();
         } else {
             await messagesSend(peerId, (head ? head + "\n" : "") + pack, msgId, convMsgId);
         }
@@ -4864,21 +4967,109 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         const q = text.trim();
         const hits = flatSearch(chatFlatText(peerId), q);
         if (hits.length) {
+            // ровно одно попадание, резолвящееся в персону, — сразу
+            // фокус-сообщение: текст как у /bellN + панель кнопок (триггера
+            // нет — реплаить не на что, новое сообщение); нерезолвимое
+            // (свадьба, заглушка, тёзки) — списком/файлом как прежде
+            if (hits.length === 1) {
+                const key = flatHitKey(hits[0], personRows(peerId));
+                const rec = key ? recordOf(peerId, key) : null;
+                if (rec) {
+                    // текст панели — как 🧬: пачка ромба радиуса (текстом);
+                    // не влезает (лимит сообщения; VK API 914 «Message is
+                    // too long») — голова + целые строки + ✂️⏳, а ВЕСЬ пачка —
+                    // файлом (.ged.txt) асинхронно: upload долгий, ответ —
+                    // сразу; файл приклеивается к тому же сообщению (правка
+                    // с attachment), мимо — отдельным сообщением-файлом;
+                    // после прицепления ⏳ снят, ✂️ остаётся
+                    const head = focusHead(key, 1, rec.dd);
+                    const pack = branchFlatText(peerId, key);
+                    const kb = await focusKeyboard(peerId, fromId, key, 1,
+                        focusDepth(linkPairs(peerId), key));
+                    const ngHead = NOT_FOR_GRAFT + "\n" + head;
+                    let tail = null;
+                    if (head.length + 1 + pack.length > 4000) {
+                        tail = "";
+                        for (const l of pack.split("\n")) {
+                            if (ngHead.length + 1 + tail.length + l.length > 4000) break;
+                            tail += (tail ? "\n" : "") + l;
+                        }
+                    }
+                    const sent = await messagesSend(peerId,
+                        tail !== null ? ngHead + "\n" + tail + "\n✂️⏳" : head + "\n" + pack,
+                        msgId, convMsgId, kb);
+                    if (tail !== null) {
+                        (async () => {
+                            try {
+                                const att = await vkUploadDoc(peerId,
+                                    fileBaseOf(head) + ".ged.txt", "\uFEFF" + withGraftMark(pack));
+                                try {
+                                    // ВЕСЬ пачка — в то же сообщение; текст:
+                                    // усечённый + ✂️ (⏳ снят после прицепления)
+                                    await vkApi("messages.edit", {
+                                        peer_id: peerId, message_id: sent,
+                                        attachment: att, keyboard: kb });
+                                    await vkApi("messages.edit", {
+                                        peer_id: peerId, message_id: sent,
+                                        // правка без attachment сбрасывает
+                                        // вложения — повторяем их в тексте
+                                        attachment: att,
+                                        message: ngHead + "\n" + tail + "\n✂️",
+                                        keyboard: kb });
+                                } catch (e) {
+                                    console.error("panel edit:", e.message, "— отношу файлом");
+                                    try { await vkApi("messages.edit", {
+                                        peer_id: peerId, message_id: sent,
+                                        message: ngHead + "\n✂️", keyboard: kb }); } catch {}
+                                    await messagesSend(peerId, head, msgId, convMsgId, kb, att);
+                                }
+                                console.log("panel doc:", att, "peer", peerId);
+                            } catch (e) {
+                                console.error("panel doc upload:", e.message);
+                            }
+                        })();
+                    }
+                    console.log("flat search:", JSON.stringify(q), "-> фокус", key, "peer", peerId);
+                    return;
+                }
+            }
             console.log("результат готов:", hits.length, "строк");
             // частые имена (Андрей) длиннее лимита ВК — файлом, как /links
             // (ТГ: sendLong делает то же)
             const found = hits.join("\n");
             if (found.length >= 4000) {
-                // заголовок и имя файла — дословно как в ТГ (handlers/message.js)
+                // заголовок + ✂️⏳, ВЕСЬ список — файлом асинхронно (upload
+                // долгий, ответ — сразу); файл правкой в то же сообщение
+                // (⏳ снят, ✂️ остаётся)
                 const sub = /^\/\s/.test(q);
                 const mark = (q.slice(1).match(/^([-+=])\1*/) || [""])[0];
                 const needle = (sub ? q.slice(1) : q.slice(1 + mark.length)).trim();
                 const head = "Найдено " + hits.length + " строк "
                     + (needle ? (sub ? "с подстрокой " : "начинающихся с ") + needle
                               : "с маркером «" + mark + "»");
-                const doc = await vkUploadDoc(peerId, fileBaseOf(head) + ".txt", "\uFEFF" + found);
-                // без текстового заголовка — имя файла уже говорит само
-                await messagesSend(peerId, "", msgId, convMsgId, null, doc);
+                const sent = await messagesSend(peerId,
+                    NOT_FOR_GRAFT + "\n" + head + "\n✂️⏳", msgId, convMsgId);
+                (async () => {
+                    try {
+                        const att = await vkUploadDoc(peerId,
+                            fileBaseOf(head) + ".txt", "\uFEFF" + withGraftMark(found));
+                        try {
+                            await vkApi("messages.edit", {
+                                peer_id: peerId, message_id: sent, attachment: att });
+                            // правка без attachment сбрасывает вложения — повторяем
+                            await vkApi("messages.edit", {
+                                peer_id: peerId, message_id: sent, attachment: att,
+                                message: NOT_FOR_GRAFT + "\n" + head + "\n✂️" });
+                        } catch (e) {
+                            console.error("search edit:", e.message, "— отношу файлом");
+                            try { await vkApi("messages.edit", {
+                                peer_id: peerId, message_id: sent,
+                                message: NOT_FOR_GRAFT + "\n" + head + "\n✂️" }); } catch {}
+                            await messagesSend(peerId, head, msgId, convMsgId, null, att);
+                        }
+                        console.log("search doc:", att, "peer", peerId);
+                    } catch (e) { console.error("search doc upload:", e.message); }
+                })();
             } else {
                 await messagesSend(peerId, found, msgId, convMsgId);
             }
@@ -5136,9 +5327,40 @@ async function handleEvent(o) {
             const kb = await focusKeyboard(peerId, o.user_id, key, radius, depth);
             const txt = focusHead(key, radius, rec.dd) + "\n" + pack;
             if (txt.length < 4000) { await editOrigin(o, txt, kb); return; }
-            // заголовок не ломаем (в нём триггер), текст не трогаем; пачка —
-            // вложением в это же сообщение
-            await editOriginDoc(o, fileBaseOf(focusHead(key, radius, rec.dd)) + ".ged.txt", "\uFEFF" + pack, kb);
+            // перелив: держ = голова, метка, обрезанные целые строки пачки
+            // (до ~4000) и ✂️⏳ в конце; пачка — файлом, после прицепа — тот
+            // же текст со ✂️ без часов (правка текста обязательно с
+            // повторным attachment — ВК сбрасывает вложения у правки без них)
+            const fh = focusHead(key, radius, rec.dd);
+            let inner = "";
+            for (const l of pack.split("\n")) {
+                if (fh.length + 1 + NOT_FOR_GRAFT.length + 1 + inner.length + 1 + l.length > 4000) break;
+                inner += (inner ? "\n" : "") + l;
+            }
+            const holdTxt = fh + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️⏳";
+            const finalTxt = fh + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️";
+            await editOrigin(o, holdTxt, kb);
+            try {
+                const att = await vkUploadDoc(o.peer_id,
+                    fileBaseOf(fh) + ".ged.txt", "\uFEFF" + withGraftMark(pack));
+                try {
+                    await vkApi("messages.edit", {
+                        peer_id: peerId, conversation_message_id: o.conversation_message_id,
+                        attachment: att, keyboard: kb });
+                    await vkApi("messages.edit", {
+                        peer_id: peerId, conversation_message_id: o.conversation_message_id,
+                        attachment: att, keyboard: kb, message: finalTxt });
+                } catch (e2) {
+                    console.error("foc:flat edit:", e2.message, "— отношу файлом");
+                    try { await editOrigin(o, finalTxt, kb); } catch {}
+                    await messagesSend(peerId, finalTxt, 0, 0, kb, att);
+                }
+                console.log("foc:flat doc:", att, "peer", peerId);
+            } catch (e) {
+                console.error("foc:flat doc upload:", e.message);
+                await sendTailDoc(peerId, withGraftMark(pack).replace(/^\uFEFF/, ""),
+                    fileBaseOf(fh), ".ged.txt", o.conversation_message_id);
+            }
             return;
         }
         const bell = p.c === "foc:bell" || p.c === "foc";
@@ -5281,12 +5503,14 @@ async function handleEvent(o) {
                 { action: { type: "callback", label: "❌", payload: JSON.stringify({ c: "del:no" }) }, color: "secondary" }
             ]]
         });
-        // длинный список — в сообщении остаётся заголовок, весь список — одним
-        // .txt-вложением в это же сообщение (как «-+=» и .ged/.pdf)
+        // длинный список — голова + ✂️⏳, весь список — одним .txt-вложением
+        // в это же сообщение (как «-+=» и .ged/.pdf), потом ⏳ снят (✂️ остаётся)
         if ((head + "\n" + list).length >= 4000) {
             const head0 = (head + "\n" + list).split("\n")[0];
-            await editOrigin(o, head0, kb);
-            await editOriginDoc(o, fileBaseOf(head0) + ".txt", "\uFEFF" + head + "\n" + list, kb);
+            await editOrigin(o, NOT_FOR_GRAFT + "\n" + head0 + "\n✂️⏳", kb);
+            await editOriginDoc(o, fileBaseOf(head0) + ".txt",
+                "\uFEFF" + withGraftMark(head + "\n" + list), kb);
+            try { await editOrigin(o, NOT_FOR_GRAFT + "\n" + head0 + "\n✂️", kb); } catch {}
             return;
         }
         await editOrigin(o, head + "\n" + list, kb);
@@ -5333,9 +5557,12 @@ async function handleEvent(o) {
         }
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "пачка древа чата");
         if (flat.length >= 4000) {
-            // текст и кнопки не трогаем; вся пачка — вложением в это сообщение
+            // голова + ✂️⏳ (не влезает — полное в файле); вся пачка — вложением
+            // в это сообщение, потом ⏳ снят (✂️ остаётся)
             const kb0 = await peerKeyboard(peerId, o.user_id);
-            await editOriginDoc(o, fileBaseOf("Древо чата") + ".ged.txt", "\uFEFF" + flat, kb0);
+            await editOrigin(o, NOT_FOR_GRAFT + "\nДрево чата\n✂️⏳", kb0);
+            await editOriginDoc(o, fileBaseOf("Древо чата") + ".ged.txt", "\uFEFF" + withGraftMark(flat), kb0);
+            try { await editOrigin(o, NOT_FOR_GRAFT + "\nДрево чата\n✂️", kb0); } catch {}
             return;
         }
         await editOrigin(o, flat, await peerKeyboard(peerId, o.user_id));
@@ -5728,5 +5955,6 @@ module.exports.__test = {
     clearChatTree, recordOf, recordAnyOf, chartPdf, chartModel, chartFor, fileBaseOf, b64ToBytes, parseTtf,
     gedcomText, importGedcom, jubileeText, setLinkCand, setLinkCmid, weddingByFx, upsertWedding, linkRowOf,
     chatFlatText, flatTreeText, branchFlatText, subsetBranch, flatRows, flatSearch,
+    flatHitPerson, flatHitKey,
     cutAndGraft, setPersonByXref, editTrigger, rootOf, uniqueKeyOf, upcomingEvents, hasTree,
 };

@@ -10,6 +10,7 @@ import {
     recordOf, recordByXref, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong,
     deleteEventCascade, replaceWithGedcom, clearChatTree, deleteLink, setIndiSex, toggleAdopted,
     linkById, linkPairs, xrefOfKey, personRows, weddingRows, sendTreeBackup,
+    NOT_FOR_GRAFT,
     upcomingText, mmddToday, focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText,
     focusWithSpouses, focusListKeys, focusSpousePairs, focusListText, focusDepth, sendGedPdf,
     applyTree, branchFlatText, keyOfXref, cutAndGraft, treeReport, sendFlatPack, hasTree,
@@ -34,17 +35,25 @@ export default async function (cq, ctx) {
 
     // большой текст — ВЕСЬ текст одним файлом: «.ged.txt» (пачка древа) либо
     // «.txt» (список событий); не выложился — ошибка. Файл — ответом на то же
-    // сообщение (к которому кнопки), а не отдельным
-    const tailDoc = async (text, nameBase, ext = ".ged.txt") => {
+    // сообщение (к которому кнопки), а не отдельным; после выкладки — правка:
+    // ⏳ снимается, ✂️ остаётся (признак «не влезло — полное в файле»);
+    // finalText — сообщение с ✂️
+    const tailDoc = async (text, nameBase, ext = ".ged.txt", finalText = null) => {
         const base = fileBaseOf(nameBase || "Продолжение") + ext;
+        // BOM и метка «не для прививки»; если пачка уже несёт метку — не двоим
+        const content = "\uFEFF" + (text.trimStart().toLowerCase()
+            .startsWith(NOT_FOR_GRAFT.toLowerCase())
+            ? text : NOT_FOR_GRAFT + "\n" + text);
         try {
             await api.sendDocument({
                 chat_id: chatId,
-                // BOM — чтобы Windows-редакторы открывали как UTF-8
-                document: new InputFile(new TextEncoder().encode("\uFEFF" + text), base,
+                document: new InputFile(new TextEncoder().encode(content), base,
                     { type: "text/plain" }),
                 reply_parameters: { message_id: cq.message.message_id, allow_sending_without_reply: true },
             });
+            if (finalText !== null)
+                await api.editMessageText({ chat_id: chatId,
+                    message_id: cq.message.message_id, text: finalText });
             return;
         } catch (e) {
             console.error("tail document:", e.message);
@@ -117,8 +126,11 @@ export default async function (cq, ctx) {
         const markup = await startMarkup(cq.message.chat, await chatAdmin(cq.message.chat, cq.from?.id),
             chatId, await getSettings(chatId));
         if (flat.length > 4000) {
-            // текст и кнопки сообщения не трогаем; полный список — файлом ответом
-            await tailDoc(flat, "Древо чата", ".ged.txt");
+            // голова + ✂️⏳ (не влезает — полное в файле); ВЕСЬ список — файлом
+            // ответом на это сообщение, потом ⏳ снят (✂️ остаётся)
+            await editText(NOT_FOR_GRAFT + "\nДрево чата\n✂️⏳", markup);
+            await tailDoc(flat, "Древо чата", ".ged.txt",
+                NOT_FOR_GRAFT + "\nДрево чата\n✂️");
             return;
         }
         await editText(flat, markup);
@@ -177,10 +189,11 @@ export default async function (cq, ctx) {
             ]]
         };
         if (full.length > 4000) {
-            // список — .txt (не древо); в сообщении остаётся заголовок, файл —
-            // ответом на это же сообщение
-            await editText(full.split("\n")[0], delKb);
-            await tailDoc(full, full.split("\n")[0], ".txt");
+            // список — .txt (не древо); голова + ✂️⏳, весь список — файлом
+            // ответом на это же сообщение, потом ⏳ снят (✂️ остаётся)
+            await editText(full.split("\n")[0] + "\n✂️⏳", delKb);
+            await tailDoc(NOT_FOR_GRAFT + "\n" + full, full.split("\n")[0], ".txt",
+                NOT_FOR_GRAFT + "\n" + full.split("\n")[0] + "\n✂️");
             return;
         }
         await editText(full, delKb);
@@ -358,8 +371,11 @@ export default async function (cq, ctx) {
             if (!pack) { await answer("ветвь пуста"); return; }
             const fKb0 = focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth);
             if (pack.length > 4000) {
-                await editText(head, fKb0);
-                await tailDoc(pack, head, ".ged.txt");
+                // голова + ✂️⏳ (не влезает — полное в файле); ВЕСЬ пачка —
+                // файлом ответом на это сообщение, потом ⏳ снят
+                await editText(NOT_FOR_GRAFT + "\n" + head + "\n✂️⏳", fKb0);
+                await tailDoc(pack, head, ".ged.txt",
+                    NOT_FOR_GRAFT + "\n" + head + "\n✂️");
                 return;
             }
             await editText(head + "\n" + pack, fKb0);

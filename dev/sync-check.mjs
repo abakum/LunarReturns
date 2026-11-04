@@ -357,6 +357,30 @@ fsExp('/===', '', 'женщины глубины 2 — пусто');
 fsExp('/++', '++1995-06-06 (Пермь)\n++2001-01-01 примечание', 'все свадьбы глубины 1');
 fsExp('/- ', '-Антон Ульрих 1714-08-17 герцог\n-Пётр 2000-03-03', 'маркер + пробел — все мужчины глубины 0');
 
+// ==================== 5б. flatHit*: единственное попадание → фокус ====================
+for (const line of FLAT.split('\n').concat([
+    '', '+Антон Ульрих', '(Пермь)', '12:30', '^заметка',
+    '======Maria 1999-12-31', 'Мария 1970-05-06~', 'Иван 21:30 (Сочи)',
+]))
+    cmp('flatHitPerson ' + JSON.stringify(line), VK.flatHitPerson(line), TG.flatHitPerson(line));
+
+const HIT_ROWS = [
+    { n: 'Антон Ульрих', d: '1714-08-17' },
+    { n: 'Мария', d: '1970-05-06', abt: 15 },          // печатается «1970-05-06~»
+    { n: 'Иван Петрович', d: '1880-01-01' },
+    { n: 'Мария', d: '1930-01-01' },                   // тёзка Марии
+];
+// ключи для фокус-панели (VK.flatHitKey / TG.flatHitKey) — сравнение
+cmp('flatHitKey Антон', VK.flatHitKey('-Антон Ульрих 1714-08-17 герцог', HIT_ROWS), TG.flatHitKey('-Антон Ульрих 1714-08-17 герцог', HIT_ROWS));
+cmp('flatHitKey приблизительная', VK.flatHitKey('=Мария 1970-05-06~', HIT_ROWS), TG.flatHitKey('=Мария 1970-05-06~', HIT_ROWS));
+cmp('flatHitKey тёзки одна дата', VK.flatHitKey('=Мария 1930-01-01', HIT_ROWS), TG.flatHitKey('=Мария 1930-01-01', HIT_ROWS));
+cmp('flatHitKey тёзки без даты в строке', VK.flatHitKey('Мария', HIT_ROWS), TG.flatHitKey('Мария', HIT_ROWS));
+cmp('flatHitKey имя-заглушка', VK.flatHitKey('Иван Петрович', HIT_ROWS), TG.flatHitKey('Иван Петрович', HIT_ROWS));
+cmp('flatHitKey свадьба', VK.flatHitKey('++1995-06-06 (Пермь)', HIT_ROWS), TG.flatHitKey('++1995-06-06 (Пермь)', HIT_ROWS));
+cmp('flatHitKey пустая', VK.flatHitKey('', HIT_ROWS), TG.flatHitKey('', HIT_ROWS));
+cmp('flatHitKey нет имени', VK.flatHitKey('-Иван 1996-01-01', HIT_ROWS), TG.flatHitKey('-Иван 1996-01-01', HIT_ROWS));
+cmp('flatHitKey дата мимо', VK.flatHitKey('=Мария 1971', HIT_ROWS), TG.flatHitKey('=Мария 1971', HIT_ROWS));
+
 // ==================== 6. jubileeText: шапка с датой смерти/развода ====================
 const { jubileeText: tgJubilee } = await import(path.join(ROOT, 'tgcloud', 'lib', 'text.js'));
 const JUBILEE_RECS = [

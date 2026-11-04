@@ -1542,7 +1542,7 @@ async function flatRows(chatId) {
 // такая пачка не годится. parseTree (tgcloud/lib/parse.js) читает метку
 // первой непустой строкой в tree.noGraft, cutAndGraft её отвергает;
 // строки «#» парсер пачки пропускает как комментарии — состав не меняется
-const NOT_FOR_GRAFT = "#not for cut and graft";
+export const NOT_FOR_GRAFT = "#not for cut and graft";
 
 export async function chatFlatText(chatId, keys = null) {
     // keys (опционально) — фокус-радиус: пачка только этого подмножества
@@ -1843,6 +1843,40 @@ export function flatSearch(flat, query) {
             return m2 && h.slice(m2.length).toLowerCase() === body;
         });
     });
+}
+
+// ==================== поиск: единственное попадание → фокус ====================
+
+// строку-попадание поиска «/Имя» в персону {n, d}: маркеры сняты, хвост
+// (даты/время, место «(…)», примечание «^…») отрезается — имя до первого
+// такого токена; строка свадьбы («+…» или начинающаяся с даты/места)
+// и пустые — null. Чистая логика — дословно в обеих копиях (dev/sync-check.mjs)
+export function flatHitPerson(line) {
+    const l = String(line).trim();
+    if (!l) return null;
+    const m = (l.match(/^([-+=])\1*/) || [""])[0];
+    if (m[0] && m[0].includes("+")) return null;        // строка свадьбы
+    const toks = l.slice(m.length).trim().split(/\s+/);
+    let i = 0;
+    while (i < toks.length && !/^[\d(^]/.test(toks[i])) i++;
+    if (i === 0) return null;                           // тело с даты/места
+    return { n: toks.slice(0, i).join(" "),
+        d: i < toks.length && /^\d/.test(toks[i]) ? toks[i] : null };
+}
+
+// ключ персоны (из persons = personRows(chatId)) по строке-попаданию —
+// для фокус-панели вместо списка; имя разыскивается дословно, дата — через
+// approxOut (приблизительнные и урезанные даты совпадают по печати);
+// не резолвится (не персона, имя не найдено, дата не совпала, тёзка без
+// даты в строке) — null. Чистая логика — дословно в обеих копиях
+export function flatHitKey(line, persons) {
+    const hit = flatHitPerson(line);
+    if (!hit) return null;
+    const same = persons.filter(r => r.n === hit.n);
+    if (!same.length) return null;
+    if (hit.d === null) return same.length === 1 ? pkey(same[0]) : null;
+    const byD = same.find(r => approxOut(r.d, r.abt) === hit.d);
+    return byD ? pkey(byD) : null;
 }
 
 // ============================== ГЕДКОМ → PDF ==============================
@@ -2335,19 +2369,34 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0) {
     const pack = key === null ? await chatFlatText(chatId) : await branchFlatText(chatId, key);
     if (!pack) return false;
     const reply = replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {};
+    // метка «не для прививки»: у пачки ромба (древо чата) она уже есть —
+    // первой строкой; у ветви героя её нет — добавляем ТОЛЬКО при переливе
+    const mark = pack.trimStart().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase())
+        ? "" : NOT_FOR_GRAFT + "\n";
     if (pack.length <= 4000) {
-        await api.sendMessage({ chat_id: chatId, text: (head ? head + "\n" : "") + pack, ...reply });
+        await api.sendMessage({ chat_id: chatId,
+            text: mark + (head ? head + "\n" : "") + pack, ...reply });
         return true;
     }
     const base = fileBaseOf(head || "Древо чата") + ".ged.txt";
     try {
-        // BOM — чтобы Windows-редакторы открывали как UTF-8
+        // не влезает: метка + голова + ✂️⏳ первым сообщением (полное — в
+        // файле; у ромба метка и так первая строка пачки в файле), файл —
+        // ответом на него же, потом ⏳ снят (✂️ остаётся)
+        const hold = await api.sendMessage({
+            chat_id: chatId, text: NOT_FOR_GRAFT + "\n" + (head ? head + "\n" : "") + "✂️⏳", ...reply });
+        // BOM — чтобы Windows-редакторы открывались как UTF-8
+        const content = "\uFEFF" + (mark ? NOT_FOR_GRAFT + "\n" + pack : pack);
         await api.sendDocument({
             chat_id: chatId,
-            document: new InputFile(new TextEncoder().encode("\uFEFF" + pack), base, { type: "text/plain" }),
-            ...(head ? { caption: head } : {}),
-            ...reply,
+            document: new InputFile(new TextEncoder().encode(content), base, { type: "text/plain" }),
+            ...(hold && hold.message_id
+                ? { reply_parameters: { message_id: hold.message_id, allow_sending_without_reply: true } } : reply),
         });
+        if (hold && hold.message_id)
+            await api.editMessageText({ chat_id: chatId,
+                message_id: hold.message_id,
+                text: NOT_FOR_GRAFT + "\n" + (head ? head + "\n" : "") + "✂️" });
     } catch (e) {
         console.error("tail document:", e.message);
         await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось выложить файл " + base, ...reply });

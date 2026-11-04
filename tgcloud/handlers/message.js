@@ -1,15 +1,16 @@
-import { api, db } from 'sdk';
+import { api, db, InputFile } from 'sdk';
 import { eq } from 'sdk/db';
 import { gedDrops, focusView } from '../schema.js';
 import { parseTrigger, parseGedcom, gedStats, parseTree } from '../lib/parse.js';
+import { fileBaseOf } from '../lib/chart.js';
 import { jubileeText } from '../lib/text.js';
 import {
     HELP, startMarkup, chatAdmin, getSettings, todayText, eventMarkup, sendLong,
     recordOf, replaceWithGedcom,
     linkPairs, personRows, weddingRows, sendGedPdf, focusKeys, focusHead, focusMarkup,
     focusWithSpouses, focusListKeys, focusSpousePairs, focusDepth, focusListText, mmddToday, upcomingText, upsertPerson, applyTree, cutAndGraft, treeReport,
-    editTrigger, hasTree,
-    chatFlatText, flatSearch, sendFlatPack,
+    editTrigger, hasTree, NOT_FOR_GRAFT,
+    chatFlatText, flatSearch, sendFlatPack, flatHitKey, branchFlatText,
 } from '../lib/bot.js';
 
 // заголовок «Имя ГГГГ-ММ-ДД» (+ кейкап радиуса у фокус-сообщений) в цитате;
@@ -129,13 +130,19 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
 
 // фокус-сообщение: «/» ответом на триггер, радиус 1 сразу; ключ персоны —
 // в focus_view по id сообщения с кнопками (callback_data короткий);
-// само сообщение — реплаем на «/» (как в VK sendFocus)
-async function sendFocus(chat, chatId, key, radius, dd, replyTo = 0) {
+// само сообщение — реплаем на «/» (как в VK sendFocus); body — готовое тело
+// (список 🔔, единственное попадание поиска) — сразу с панелью, не после тапа;
+// ng — вести тело с меткой «не для прививки» (перед головой: реплай на такое
+// сообщение прививкой не идёт)
+async function sendFocus(chat, chatId, key, radius, dd, replyTo = 0, body = "", ng = false) {
     // тело (список/гедком) — после тапа по кнопке; цифры радиуса — по глубине предков
     const markup = focusMarkup(chat, chatId, await getSettings(chatId), radius,
         focusDepth(await linkPairs(chatId), key));
+    const head = focusHead(key, radius, dd);
     const first = await api.sendMessage({
-        chat_id: chatId, text: focusHead(key, radius, dd), reply_markup: markup,
+        chat_id: chatId,
+        text: (ng ? NOT_FOR_GRAFT + "\n" : "") + head + (body ? "\n" + body : ""),
+        reply_markup: markup,
         ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
     });
     if (first && first.message_id) {
@@ -149,6 +156,7 @@ async function sendFocus(chat, chatId, key, radius, dd, replyTo = 0) {
         }).run();
     }
     console.log("focus:", key, "chat", chatId);
+    return first;
 }
 
 export default async function (message, ctx) {
@@ -313,6 +321,65 @@ export default async function (message, ctx) {
     if (text.startsWith("/")) {
         const hits = flatSearch(await chatFlatText(chatId), text);
         if (hits.length) {
+            // ровно одно попадание, резолвящееся в персону, — сразу
+            // фокус-сообщение: текст как у /bellN + панель кнопок, реплаем
+            // на запрос; нерезолвимое (свадьба, заглушка, тёзки) — списком
+            if (hits.length === 1) {
+                const key = flatHitKey(hits[0], await personRows(chatId));
+                const rec = key ? await recordOf(chatId, key) : null;
+                if (rec) {
+                    const pairs = await linkPairs(chatId);
+                    const sexMap = new Map((await personRows(chatId))
+                        .map(rw => [rw.n + " " + rw.d, rw.sex ?? null]));
+                    const spPairs = await focusSpousePairs(chatId);
+                    const keys = focusListKeys(pairs, spPairs, key, 1,
+                        k => sexMap.get(k) ?? null);
+                    // текст панели — как «-+=»: пачка ВЕТВИ героя (текстом);
+                    // влезает — без метки (реплай заменой ветви работает);
+                    // не влезает (лимит сообщения; ВК: «914 Message is too
+                    // long») — метка + голова + целые строки + ✂️⏳, ВЕСЬ
+                    // пачка — файлом (.ged.txt) асинхронно: upload долгий,
+                    // ответ — сразу; после выкладки ⏳ снимается (✂️ остаётся)
+                    const head = focusHead(key, 1, rec.dd);
+                    const pack = await branchFlatText(chatId, key);
+                    let shown = pack, rest = false;
+                    if (head.length + 1 + pack.length > 4000) {
+                        rest = true;
+                        shown = "";
+                        for (const l of pack.split("\n")) {
+                            if (NOT_FOR_GRAFT.length + 1 + head.length + 1 + shown.length + 1 + l.length > 4000) break;
+                            shown += (shown ? "\n" : "") + l;
+                        }
+                        shown += "\n✂️⏳";
+                    }
+                    const first = await sendFocus(message.chat, chatId, key, 1,
+                        rec.dd, message.message_id, shown, rest);
+                    if (rest && first && first.message_id) {
+                        (async () => {
+                            try {
+                                await api.sendDocument({
+                                    chat_id: chatId,
+                                    document: new InputFile(
+                                        new TextEncoder().encode(
+                                            "\uFEFF" + (pack.trimStart().toLowerCase()
+                                                .startsWith(NOT_FOR_GRAFT.toLowerCase())
+                                                ? pack : NOT_FOR_GRAFT + "\n" + pack)),
+                                        fileBaseOf(head) + ".ged.txt", { type: "text/plain" }),
+                                    reply_parameters: { message_id: first.message_id,
+                                        allow_sending_without_reply: true },
+                                });
+                                // ⏳ снят, ✂️ остаётся (полное — в файле)
+                                await api.editMessageText({ chat_id: chatId,
+                                    message_id: first.message_id,
+                                    text: NOT_FOR_GRAFT + "\n" + head + "\n" +
+                                        shown.replace("\n✂️⏳", "\n✂️") });
+                            } catch (e) { console.error("panel document:", e.message); }
+                        })();
+                    }
+                    console.log("flat search:", JSON.stringify(text), "-> фокус", key, "чат", chatId);
+                    return;
+                }
+            }
             // частые имена длиннее лимита — sendLong выложит файлом (как ВК);
             // имя файла — дословно как заголовок в ВК (lunarreturns.js)
             const q = text.trim();
@@ -322,7 +389,33 @@ export default async function (message, ctx) {
             const head = "Найдено " + hits.length + " строк "
                 + (needle ? (sub ? "с подстрокой " : "начинающихся с ") + needle
                           : "с маркером «" + mark + "»");
-            await sendLong(chatId, hits.join("\n"), undefined, head);
+            // не влезает: голова + ✂️⏳ первым сообщением, ВЕСЬ список —
+            // файлом .txt асинхронно ответом на него (как панель выше, как ВК),
+            // потом ⏳ снят (✂️ остаётся)
+            const found = hits.join("\n");
+            if (found.length > 4000) {
+                const first = await api.sendMessage({
+                    chat_id: chatId, text: NOT_FOR_GRAFT + "\n" + head + "\n✂️⏳" });
+                (async () => {
+                    try {
+                        await api.sendDocument({
+                            chat_id: chatId,
+                            document: new InputFile(
+                                new TextEncoder().encode("\uFEFF" + found),
+                                fileBaseOf(head) + ".txt", { type: "text/plain" }),
+                            ...(first && first.message_id
+                                ? { reply_parameters: { message_id: first.message_id,
+                                    allow_sending_without_reply: true } } : {}),
+                        });
+                        if (first && first.message_id)
+                            await api.editMessageText({ chat_id: chatId,
+                                message_id: first.message_id,
+                                text: NOT_FOR_GRAFT + "\n" + head + "\n✂️" });
+                    } catch (e) { console.error("search document:", e.message); }
+                })();
+            } else {
+                await sendLong(chatId, found, undefined, head);
+            }
             console.log("flat search:", JSON.stringify(text), "->", hits.length, "строк, чат", chatId);
             return;
         }
