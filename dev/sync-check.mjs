@@ -46,6 +46,7 @@ process.env.LR_DEV_DB = path.join(TMP, 'tg-db.json');
 fs.cpSync(path.join(ROOT, 'dev', 'sdk-mock'), path.join(ROOT, 'node_modules', 'sdk'), { recursive: true });
 const TG = await import(path.join(ROOT, 'tgcloud', 'lib', 'bot.js'));
 const TGP = await import(path.join(ROOT, 'tgcloud', 'lib', 'parse.js'));
+const TGOS = await import(path.join(ROOT, 'tgcloud', 'lib', 'religion.js'));
 // chart нужен уже в блоке 3в (бездатные в связях) — грузим сразу;
 // шрифт — единственный источник tgcloud/lib/font-cyr.js (ВК читает его же)
 const TGC = await import(path.join(ROOT, 'tgcloud', 'lib', 'chart.js'));
@@ -73,6 +74,15 @@ const TRIGGERS = [
     'Николай 1868-05-18 ^1917 отрёкся',
     'Иван 1960-05-10 2020-02-03 ^продолжение^вторая строка',
     'Иван+Мария 1983-06-04 (Пермь) ^1990 разъехались',
+    // «_» в разделителях полной даты — показанный новый стиль (шапка юбилея):
+    // разбор конвертирует в хранимый старый; урезанные и поздние — как есть
+    'Мария 1624_04_11',
+    'Мария 1624_04_11 12:30 (Пермь)',
+    'Агафья 1663_07_24 1681_07_24',
+    'Николай 1918_02_13',
+    'Николай 1918_02_14',
+    'Иван 1963_09_27',
+    'Мария 1624_04',
 ];
 for (const t of TRIGGERS) cmp('parseTrigger ' + JSON.stringify(t), VK.parseTrigger(t), TGP.parseTrigger(t));
 
@@ -413,6 +423,10 @@ if (VK.newStyleDate('1899-12-31') !== '1900-01-12') { failed++; console.log('✗
 if (VK.newStyleDate('1918-01-31') !== '1918-02-13') { failed++; console.log('✗ newStyleDate 1918-01-31: ' + VK.newStyleDate('1918-01-31')); }
 if (VK.newStyleDate('1918-02-01') !== '1918-02-01' || VK.newStyleDate('') !== '')
     { failed++; console.log('✗ newStyleDate новый стиль/пустая: ' + VK.newStyleDate('1918-02-01') + ' / ' + VK.newStyleDate('')); }
+// обратная конверсия (показанный новый стиль → хранимый старый)
+for (const [iso, want] of [['1624-04-11', '1624-04-01'], ['1918-02-13', '1918-01-31'], ['1918-02-14', '1918-02-14'], ['', '']])
+    if (VK.oldStyleDate(iso) !== want || TGOS.oldStyleDate(iso) !== want)
+        { failed++; console.log('✗ oldStyleDate ' + JSON.stringify(iso) + ': ' + VK.oldStyleDate(iso) + ' / ' + TGOS.oldStyleDate(iso) + ', ждали ' + JSON.stringify(want)); }
 const OS_RECS = [
     { n: 'Агафья', d: '1663-07-14', dd: '1681-07-14' }, // сдвиг +10 дней (XVII век)
     { n: 'Фёдор', d: '1899-12-31' },                    // сдвиг +12, смена года (XIX век)
@@ -422,7 +436,7 @@ const OS_RECS = [
 for (const r of OS_RECS)
     cmp('newStyle jubilee ' + r.n, VK.jubileeText(r, ''),
         tgJubilee(r, '').replace(/<\/?tg-spoiler>/g, '')); // будущие года: в ТГ под спойлером
-const osWanted = ['Агафья 1663-07-24 1681-07-24', 'Фёдор 1900-01-12', 'Столетний 1234~', 'Совет 1918-02-01'];
+const osWanted = ['Агафья 1663_07_24 1681_07_24', 'Фёдор 1900_01_12', 'Столетний 1234~', 'Совет 1918-02-01'];
 const osHeads = OS_RECS.map(r => VK.jubileeText(r, '').split('\n')[0].split(/\s\d+\s/)[0]);
 for (let i = 0; i < osWanted.length; i++)
     if (!osHeads[i].startsWith(osWanted[i]))
@@ -450,14 +464,34 @@ if (!osGed.includes('14 JUL 1663') || osGed.includes('24 JUL 1663'))
 const osPack = VK.chatFlatText(OS_CH);
 if (!osPack.includes('1663-07-14') || osPack.includes('1663-07-24'))
     { failed++; console.log('✗ экспорт/старый стиль: пачка пересдвинута\n  ' + osPack); }
-// показанный ключ (новый стиль/суффикс) резолвится обратно в хранимую запись;
-// ключ берётся тем же reply-regex'ом, что у обработчиков (усечён до первой даты)
-const osKey = t => t.match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/).slice(1).join(" ");
+// показанный ключ (новый стиль/суффикс, `_`-маркер нового стиля) резолвится
+// обратно в хранимую запись; ключ берётся тем же reply-regex'ом, что у
+// обработчиков (усечён до первой даты), `_` нормализуется как в обработчиках
+const osKey = t => t.match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/).slice(1)
+    .map(s => s.replace(/_/g, "-")).join(" ");
 const normOf = r => r ? { n: r.n, d: r.d, dd: r.dd, abt: r.abt } : null;
 cmp('recordShownOf точный', normOf(VK.recordShownOf(OS_CH, 'Агафья 1663-07-14')), normOf(await TG.recordShownOf(OS_CH, 'Агафья 1663-07-14')));
 cmp('recordShownOf показ', normOf(VK.recordShownOf(OS_CH, osKey('Агафья 1663-07-24 1681-07-24'))), { n: 'Агафья', d: '1663-07-14', dd: '1681-07-14' });
+cmp('recordShownOf `_`-шапка', normOf(VK.recordShownOf(OS_CH, osKey('Агафья 1663_07_24 1681_07_24'))), { n: 'Агафья', d: '1663-07-14', dd: '1681-07-14' });
 cmp('recordShownOf суффикс', normOf(VK.recordShownOf(OS_CH, osKey('Столетний 1234~'))), { n: 'Столетний', d: '1234-01-01', abt: 17 });
 cmp('recordShownOf мимо', VK.recordShownOf(OS_CH, osKey('Чужой 1663-07-24')), normOf(await TG.recordShownOf(OS_CH, osKey('Чужой 1663-07-24'))));
+// скопипащенная шапка как триггер: `_`-даты конвертируются в хранимые —
+// та же запись (дубля нет), dd и свадьба — по тому же правилу
+{
+    const before = [VK.personRows(OS_CH).length, (await TG.personRows(OS_CH)).length];
+    VK.upsertPerson(OS_CH, VK.parseTrigger('Агафья 1663_07_24 1681_07_24').rec);
+    await TG.upsertPerson(OS_CH, TGP.parseTrigger('Агафья 1663_07_24 1681_07_24').rec);
+    const after = [VK.personRows(OS_CH).length, (await TG.personRows(OS_CH)).length];
+    if (before[0] !== after[0] || before[1] !== after[1])
+        { failed++; console.log('✗ `_`-шапка как триггер создала дубль: ' + before + ' → ' + after); }
+    const vkA = VK.recordShownOf(OS_CH, 'Агафья 1663_07_24'), tgA = await TG.recordShownOf(OS_CH, 'Агафья 1663_07_24');
+    cmp('`_`-триггер та же запись', normOf(vkA), normOf(tgA));
+    if (!vkA || vkA.dd !== '1681-07-14')
+        { failed++; console.log('✗ `_`-триггер: dd не сохранился (сдвиг стиля?) ' + JSON.stringify(vkA)); }
+    const vkW = VK.parseTrigger('Муж+Жена 1655_01_11').rec, tgW = TGP.parseTrigger('Муж+Жена 1655_01_11').rec;
+    cmp('`_`-свадьба', vkW, tgW);
+    if (vkW.d !== '1655-01-01') { failed++; console.log('✗ `_`-свадьба: дата не переведена в старый стиль: ' + vkW.d); }
+}
 
 // ==================== 5. фокус-радиус родни ====================
 // дерево: дед+бабка → (отец, тётя), отец+мать → (сын, дочь), тётя → двоюродный
@@ -534,11 +568,15 @@ cmp('focusHead с датой смерти',
     [1, 3, 5].map(r => TG.focusHead('Пётр 1930-01-01', r, '2001-02-03')));
 if (VK.focusHead('Имя 2000-01-01', 2) !== '2 Имя 2000-01-01')
     { failed++; console.log('✗ focusHead: префикс кейкапа\n  ' + VK.focusHead('Имя 2000-01-01', 2)); }
-// кусковой regex «/»-ответа снимает префикс кейкапа с заголовка фокуса
-const RH_RE = /^(?:\d\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/;
-if ('2 Константин Абакумов 1963-09-27 2001-03-03'.match(RH_RE)?.slice(1).join(' ')
+// кусковой regex «/»-ответа снимает цифру радиуса с заголовка фокуса;
+// `_`-маркер нового стиля в дате шапки тоже распознаётся
+const RH_RE = /^(?:\d\s+)?(.+?)\s+(\d{4}[-._]\d{2}[-._]\d{2})/;
+if ('2 Константин Абакумов 1963-09-27 2001-03-03'.match(RH_RE)?.slice(1).map(s => s.replace(/_/g, "-")).join(' ')
     !== 'Константин Абакумов 1963-09-27')
     { failed++; console.log('✗ regex reply-заголовка'); }
+if ('Агафья 1663_07_24'.match(RH_RE)?.slice(1).map(s => s.replace(/_/g, "-")).join(' ')
+    !== 'Агафья 1663-07-24')
+    { failed++; console.log('✗ regex reply-заголовка (`_`)'); }
 
 // ==================== 7. kinLabel: ярлыки родства ====================
 const TGK = await import(path.join(ROOT, 'tgcloud', 'lib', 'kinship.js'));

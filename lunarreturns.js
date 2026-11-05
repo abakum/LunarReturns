@@ -248,6 +248,23 @@ function newStyleDate(iso) {
     return jdnToGreg(julianToJdn(y, m, d)).map((v, i) => String(v).padStart(i ? 2 : 4, "0")).join("-");
 }
 
+// новый стиль отличается от старого только до 1918-02-13 (= юлианский
+// 1918-01-31); позже стили совпадают и маркер не нужен
+const NEW_STYLE_END = "1918-02-13";
+
+function jdnToJulian(j) {
+    const c = j + 32082, d = Math.floor((4 * c + 3) / 1461), e = c - Math.floor(1461 * d / 4), m2 = Math.floor((5 * e + 2) / 153);
+    return [d - 4800 + Math.floor(m2 / 10), m2 + 3 - 12 * Math.floor(m2 / 10), e - Math.floor((153 * m2 + 2) / 5) + 1];
+}
+
+// обратное к newStyleDate: показанная в шапке (григорианская) дата — в
+// хранимую юлианскую; используется разбором `_`-дат триггера (см. parseDateGroups)
+function oldStyleDate(iso) {
+    if (!iso || iso > NEW_STYLE_END) return iso;
+    const [y, m, d] = iso.split("-").map(Number);
+    return jdnToJulian(gregToJdn(y, m, d)).map((v, i) => String(v).padStart(i ? 2 : 4, "0")).join("-");
+}
+
 function orthodoxEasterJdn(y) {
     const a = y % 4, b = y % 7, c = y % 19, d = (19 * c + 15) % 30, e = (2 * a + 4 * b - d + 34) % 7;
     return julianToJdn(y, Math.floor((d + e + 114) / 31), (d + e + 114) % 31 + 1);
@@ -522,7 +539,10 @@ function explicitZoneMinutes(s) {
 // без PLAC. Скобки в хвосте (не сразу за датой) — примечание.
 // «^» — маркер примечания: разбор идёт до первого «^», всё после него —
 // примечание дословно (дата в его начале — не дата смерти).
-const DATE_TAIL = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?([~<>])?(?:\\s+(\\d{1,2})(?:[:.\\u0433](\\d{2}))?)?\\s*(?:\\(\\s*([^)]+?)\\s*\\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\\s*[+-]\\s*\\d{1,2}))?";
+// сепаратор даты может быть «_» — маркер показанного нового стиля (шапка
+// юбилея печатает даты ≤ 1918-02-13 с «_»; разбор конвертирует их в
+// хранимый старый стиль, см. parseDateGroups)
+const DATE_TAIL = "(\\d{4})([-./_](?:\\d{2}))?([-./_](?:\\d{2}))?([~<>])?(?:\\s+(\\d{1,2})(?:[:.\\u0433](\\d{2}))?)?\\s*(?:\\(\\s*([^)]+?)\\s*\\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\\s*[+-]\\s*\\d{1,2}))?";
 const TRIGGER_RE = new RegExp("^(.+?)\\s+" + DATE_TAIL + "(?:\\s+" + DATE_TAIL + ")?(?:\\s+(.+))?\\s*$", "iu");
 // строка свадьбы плоского древа — только даты: «дата [дата развода] [прим]»
 // строка свадьбы плоского древа: «дата [дата развода] (место) [прим]» — без
@@ -569,11 +589,14 @@ const abtOf = (g, q) => { const a = (q || 0) * 3 + (g || 0); return a || undefin
 
 // разобрать одну группу «дата [~|<|>] [время] [зона]» из групп m[gi..gi+7];
 // месяц/день могут отсутствовать («1663» → 1663-01-01, «1663-07» → 1663-07-01);
-// abt — квалификатор×гранулярность (см. abtOf выше); точная дата — undefined
+// abt — квалификатор×гранулярность (см. abtOf выше); точная дата — undefined;
+// сепаратор «_» у полной даты — показанный новый стиль: конвертируем в
+// хранимый старый (копипаст шапки юбилея находит ту же запись, не плодит дубль)
 function parseDateGroups(m, gi, what) {
     const hasMo = m[gi + 1] !== undefined, hasDd = m[gi + 2] !== undefined;
+    const ns = hasMo && hasDd && m[gi + 1][0] === "_" && m[gi + 2][0] === "_";
     const abt = abtOf(!hasMo ? 2 : !hasDd ? 1 : 0, ABT_SUF[m[gi + 3]]);
-    const y = Number(m[gi]), mo = hasMo ? Number(m[gi + 1]) : 1, dd = hasDd ? Number(m[gi + 2]) : 1;
+    const y = Number(m[gi]), mo = hasMo ? Number(m[gi + 1].slice(1)) : 1, dd = hasDd ? Number(m[gi + 2].slice(1)) : 1;
     if (y < 1000 || y > 9999) return { error: "некорректный год" + what + ": " + m[gi] };
     if (mo < 1 || mo > 12 || dd < 1 || dd > 31)
         return { error: "некорректная дата" + what + ": " + m[gi] + (m[gi + 1] ?? "") + (m[gi + 2] ?? "") };
@@ -609,6 +632,7 @@ function parseDateGroups(m, gi, what) {
         }
     }
     const rec = dateTimeToMsk(y, mo, dd, hh, mm, givenTime, diffMin, hasZone);
+    if (ns && rec.d <= NEW_STYLE_END) rec.d = oldStyleDate(rec.d);
     const pad = (x, l) => String(x).padStart(l, "0");
     const srcD = y + "-" + pad(mo, 2) + "-" + pad(dd, 2);
     const note = zoneLabel
@@ -1544,12 +1568,18 @@ function genLabel(label) {
 function jubileeText(rec, note, detail = false) {
     const hasTime = rec.h !== undefined && rec.m !== undefined;
     // дата — по новому стилю с суффиксом (приблизительные — через approxOut);
-    // хранение и экспорт остаются старым стилем (см. newStyleDate)
+    // хранение и экспорт остаются старым стилем (см. newStyleDate). Даты, где
+    // стили различаются (≤ 1918-02-13), печатаются с разделителями `_`:
+    // скопипащенная шапка-триггер разбирается как новый стиль (см.
+    // parseDateGroups) и находит ту же запись, а не плодит дубль
     const sd = newStyleDate(rec.d), sdd = rec.dd ? newStyleDate(rec.dd) : rec.dd;
+    // `_` — только у полных дат (урезанные «1624-04» остаются с `-`: день
+    // скрыт, конверсия при вводе невозможна и не нужна — год-месяц совпадают)
+    const nsd = (iso, marked, abt) => { const s = approxOut(iso, abt); return marked && s.length === 10 ? s.replace(/-/g, "_") : s; };
     const [y, mo, d] = sd.split("-").map(Number);
     const t = new Date(Date.UTC(y, mo - 1, d, rec.h !== undefined ? rec.h : 12, rec.m !== undefined ? rec.m : 0, 0));
-    const head = rec.n + " " + approxOut(sd, rec.abt || rec.mabt || 0) + (hasTime ? " " + String(rec.h).padStart(2, "0") + ":" + String(rec.m).padStart(2, "0") : "")
-        + (sdd ? " " + approxOut(sdd, rec.dabt || rec.mabt || 0) : "")
+    const head = rec.n + " " + nsd(sd, sd !== rec.d, rec.abt || rec.mabt || 0) + (hasTime ? " " + String(rec.h).padStart(2, "0") + ":" + String(rec.m).padStart(2, "0") : "")
+        + (sdd ? " " + nsd(sdd, sdd !== rec.dd, rec.dabt || rec.mabt || 0) : "")
         + ageSuffix(rec.n, sd, sdd)
         + (note ? "\n" + note : "");
     return head + "\n" + la(t, detail).join("\n");
@@ -1658,10 +1688,10 @@ function recordOf(peerId, key) {
 function recordShownOf(peerId, key) {
     const exact = recordOf(peerId, key);
     if (exact) return exact;
-    const m = key.match(/^(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?)([?=<~]?)\s*$/);
+    const m = key.match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?)([?=<~]?)\s*$/);
     if (!m) return null;
     return [...personRows(peerId), ...weddingRows(peerId)]
-        .find(r => r.n === m[1] && approxOut(newStyleDate(r.d), r.abt || r.mabt || 0) === m[2] + m[3]) || null;
+        .find(r => r.n === m[1] && approxOut(newStyleDate(r.d), r.abt || r.mabt || 0) === m[2].replace(/_/g, "-") + m[3]) || null;
 }
 
 // ---- виды: «Имя Д» и «Имя+Имя Д» — выборка из дерева ----
@@ -4812,11 +4842,11 @@ async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
         return;
     }
     const rh = replyMsg && replyMsg.from_id > 0
-        ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
+        ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/) : null;
     if (rh) {
         // в ответе на триггер — резка-прививка: цитируемый — герой пачки
         let anchor = null;
-        const sh = recordShownOf(peerId, rh[1].trim() + " " + rh[2]);
+        const sh = recordShownOf(peerId, rh[1].trim() + " " + rh[2].replace(/_/g, "-"));
         if (sh) anchor = sh.n + " " + sh.d;
         if (!anchor) {
             // цитата на триггера не нашлась — добавлять молча нельзя: так
@@ -4961,12 +4991,12 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         // «/» ответом на триггер — фокус-сообщение с радиусом родни
         // (заголовок фокуса «2 Имя ГГГГ-ММ-ДД» — цифру радиуса снимаем)
         const rh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/) : null;
         if (rh) {
-            const key = rh[1].trim() + " " + rh[2];
+            const key = rh[1].trim() + " " + rh[2].replace(/_/g, "-");
             const rec = recordShownOf(peerId, key);
             if (rec) {
-                await sendFocus(peerId, key, msgId, convMsgId, fromId, rec.dd);
+                await sendFocus(peerId, rec.n + " " + rec.d, msgId, convMsgId, fromId, rec.dd);
                 return;
             }
         }
@@ -4983,16 +5013,17 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         // ответом на триггер — только текст родни выбранного радиуса, без кнопок
         // (заголовок фокуса «2 Имя ГГГГ-ММ-ДД» — цифру радиуса снимаем)
         const grh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/) : null;
         if (grh) {
-            const key = grh[1].trim() + " " + grh[2];
+            const key = grh[1].trim() + " " + grh[2].replace(/_/g, "-");
             const rec = recordShownOf(peerId, key);
             if (rec) {
+                const skey = rec.n + " " + rec.d; // показанный ключ → хранимый
                 const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
                 const keys = focusListKeys(linkPairs(peerId), focusSpousePairs(peerId),
-                    key, radius, k => sexMap.get(k) ?? null);
-                await sendGedArtifacts(peerId, keys, focusHead(key, radius, rec.dd), msgId, convMsgId, key);
-                console.log("focus text:", key, "радиус", radius, "peer", peerId);
+                    skey, radius, k => sexMap.get(k) ?? null);
+                await sendGedArtifacts(peerId, keys, focusHead(skey, radius, rec.dd), msgId, convMsgId, skey);
+                console.log("focus text:", skey, "радиус", radius, "peer", peerId);
                 return;
             }
         }
@@ -5007,16 +5038,17 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     if (bm) {
         const radius = Number(bm[1]) || 1;
         const brh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/) : null;
         if (brh) {
-            const key = brh[1].trim() + " " + brh[2];
+            const key = brh[1].trim() + " " + brh[2].replace(/_/g, "-");
             const rec = recordShownOf(peerId, key);
             if (rec) {
+                const skey = rec.n + " " + rec.d; // показанный ключ → хранимый
                 // как тап: радиус не глубже имеющихся связей
-                const r = Math.min(radius, Math.max(1, focusDepth(linkPairs(peerId), key)));
-                const txt = focusText(peerId, key, r, true, rec.dd, false);
+                const r = Math.min(radius, Math.max(1, focusDepth(linkPairs(peerId), skey)));
+                const txt = focusText(peerId, skey, r, true, rec.dd, false);
                 await messagesSend(peerId, txt, msgId, convMsgId);
-                console.log("bell text:", key, "радиус", r, "peer", peerId);
+                console.log("bell text:", skey, "радиус", r, "peer", peerId);
                 return;
             }
         }
@@ -5039,12 +5071,12 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     // древа чата (листинг сообщений-связей не восстанавливается)
     if (t === "/links" || t === "связи") {
         const lrh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/) : null;
         let key = null, head = "";
         if (lrh) {
-            const rk = lrh[1].trim() + " " + lrh[2];
+            const rk = lrh[1].trim() + " " + lrh[2].replace(/_/g, "-");
             const rec = recordShownOf(peerId, rk);
-            if (rec) { key = rk; head = focusHead(key, 1, rec.dd); }
+            if (rec) { key = rec.n + " " + rec.d; head = focusHead(key, 1, rec.dd); } // показанный ключ → хранимый
             else key = null; // ответ не на триггер — вся пачка
         }
         const pack = key ? branchFlatText(peerId, key) : chatFlatText(peerId);
@@ -5181,7 +5213,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     }
     // цитата для пачки «плоское древо»: ветвь цитируемого срезана, пачка привита
     const replyHead = replyMsg && replyMsg.from_id > 0
-        ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
+        ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/) : null;
     // сообщение-гедком → замена древа (до разбора триггеров); не пустой чат —
     // сначала автоматический резерв прежнего дерева файлом
     const g = parseGedcom(text);
@@ -5206,7 +5238,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             // в ответе на триггер — ветвь цитируемого заменяется пачкой
             let anchor = null;
             if (replyHead) {
-                const sh = recordShownOf(peerId, replyHead[1].trim() + " " + replyHead[2]);
+            const sh = recordShownOf(peerId, replyHead[1].trim() + " " + replyHead[2].replace(/_/g, "-"));
                 if (sh) anchor = sh.n + " " + sh.d;
             }
             const rep = anchor ? cutAndGraft(peerId, anchor, tree) : applyTree(peerId, tree);
@@ -5808,10 +5840,11 @@ async function findRecordByCmid(peerId, cmid) {
         console.error("reaction lookup:", e.message);
         return null;
     }
-    const m = text.match(/^(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/);
+    // показанный текст несёт новый стиль/суффикс (см. recordShownOf); `_` в
+    // датах шапки — маркер нового стиля (см. jubileeText) — нормализуем
+    const m = text.match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/);
     if (!m) return null;
-    // показанный текст несёт новый стиль/суффикс (см. recordShownOf)
-    return recordShownOf(peerId, m[1].trim() + " " + m[2]) || null;
+    return recordShownOf(peerId, m[1].trim() + " " + m[2].replace(/_/g, "-")) || null;
 }
 
 // ============================== ПЛАНИРОВЩИК ==============================
@@ -6060,5 +6093,5 @@ module.exports.__test = {
     chatFlatText, flatTreeText, branchFlatText, subsetBranch, flatRows, flatSearch,
     flatHitPerson, flatHitKey,
     cutAndGraft, setPersonByXref, editTrigger, rootOf, uniqueKeyOf, upcomingEvents, hasTree,
-    recordShownOf, newStyleDate,
+    recordShownOf, newStyleDate, oldStyleDate,
 };

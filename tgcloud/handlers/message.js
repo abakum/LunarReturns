@@ -14,9 +14,11 @@ import {
 } from '../lib/bot.js';
 
 // заголовок «Имя ГГГГ-ММ-ДД» (+ цифра радиуса у фокус-сообщений) в цитате;
-// якорь — только сообщение пользователя (не бота), как в ВК
+// якорь — только сообщение пользователя (не бота), как в ВК; `_` в датах —
+// маркер показанного нового стиля (см. jubileeText) — нормализуем
 const replyHeadOf = reply => reply && reply.from && !reply.from.is_bot
-    ? String(reply.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
+    ? String(reply.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/) : null;
+const keyOfHead = m => m[1].trim() + " " + m[2].replace(/_/g, "-");
 
 // клавиатура дропа: «Да, с резервом» — только при непустом дереве чата
 const dropKb = hasTree => ({
@@ -98,7 +100,7 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
     const rh = replyHeadOf(replyTo);
     if (rh) {
         let anchor = null;
-        const sh = await recordShownOf(chatId, rh[1].trim() + " " + rh[2]);
+        const sh = await recordShownOf(chatId, keyOfHead(rh));
         if (sh) anchor = sh.n + " " + sh.d;
         if (!anchor) {
             // цитата на триггера не нашлась — добавлять молча нельзя: так
@@ -213,10 +215,11 @@ export default async function (message, ctx) {
         // «/» ответом на триггер — фокус-сообщение с радиусом родни
         const rh = replyHeadOf(message.reply_to_message);
         if (rh) {
-            const key = rh[1].trim() + " " + rh[2];
+            const key = keyOfHead(rh);
             const rec = await recordShownOf(chatId, key);
             if (rec) {
-                await sendFocus(message.chat, chatId, key, 1, rec.dd, message.message_id);
+                // показанный ключ → хранимый
+                await sendFocus(message.chat, chatId, rec.n + " " + rec.d, 1, rec.dd, message.message_id);
                 return;
             }
         }
@@ -245,25 +248,26 @@ export default async function (message, ctx) {
         const radius = Number(bm[1]) || 1;
         const rh = replyHeadOf(message.reply_to_message);
         if (rh) {
-            const key = rh[1].trim() + " " + rh[2];
+            const key = keyOfHead(rh);
             const rec = await recordShownOf(chatId, key);
             if (rec) {
+                const skey = rec.n + " " + rec.d; // показанный ключ → хранимый
                 // как тап: радиус не глубже имеющихся связей
                 const pairs = await linkPairs(chatId);
-                const r = Math.min(radius, Math.max(1, focusDepth(pairs, key)));
+                const r = Math.min(radius, Math.max(1, focusDepth(pairs, skey)));
                 const sexMap = new Map((await personRows(chatId))
                     .map(rw => [rw.n + " " + rw.d, rw.sex ?? null]));
                 const spPairs = await focusSpousePairs(chatId);
                 // fynny-ромб: супруги по лимиту слов ярлыка
-                const keys = focusListKeys(pairs, spPairs, key, r,
+                const keys = focusListKeys(pairs, spPairs, skey, r,
                     k => sexMap.get(k) ?? null);
                 const items = [...await personRows(chatId), ...await weddingRows(chatId)];
-                const body = focusListText(items, keys, key, pairs,
+                const body = focusListText(items, keys, skey, pairs,
                     spPairs, k => sexMap.get(k) ?? null, false, mmddToday(), r)
                     || "(в радиусе нет событий)";
                 await api.sendMessage({ chat_id: chatId,
-                    text: focusHead(key, r, rec.dd) + "\n" + body });
-                console.log("bell text:", key, "радиус", r, "chat", chatId);
+                    text: focusHead(skey, r, rec.dd) + "\n" + body });
+                console.log("bell text:", skey, "радиус", r, "chat", chatId);
                 return;
             }
         }
@@ -287,17 +291,18 @@ export default async function (message, ctx) {
         const radius = Number(gm[1]) || 1;
         const rh = replyHeadOf(message.reply_to_message);
         if (rh) {
-            const key = rh[1].trim() + " " + rh[2];
+            const key = keyOfHead(rh);
             const rec = await recordShownOf(chatId, key);
             if (rec) {
+                const skey = rec.n + " " + rec.d; // показанный ключ → хранимый
                 const pairs = await linkPairs(chatId);
                 const spPairs = await focusSpousePairs(chatId);
                 const sexMap = new Map((await personRows(chatId))
                     .map(rw => [rw.n + " " + rw.d, rw.sex ?? null]));
-                const keys = focusListKeys(pairs, spPairs, key, radius,
+                const keys = focusListKeys(pairs, spPairs, skey, radius,
                     k => sexMap.get(k) ?? null);
-                await sendGedPdf(chatId, keys, focusHead(key, radius, rec.dd), key, message.message_id);
-                console.log("focus text:", key, "радиус", radius, "chat", chatId);
+                await sendGedPdf(chatId, keys, focusHead(skey, radius, rec.dd), skey, message.message_id);
+                console.log("focus text:", skey, "радиус", radius, "chat", chatId);
                 return;
             }
         }
@@ -317,9 +322,9 @@ export default async function (message, ctx) {
         const lrh = replyHeadOf(message.reply_to_message);
         let key = null, head = "";
         if (lrh) {
-            const rk = lrh[1].trim() + " " + lrh[2];
+            const rk = keyOfHead(lrh);
             const rec = await recordShownOf(chatId, rk);
-            if (rec) { key = rk; head = focusHead(key, 1, rec.dd); }
+            if (rec) { key = rec.n + " " + rec.d; head = focusHead(key, 1, rec.dd); } // показанный ключ → хранимый
             else key = null; // ответ не на триггер — вся пачка
         }
         const ok = await sendFlatPack(chatId, key, head, message.message_id);
@@ -455,7 +460,7 @@ export default async function (message, ctx) {
             const rh0 = replyHeadOf(message.reply_to_message);
             let anchor = null;
             if (rh0) {
-                const sh = await recordShownOf(chatId, rh0[1].trim() + " " + rh0[2]);
+                const sh = await recordShownOf(chatId, keyOfHead(rh0));
                 if (sh) anchor = sh.n + " " + sh.d;
             }
             const rep = anchor ? await cutAndGraft(chatId, anchor, tree) : await applyTree(chatId, tree);
@@ -479,7 +484,7 @@ export default async function (message, ctx) {
         if (parsed && !parsed.error) {
             const rh1 = replyHeadOf(message.reply_to_message);
             if (rh1) {
-                const sh = await recordShownOf(chatId, rh1[1].trim() + " " + rh1[2]);
+                const sh = await recordShownOf(chatId, keyOfHead(rh1));
                 const anchor = sh ? sh.n + " " + sh.d : "";
                 const ed = await editTrigger(chatId, anchor,
                     Object.assign({}, parsed.rec, parsed.tail ? { note: parsed.tail } : {}));

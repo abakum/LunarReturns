@@ -28,6 +28,23 @@ function newStyleDate(iso) {
     return jdnToGreg(julianToJdn(y, m, d)).map((v, i) => String(v).padStart(i ? 2 : 4, "0")).join("-");
 }
 
+// новый стиль отличается от старого только до 1918-02-13 (= юлианский
+// 1918-01-31); позже стили совпадают и маркер не нужен
+const NEW_STYLE_END = "1918-02-13";
+
+function jdnToJulian(j) {
+    const c = j + 32082, d = Math.floor((4 * c + 3) / 1461), e = c - Math.floor(1461 * d / 4), m2 = Math.floor((5 * e + 2) / 153);
+    return [d - 4800 + Math.floor(m2 / 10), m2 + 3 - 12 * Math.floor(m2 / 10), e - Math.floor((153 * m2 + 2) / 5) + 1];
+}
+
+// обратное к newStyleDate: показанная в шапке (григорианская) дата — в
+// хранимую юлианскую; используется разбором `_`-дат триггера (см. parseDateGroups)
+function oldStyleDate(iso) {
+    if (!iso || iso > NEW_STYLE_END) return iso;
+    const [y, m, d] = iso.split("-").map(Number);
+    return jdnToJulian(gregToJdn(y, m, d)).map((v, i) => String(v).padStart(i ? 2 : 4, "0")).join("-");
+}
+
 function orthodoxEasterJdn(y) {
     const a = y % 4, b = y % 7, c = y % 19, d = (19 * c + 15) % 30, e = (2 * a + 4 * b - d + 34) % 7;
     return julianToJdn(y, Math.floor((d + e + 114) / 31), (d + e + 114) % 31 + 1);
@@ -257,4 +274,4 @@ function religiousYear(key) {
         .join("\n");
 }
 
-export { REL_DEFS, REL_ORDER, relDays, religiousDigest, religiousYear, newStyleDate };
+export { REL_DEFS, REL_ORDER, relDays, religiousDigest, religiousYear, newStyleDate, oldStyleDate, NEW_STYLE_END };

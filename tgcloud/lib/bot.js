@@ -190,14 +190,15 @@ export async function recordOf(chatId, key) {
 
 // ключ из показанного текста (новый стиль + суффикс: юбилей/🔔 печатает
 // приближённые даты через approxOut): точный ключ — как хранение; мимо —
-// поиск по отображённой форме (имя ≃ и approxOut(newStyleDate) совпал)
+// поиск по отображённой форме (имя ≃ и approxOut(newStyleDate) совпал);
+// `_` в датах — маркер нового стиля (см. jubileeText) — нормализуем
 export async function recordShownOf(chatId, key) {
     const exact = await recordOf(chatId, key);
     if (exact) return exact;
-    const m = key.match(/^(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?)([?=<~]?)\s*$/);
+    const m = key.match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?)([?=<~]?)\s*$/);
     if (!m) return null;
     return [...await personRows(chatId), ...await weddingRows(chatId)]
-        .find(r => r.n === m[1] && approxOut(newStyleDate(r.d), r.abt || r.mabt || 0) === m[2] + m[3]) || null;
+        .find(r => r.n === m[1] && approxOut(newStyleDate(r.d), r.abt || r.mabt || 0) === m[2].replace(/_/g, "-") + m[3]) || null;
 }
 
 // запись по xref (индивидуальный — даже без birt_d — либо fam-пара со свадьбой)
