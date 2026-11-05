@@ -6,7 +6,7 @@ import { fileBaseOf } from '../lib/chart.js';
 import { jubileeText } from '../lib/text.js';
 import {
     HELP, startMarkup, chatAdmin, getSettings, todayText, eventMarkup, sendLong,
-    recordOf, replaceWithGedcom,
+    recordOf, recordShownOf, replaceWithGedcom,
     linkPairs, personRows, weddingRows, sendGedPdf, focusKeys, focusHead, focusMarkup,
     focusWithSpouses, focusListKeys, focusSpousePairs, focusDepth, focusListText, mmddToday, upcomingText, upsertPerson, applyTree, cutAndGraft, treeReport,
     editTrigger, hasTree, NOT_FOR_GRAFT,
@@ -16,7 +16,7 @@ import {
 // заголовок «Имя ГГГГ-ММ-ДД» (+ кейкап радиуса у фокус-сообщений) в цитате;
 // якорь — только сообщение пользователя (не бота), как в ВК
 const replyHeadOf = reply => reply && reply.from && !reply.from.is_bot
-    ? String(reply.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+    ? String(reply.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
 
 // клавиатура дропа: «Да, с резервом» — только при непустом дереве чата
 const dropKb = hasTree => ({
@@ -98,8 +98,8 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
     const rh = replyHeadOf(replyTo);
     if (rh) {
         let anchor = null;
-        const k = rh[1].trim() + " " + rh[2];
-        if (await recordOf(chatId, k)) anchor = k;
+        const sh = await recordShownOf(chatId, rh[1].trim() + " " + rh[2]);
+        if (sh) anchor = sh.n + " " + sh.d;
         if (!anchor) {
             // цитата на триггера не нашлась — добавлять молча нельзя: так
             // пачка применилась бы целиком (мимо героя)
@@ -214,7 +214,7 @@ export default async function (message, ctx) {
         const rh = replyHeadOf(message.reply_to_message);
         if (rh) {
             const key = rh[1].trim() + " " + rh[2];
-            const rec = await recordOf(chatId, key);
+            const rec = await recordShownOf(chatId, key);
             if (rec) {
                 await sendFocus(message.chat, chatId, key, 1, rec.dd, message.message_id);
                 return;
@@ -246,7 +246,7 @@ export default async function (message, ctx) {
         const rh = replyHeadOf(message.reply_to_message);
         if (rh) {
             const key = rh[1].trim() + " " + rh[2];
-            const rec = await recordOf(chatId, key);
+            const rec = await recordShownOf(chatId, key);
             if (rec) {
                 // как тап: радиус не глубже имеющихся связей
                 const pairs = await linkPairs(chatId);
@@ -288,7 +288,7 @@ export default async function (message, ctx) {
         const rh = replyHeadOf(message.reply_to_message);
         if (rh) {
             const key = rh[1].trim() + " " + rh[2];
-            const rec = await recordOf(chatId, key);
+            const rec = await recordShownOf(chatId, key);
             if (rec) {
                 const pairs = await linkPairs(chatId);
                 const spPairs = await focusSpousePairs(chatId);
@@ -318,7 +318,7 @@ export default async function (message, ctx) {
         let key = null, head = "";
         if (lrh) {
             const rk = lrh[1].trim() + " " + lrh[2];
-            const rec = await recordOf(chatId, rk);
+            const rec = await recordShownOf(chatId, rk);
             if (rec) { key = rk; head = focusHead(key, 1, rec.dd); }
             else key = null; // ответ не на триггер — вся пачка
         }
@@ -455,8 +455,8 @@ export default async function (message, ctx) {
             const rh0 = replyHeadOf(message.reply_to_message);
             let anchor = null;
             if (rh0) {
-                const k = rh0[1].trim() + " " + rh0[2];
-                if (await recordOf(chatId, k)) anchor = k;
+                const sh = await recordShownOf(chatId, rh0[1].trim() + " " + rh0[2]);
+                if (sh) anchor = sh.n + " " + sh.d;
             }
             const rep = anchor ? await cutAndGraft(chatId, anchor, tree) : await applyTree(chatId, tree);
             const body = treeReport(rep);
@@ -479,7 +479,8 @@ export default async function (message, ctx) {
         if (parsed && !parsed.error) {
             const rh1 = replyHeadOf(message.reply_to_message);
             if (rh1) {
-                const anchor = rh1[1].trim() + " " + rh1[2];
+                const sh = await recordShownOf(chatId, rh1[1].trim() + " " + rh1[2]);
+                const anchor = sh ? sh.n + " " + sh.d : "";
                 const ed = await editTrigger(chatId, anchor,
                     Object.assign({}, parsed.rec, parsed.tail ? { note: parsed.tail } : {}));
                 if (ed) {

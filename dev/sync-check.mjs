@@ -403,6 +403,62 @@ const livingHead = VK.jubileeText(JUBILEE_RECS[0], '').split('\n')[0];
 if (!/^Иван 1963-09-27 12:30 \d+$/.test(livingHead))
     { failed++; console.log('✗ голова живой персоны прежнего вида\n  ' + livingHead); }
 
+// ==================== 4а. старый стиль (даты ≤ 1918-01-31) ====================
+// Хранение и экспорт — старым стилем (реэкспорт не пересдвигает), оповещения —
+// по новому: голова юбилея и 🔔 печатают сдвинутую дату (с суффиксом
+// приблизительных — через approxOut); неполные (год-only) не сдвигаются.
+const OS_CH = 148;
+if (VK.newStyleDate('1663-07-14') !== '1663-07-24') { failed++; console.log('✗ newStyleDate 1663: ' + VK.newStyleDate('1663-07-14')); }
+if (VK.newStyleDate('1899-12-31') !== '1900-01-12') { failed++; console.log('✗ newStyleDate 1899 (смена года): ' + VK.newStyleDate('1899-12-31')); }
+if (VK.newStyleDate('1918-01-31') !== '1918-02-13') { failed++; console.log('✗ newStyleDate 1918-01-31: ' + VK.newStyleDate('1918-01-31')); }
+if (VK.newStyleDate('1918-02-01') !== '1918-02-01' || VK.newStyleDate('') !== '')
+    { failed++; console.log('✗ newStyleDate новый стиль/пустая: ' + VK.newStyleDate('1918-02-01') + ' / ' + VK.newStyleDate('')); }
+const OS_RECS = [
+    { n: 'Агафья', d: '1663-07-14', dd: '1681-07-14' }, // сдвиг +10 дней (XVII век)
+    { n: 'Фёдор', d: '1899-12-31' },                    // сдвиг +12, смена года (XIX век)
+    { n: 'Столетний', d: '1234-01-01', abt: 17 },       // год-only приблизительная — без сдвига
+    { n: 'Совет', d: '1918-02-01' },                    // уже новый стиль — без сдвига
+];
+for (const r of OS_RECS)
+    cmp('newStyle jubilee ' + r.n, VK.jubileeText(r, ''),
+        tgJubilee(r, '').replace(/<\/?tg-spoiler>/g, '')); // будущие года: в ТГ под спойлером
+const osWanted = ['Агафья 1663-07-24 1681-07-24', 'Фёдор 1900-01-12', 'Столетний 1234~', 'Совет 1918-02-01'];
+const osHeads = OS_RECS.map(r => VK.jubileeText(r, '').split('\n')[0].split(/\s\d+\s/)[0]);
+for (let i = 0; i < osWanted.length; i++)
+    if (!osHeads[i].startsWith(osWanted[i]))
+        { failed++; console.log('✗ голова юбилея/новый стиль: ждали «' + osWanted[i] + '», было «' + osHeads[i] + '»'); }
+for (const r of OS_RECS) {
+    VK.upsertPerson(OS_CH, r);
+    await TG.upsertPerson(OS_CH, r);
+}
+cmp('newStyle bell полный', VK.upcomingEvents(OS_CH, true), await TG.upcomingText(OS_CH, true));
+cmp('newStyle bell круговой', VK.upcomingEvents(OS_CH, false, '07-01'), await TG.upcomingText(OS_CH, false, '07-01'));
+const osBell = VK.upcomingEvents(OS_CH, true);
+for (const s of ['Агафья 1663-07-24 1681-07-24', 'Фёдор 1900-01-12', 'Столетний 1234~', 'Совет 1918-02-01'])
+    if (!osBell.includes(s))
+        { failed++; console.log('✗ bell/новый стиль: нет «' + s + '»\n  ' + osBell); }
+// ⚠️ примерные по-прежнему скрыты из 🔔-веток (список оповещений)
+const osBellMinus = VK.upcomingEvents(OS_CH, false);
+if (osBellMinus.includes('Столетний') || !osBellMinus.includes('Агафья'))
+    { failed++; console.log('✗ bell: фильтр примерных сломан\n  ' + osBellMinus); }
+// реэкспорт даты-хранения дословно (старый стиль, без повторного сдвига)
+cmp('newStyle экспорт гедком', VK.gedcomText(OS_CH), await TG.gedcomText(OS_CH));
+cmp('newStyle экспорт пачка', VK.chatFlatText(OS_CH), await TG.chatFlatText(OS_CH));
+const osGed = VK.gedcomText(OS_CH);
+if (!osGed.includes('14 JUL 1663') || osGed.includes('24 JUL 1663'))
+    { failed++; console.log('✗ экспорт/старый стиль: гедком пересдвинут\n  ' + osGed.split('\n').filter(l => l.includes('DATE')).join(' | ')); }
+const osPack = VK.chatFlatText(OS_CH);
+if (!osPack.includes('1663-07-14') || osPack.includes('1663-07-24'))
+    { failed++; console.log('✗ экспорт/старый стиль: пачка пересдвинута\n  ' + osPack); }
+// показанный ключ (новый стиль/суффикс) резолвится обратно в хранимую запись;
+// ключ берётся тем же reply-regex'ом, что у обработчиков (усечён до первой даты)
+const osKey = t => t.match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/).slice(1).join(" ");
+const normOf = r => r ? { n: r.n, d: r.d, dd: r.dd, abt: r.abt } : null;
+cmp('recordShownOf точный', normOf(VK.recordShownOf(OS_CH, 'Агафья 1663-07-14')), normOf(await TG.recordShownOf(OS_CH, 'Агафья 1663-07-14')));
+cmp('recordShownOf показ', normOf(VK.recordShownOf(OS_CH, osKey('Агафья 1663-07-24 1681-07-24'))), { n: 'Агафья', d: '1663-07-14', dd: '1681-07-14' });
+cmp('recordShownOf суффикс', normOf(VK.recordShownOf(OS_CH, osKey('Столетний 1234~'))), { n: 'Столетний', d: '1234-01-01', abt: 17 });
+cmp('recordShownOf мимо', VK.recordShownOf(OS_CH, osKey('Чужой 1663-07-24')), normOf(await TG.recordShownOf(OS_CH, osKey('Чужой 1663-07-24'))));
+
 // ==================== 5. фокус-радиус родни ====================
 // дерево: дед+бабка → (отец, тётя), отец+мать → (сын, дочь), тётя → двоюродный
 const FOCUS_CH = 3;
@@ -1438,7 +1494,7 @@ const W_CH = 142;
     cmp('upcoming byFullDate=false скрывает примерную свадьбу',
         VK.upcomingEvents(W_CH, false), await TG.upcomingText(W_CH, false));
     const vkMinus = VK.upcomingEvents(W_CH, false), vkFull = VK.upcomingEvents(W_CH, true);
-    if (!vkFull.includes('Анна+Пётр 1985-01-01')) { failed++; console.log('✗ wedding abt: нет в полном списке: ' + vkFull); }
+    if (!vkFull.includes('Анна+Пётр 1985~')) { failed++; console.log('✗ wedding abt: нет в полном списке: ' + vkFull); }
     if (vkFull === vkMinus) { failed++; console.log('✗ wedding abt: списки не различились\nfull: ' + vkFull + '\nminus: ' + vkMinus); }
     cmp('wedding abt famList', VK.famList(W_CH), await TG.famList(W_CH));
     cmp('wedding abt пачка', VK.chatFlatText(W_CH), await TG.chatFlatText(W_CH));

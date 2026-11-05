@@ -231,6 +231,18 @@ function jdnToGreg(j) {
     return [100 * b + d - 4800 + Math.floor(m2 / 10), m2 + 3 - 12 * Math.floor(m2 / 10), e - Math.floor((153 * m2 + 2) / 5) + 1];
 }
 
+// Даты ≤ 1918-01-31 хранятся по старому (юлианскому) стилю: на слое вывода и
+// сортировки переводим в новый (григорианский); хранение и экспорт остаются
+// старым стилем, чтобы реэкспорт не сдвигал даты повторно. Неполных дат тут
+// нет (d всегда полный ISO, урезание несёт abt), но пустые — как есть.
+const OLD_STYLE_END = "1918-01-31"; // последний юлианский день в России
+
+function newStyleDate(iso) {
+    if (!iso || iso > OLD_STYLE_END) return iso;
+    const [y, m, d] = iso.split("-").map(Number);
+    return jdnToGreg(julianToJdn(y, m, d)).map((v, i) => String(v).padStart(i ? 2 : 4, "0")).join("-");
+}
+
 function orthodoxEasterJdn(y) {
     const a = y % 4, b = y % 7, c = y % 19, d = (19 * c + 15) % 30, e = (2 * a + 4 * b - d + 34) % 7;
     return julianToJdn(y, Math.floor((d + e + 114) / 31), (d + e + 114) % 31 + 1);
@@ -1526,11 +1538,14 @@ function genLabel(label) {
 
 function jubileeText(rec, note, detail = false) {
     const hasTime = rec.h !== undefined && rec.m !== undefined;
-    const [y, mo, d] = rec.d.split("-").map(Number);
+    // дата — по новому стилю с суффиксом (приблизительные — через approxOut);
+    // хранение и экспорт остаются старым стилем (см. newStyleDate)
+    const sd = newStyleDate(rec.d), sdd = rec.dd ? newStyleDate(rec.dd) : rec.dd;
+    const [y, mo, d] = sd.split("-").map(Number);
     const t = new Date(Date.UTC(y, mo - 1, d, rec.h !== undefined ? rec.h : 12, rec.m !== undefined ? rec.m : 0, 0));
-    const head = rec.n + " " + rec.d + (hasTime ? " " + String(rec.h).padStart(2, "0") + ":" + String(rec.m).padStart(2, "0") : "")
-        + (rec.dd ? " " + rec.dd : "")
-        + ageSuffix(rec.n, rec.d, rec.dd)
+    const head = rec.n + " " + approxOut(sd, rec.abt || rec.mabt || 0) + (hasTime ? " " + String(rec.h).padStart(2, "0") + ":" + String(rec.m).padStart(2, "0") : "")
+        + (sdd ? " " + approxOut(sdd, rec.dabt || rec.mabt || 0) : "")
+        + ageSuffix(rec.n, sd, sdd)
         + (note ? "\n" + note : "");
     return head + "\n" + la(t, detail).join("\n");
 }
@@ -1630,6 +1645,18 @@ function nextFamXref(peerId, pref) {
 
 function recordOf(peerId, key) {
     return personRows(peerId).find(r => pkey(r) === key) || null;
+}
+
+// ключ из показанного текста (новый стиль + суффикс: юбилей/🔔 печатает
+// приближённые даты через approxOut): точный ключ — как хранение; мимо —
+// поиск по отображённой форме (имя ≃ и approxOut(newStyleDate) совпал)
+function recordShownOf(peerId, key) {
+    const exact = recordOf(peerId, key);
+    if (exact) return exact;
+    const m = key.match(/^(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?)([?=<~]?)\s*$/);
+    if (!m) return null;
+    return [...personRows(peerId), ...weddingRows(peerId)]
+        .find(r => r.n === m[1] && approxOut(newStyleDate(r.d), r.abt || r.mabt || 0) === m[2] + m[3]) || null;
 }
 
 // ---- виды: «Имя Д» и «Имя+Имя Д» — выборка из дерева ----
@@ -4780,12 +4807,12 @@ async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
         return;
     }
     const rh = replyMsg && replyMsg.from_id > 0
-        ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+        ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
     if (rh) {
         // в ответе на триггер — резка-прививка: цитируемый — герой пачки
         let anchor = null;
-        const k = rh[1].trim() + " " + rh[2];
-        if (recordOf(peerId, k)) anchor = k;
+        const sh = recordShownOf(peerId, rh[1].trim() + " " + rh[2]);
+        if (sh) anchor = sh.n + " " + sh.d;
         if (!anchor) {
             // цитата на триггера не нашлась — добавлять молча нельзя: так
             // пачка применилась бы целиком (мимо героя)
@@ -4860,20 +4887,21 @@ async function focusKeyboard(peerId, userId, key, radius, depth) {
 function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "", depth = 2) {
     const set = new Set(keys);
     const map = rs => rs
-        .map(r => r.n + " " + r.d
-            + (r.dd ? " " + r.dd : "")
+        .map(r => r.n + " " + approxOut(newStyleDate(r.d), r.abt || r.mabt || 0)
+            + (r.dd ? " " + approxOut(newStyleDate(r.dd), r.dabt || 0) : "")
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "")
             + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d, depth); return l ? " " + l : ""; })())
         .join("\n");
-    const sortKey = r => r.d + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
+    const sortKey = r => newStyleDate(r.d) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
     if (byFullDate) return map(items
         .filter(r => set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys)))
         .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0)));
-    // круговой порядок по ММ-ДД от сегодняшнего MM-DD (как religiousYear)
+    // круговой порядок по ММ-ДД от сегодняшнего MM-DD (как religiousYear);
+    // ММ-ДД — по новому стилю (оповещения по новому стилю, хранение — старому)
     const cum = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]; // невисокосный год
     const dayIdx = d => cum[Number(d.slice(5, 7)) - 1] + Number(d.slice(8)) - 1;
     const nowIdx = mmddToday ? cum[Number(mmddToday.slice(0, 2)) - 1] + Number(mmddToday.slice(3)) - 1 : 0;
-    const bellKey = r => String((dayIdx(r.d) - nowIdx + 365) % 365).padStart(3, "0") + " " + sortKey(r);
+    const bellKey = r => String((dayIdx(newStyleDate(r.d)) - nowIdx + 365) % 365).padStart(3, "0") + " " + sortKey(r);
     return map(items
         .filter(r => set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys)))
         .sort((a, b) => (bellKey(a) < bellKey(b) ? -1 : bellKey(a) > bellKey(b) ? 1 : 0)));
@@ -4928,10 +4956,10 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         // «/» ответом на триггер — фокус-сообщение с радиусом родни
         // (заголовок фокуса «2⃣ Имя ГГГГ-ММ-ДД» — префикс кейкапа снимаем)
         const rh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
         if (rh) {
             const key = rh[1].trim() + " " + rh[2];
-            const rec = recordOf(peerId, key);
+            const rec = recordShownOf(peerId, key);
             if (rec) {
                 await sendFocus(peerId, key, msgId, convMsgId, fromId, rec.dd);
                 return;
@@ -4950,10 +4978,10 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         // ответом на триггер — только текст родни выбранного радиуса, без кнопок
         // (заголовок фокуса «2⃣ Имя ГГГГ-ММ-ДД» — префикс кейкапа снимаем)
         const grh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
         if (grh) {
             const key = grh[1].trim() + " " + grh[2];
-            const rec = recordOf(peerId, key);
+            const rec = recordShownOf(peerId, key);
             if (rec) {
                 const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
                 const keys = focusListKeys(linkPairs(peerId), focusSpousePairs(peerId),
@@ -4974,10 +5002,10 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     if (bm) {
         const radius = Number(bm[1]) || 1;
         const brh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
         if (brh) {
             const key = brh[1].trim() + " " + brh[2];
-            const rec = recordOf(peerId, key);
+            const rec = recordShownOf(peerId, key);
             if (rec) {
                 // как тап: радиус не глубже имеющихся связей
                 const r = Math.min(radius, Math.max(1, focusDepth(linkPairs(peerId), key)));
@@ -5006,11 +5034,11 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     // древа чата (листинг сообщений-связей не восстанавливается)
     if (t === "/links" || t === "связи") {
         const lrh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
         let key = null, head = "";
         if (lrh) {
             const rk = lrh[1].trim() + " " + lrh[2];
-            const rec = recordOf(peerId, rk);
+            const rec = recordShownOf(peerId, rk);
             if (rec) { key = rk; head = focusHead(key, 1, rec.dd); }
             else key = null; // ответ не на триггер — вся пачка
         }
@@ -5148,7 +5176,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     }
     // цитата для пачки «плоское древо»: ветвь цитируемого срезана, пачка привита
     const replyHead = replyMsg && replyMsg.from_id > 0
-        ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/) : null;
+        ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
     // сообщение-гедком → замена древа (до разбора триггеров); не пустой чат —
     // сначала автоматический резерв прежнего дерева файлом
     const g = parseGedcom(text);
@@ -5173,8 +5201,8 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             // в ответе на триггер — ветвь цитируемого заменяется пачкой
             let anchor = null;
             if (replyHead) {
-                const k = replyHead[1].trim() + " " + replyHead[2];
-                if (recordOf(peerId, k)) anchor = k;
+                const sh = recordShownOf(peerId, replyHead[1].trim() + " " + replyHead[2]);
+                if (sh) anchor = sh.n + " " + sh.d;
             }
             const rep = anchor ? cutAndGraft(peerId, anchor, tree) : applyTree(peerId, tree);
             const body = treeReport(rep);
@@ -5193,7 +5221,8 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     if (lines.length === 1 && replyHead) {
         const parsed = parseTrigger(lines[0]);
         if (parsed && !parsed.error) {
-            const anchor = replyHead[1].trim() + " " + replyHead[2];
+            const sh = recordShownOf(peerId, replyHead[1].trim() + " " + replyHead[2]);
+            const anchor = sh ? sh.n + " " + sh.d : "";
             const ed = editTrigger(peerId, anchor,
                 Object.assign({}, parsed.rec, parsed.tail ? { note: parsed.tail } : {}));
             if (ed) {
@@ -5279,19 +5308,19 @@ function unpay(p) {
 // true — все события по полной дате ГГГГ-ММ-ДД (подтверждение удаления)
 function upcomingEvents(peerId, byFullDate = false, mmddNow = "") {
     const map = rs => rs
-        .map(r => r.n + " " + r.d
-            + (r.dd !== undefined ? " " + r.dd : "")
+        .map(r => r.n + " " + approxOut(newStyleDate(r.d), r.abt || r.mabt || 0)
+            + (r.dd !== undefined ? " " + approxOut(newStyleDate(r.dd), r.dabt || 0) : "")
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : ""))
         .join("\n");
     let rows = [...personRows(peerId), ...weddingRows(peerId)];
     if (!byFullDate) rows = rows.filter(r => !r.abt && !r.dabt && !r.mabt); // примерные — мимо оповещений
-    const key = r => r.d + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
+    const key = r => newStyleDate(r.d) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
     if (byFullDate) return map(rows.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0)));
-    // круговой порядок по ММ-ДД от сегодняшнего MM-DD
+    // круговой порядок по ММ-ДД от сегодняшнего MM-DD; ММ-ДД — по новому стилю
     const cum = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]; // невисокосный год
     const dayIdx = d => cum[Number(d.slice(5, 7)) - 1] + Number(d.slice(8)) - 1;
     const nowIdx = mmddNow ? cum[Number(mmddNow.slice(0, 2)) - 1] + Number(mmddNow.slice(3)) - 1 : 0;
-    const sortKey = r => String((dayIdx(r.d) - nowIdx + 365) % 365).padStart(3, "0") + " " + key(r);
+    const sortKey = r => String((dayIdx(newStyleDate(r.d)) - nowIdx + 365) % 365).padStart(3, "0") + " " + key(r);
     return map(rows.sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0)));
 }
 
@@ -5774,9 +5803,10 @@ async function findRecordByCmid(peerId, cmid) {
         console.error("reaction lookup:", e.message);
         return null;
     }
-    const m = text.match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})/);
+    const m = text.match(/^(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/);
     if (!m) return null;
-    return recordAnyOf(peerId, m[1].trim() + " " + m[2]) || null;
+    // показанный текст несёт новый стиль/суффикс (см. recordShownOf)
+    return recordShownOf(peerId, m[1].trim() + " " + m[2]) || null;
 }
 
 // ============================== ПЛАНИРОВЩИК ==============================
@@ -5813,17 +5843,21 @@ async function dailyCheck() {
     // дешёвый пропуск уже успешного дня. Падение в середине оставляет день
     // досылаемым при рестарте/следующем запуске в тот же день.
     if ((q1("SELECT v FROM meta WHERE k='checkedDate'") || {}).v === today) return;
-    // годовщины персон и свадеб с сегодняшней датой (МСК); sent — раз в год
+    // годовщины персон и свадеб с сегодняшней датой (МСК); sent — раз в год.
+    // Даты до 1918 хранятся по старому стилю — оповещаем по новому (новый
+    // ММ-ДД сдвинутой даты; декабрьский хвост ложится на январь сам собой)
     const jobs = [
         ...qa(`SELECT chat, name, birt_d, birt_h, birt_m, deat_d FROM indi
-            WHERE birt_d IS NOT NULL AND (birt_abt IS NULL OR birt_abt=0) AND substr(birt_d, 6, 5) = ?`, mmdd)
+            WHERE birt_d IS NOT NULL AND (birt_abt IS NULL OR birt_abt=0)`)
+            .filter(r => newStyleDate(r.birt_d).slice(5, 10) === mmdd)
             .map(r => ({
                 chat: r.chat, key: r.name + " " + r.birt_d,
                 rec: { n: r.name, d: r.birt_d, ...(r.birt_h !== null ? { h: r.birt_h, m: r.birt_m } : {}), ...(r.deat_d ? { dd: r.deat_d } : {}) },
             })),
         ...qa(`SELECT f.chat, (SELECT name FROM indi i WHERE i.chat=f.chat AND i.xref=f.husb) AS hn,
             (SELECT name FROM indi i WHERE i.chat=f.chat AND i.xref=f.wife) AS wn,
-            f.marr_d, f.div_d FROM fam f WHERE f.marr_d IS NOT NULL AND (f.marr_abt IS NULL OR f.marr_abt=0) AND substr(f.marr_d, 6, 5) = ?`, mmdd)
+            f.marr_d, f.div_d FROM fam f WHERE f.marr_d IS NOT NULL AND (f.marr_abt IS NULL OR f.marr_abt=0)`)
+            .filter(r => newStyleDate(r.marr_d).slice(5, 10) === mmdd)
             .filter(r => r.hn && r.wn)
             .map(r => ({
                 chat: r.chat, key: r.hn + "+" + r.wn + " " + r.marr_d,
@@ -6021,4 +6055,5 @@ module.exports.__test = {
     chatFlatText, flatTreeText, branchFlatText, subsetBranch, flatRows, flatSearch,
     flatHitPerson, flatHitKey,
     cutAndGraft, setPersonByXref, editTrigger, rootOf, uniqueKeyOf, upcomingEvents, hasTree,
+    recordShownOf, newStyleDate,
 };

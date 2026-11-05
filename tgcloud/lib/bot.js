@@ -4,8 +4,8 @@ import { and, eq, or, inArray } from 'sdk/db';
 import { indi, fam, chil, edges, settings, focusView } from '../schema.js';
 import { mskToday } from './astro.js';
 import { kinLabel, fynny } from './kinship.js';
-import { REL_DEFS, religiousDigest } from './religion.js';
-import { jubileeText } from './text.js';
+import { REL_DEFS, religiousDigest, newStyleDate } from './religion.js';
+import { jubileeText, approxOut } from './text.js';
 
 export const HELP = "Отправьте «Имя ГГГГ-ММ-ДД [ЧЧ:ММ] [дата смерти]» — покажу лунно-солнечные юбилеи.\n"
     + "Можно с зоной: «… 12:30 (Пермь)» или «… 12:30 МСК+2», по одной строке на событие.\n"
@@ -186,6 +186,18 @@ export async function recordOf(chatId, key) {
     return (await personRows(chatId)).find(r => pkey(r) === key)
         || (await weddingRows(chatId)).find(r => pkey(r) === key)
         || null;
+}
+
+// ключ из показанного текста (новый стиль + суффикс: юбилей/🔔 печатает
+// приближённые даты через approxOut): точный ключ — как хранение; мимо —
+// поиск по отображённой форме (имя ≃ и approxOut(newStyleDate) совпал)
+export async function recordShownOf(chatId, key) {
+    const exact = await recordOf(chatId, key);
+    if (exact) return exact;
+    const m = key.match(/^(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?)([?=<~]?)\s*$/);
+    if (!m) return null;
+    return [...await personRows(chatId), ...await weddingRows(chatId)]
+        .find(r => r.n === m[1] && approxOut(newStyleDate(r.d), r.abt || r.mabt || 0) === m[2] + m[3]) || null;
 }
 
 // запись по xref (индивидуальный — даже без birt_d — либо fam-пара со свадьбой)
@@ -1014,17 +1026,17 @@ export async function upcomingText(chatId, byFullDate = false, mmddNow = "") {
     let rows = [...await personRows(chatId), ...await weddingRows(chatId)];
     if (!byFullDate) rows = rows.filter(r => !r.abt && !r.dabt && !r.mabt); // примерные — мимо оповещений
     const map = rs => rs
-        .map(r => r.n + " " + r.d
-            + (r.dd !== undefined ? " " + r.dd : "")
+        .map(r => r.n + " " + approxOut(newStyleDate(r.d), r.abt || r.mabt || 0)
+            + (r.dd !== undefined ? " " + approxOut(newStyleDate(r.dd), r.dabt || 0) : "")
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : ""))
         .join("\n");
-    const key = r => r.d + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
+    const key = r => newStyleDate(r.d) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
     if (byFullDate) return map(rows.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0)));
-    // круговой порядок по ММ-ДД от сегодняшнего MM-DD
+    // круговой порядок по ММ-ДД от сегодняшнего MM-DD; ММ-ДД — по новому стилю
     const cum = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]; // невисокосный год
     const dayIdx = d => cum[Number(d.slice(5, 7)) - 1] + Number(d.slice(8)) - 1;
     const nowIdx = mmddNow ? cum[Number(mmddNow.slice(0, 2)) - 1] + Number(mmddNow.slice(3)) - 1 : 0;
-    const sortKey = r => String((dayIdx(r.d) - nowIdx + 365) % 365).padStart(3, "0") + " " + key(r);
+    const sortKey = r => String((dayIdx(newStyleDate(r.d)) - nowIdx + 365) % 365).padStart(3, "0") + " " + key(r);
     return map(rows.sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0)));
 }
 
@@ -1219,20 +1231,21 @@ export const focusHead = (key, radius, dd) =>
 export function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "", depth = 2) {
     const set = new Set(keys);
     const map = rs => rs
-        .map(r => r.n + " " + r.d
-            + (r.dd ? " " + r.dd : "")
+        .map(r => r.n + " " + approxOut(newStyleDate(r.d), r.abt || r.mabt || 0)
+            + (r.dd ? " " + approxOut(newStyleDate(r.dd), r.dabt || 0) : "")
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "")
             + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d, depth); return l ? " " + l : ""; })())
         .join("\n");
-    const sortKey = r => r.d + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
+    const sortKey = r => newStyleDate(r.d) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
     if (byFullDate) return map(items
         .filter(r => set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys)))
         .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0)));
-    // круговой порядок по ММ-ДД от сегодняшнего MM-DD (как religiousYear)
+    // круговой порядок по ММ-ДД от сегодняшнего MM-DD (как religiousYear);
+    // ММ-ДД — по новому стилю (оповещения по новому стилю, хранение — старому)
     const cum = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]; // невисокосный год
     const dayIdx = d => cum[Number(d.slice(5, 7)) - 1] + Number(d.slice(8)) - 1;
     const nowIdx = mmddToday ? cum[Number(mmddToday.slice(0, 2)) - 1] + Number(mmddToday.slice(3)) - 1 : 0;
-    const bellKey = r => String((dayIdx(r.d) - nowIdx + 365) % 365).padStart(3, "0") + " " + sortKey(r);
+    const bellKey = r => String((dayIdx(newStyleDate(r.d)) - nowIdx + 365) % 365).padStart(3, "0") + " " + sortKey(r);
     return map(items
         .filter(r => set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys)))
         .sort((a, b) => (bellKey(a) < bellKey(b) ? -1 : bellKey(a) > bellKey(b) ? 1 : 0)));
@@ -2062,16 +2075,6 @@ export async function uniqueKeyOf(chatId, name, birtD, approx, yearly, xref) {
         // суффикс всегда свободен: xref персоны уникален в чате (в импорте —
         // файловый, дубль xref парсер схлопывает Map'ом; в правке — её же)
     }
-}
-
-// примерная дата текстом: гранулярность G — урезание («1234», «1234-05»),
-// квалификатор Q — суффикс за датой: «?» ABT, «=» CAL, «<» BEF, «>» AFT,
-// «~» EST (на любой гранулярности: «1234-05-06?», «1234-05?», «1234~»);
-// точная дата — как есть (так же печатаются коллизии ключа в отчёте импорта)
-const ABT_MARK = { 1: "?", 2: "=", 3: "<", 4: ">", 5: "~" };
-function approxOut(d, abt) {
-    const a = abt || 0, q = Math.floor(a / 3), g = a % 3;
-    return d.slice(0, 10 - g * 3) + (ABT_MARK[q] || "");
 }
 
 // та же дата через N лет (29 фев → 1 мар в невисокосный год — само собой)

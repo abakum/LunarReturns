@@ -54,8 +54,9 @@ const PATCHES = [
      'const VK_API = "http://127.0.0.1:" + (globalThis.__VK_REPL_PORT || 8899) + "/method/";'],
     ['main().catch(e => { console.error("fatal:", e); process.exit(1); });',
      'if (!process.env.LR_NO_MAIN) main().catch(e => { console.error("fatal:", e); process.exit(1); });'],
-    ['    cutAndGraft, setPersonByXref, editTrigger, rootOf, uniqueKeyOf, upcomingEvents, hasTree,\n};',
-     '    cutAndGraft, setPersonByXref, editTrigger, rootOf, uniqueKeyOf, upcomingEvents, hasTree, handleEvent, handleMessage, handleGedDrop, handleTxtDrop,\n'
+    ['    cutAndGraft, setPersonByXref, editTrigger, rootOf, uniqueKeyOf, upcomingEvents, hasTree,\n    recordShownOf, newStyleDate,\n};',
+     '    cutAndGraft, setPersonByXref, editTrigger, rootOf, uniqueKeyOf, upcomingEvents, hasTree,\n'
+     + '    recordShownOf, newStyleDate, handleEvent, handleMessage, handleGedDrop, handleTxtDrop,\n'
      + '    peerKeyboard, getSettings, qa, isChatAdmin, dailyCheck, mskNowParts,\n'
      + '    sendGedArtifacts: typeof sendGedArtifacts === "function" ? sendGedArtifacts : null,\n};'],
     // подмена «сегодня»: !date YYYY-MM-DD [hh] → globalThis.__LR_TODAY/[__LR_HOUR]

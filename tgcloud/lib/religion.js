@@ -16,6 +16,18 @@ function jdnToGreg(j) {
     return [100 * b + d - 4800 + Math.floor(m2 / 10), m2 + 3 - 12 * Math.floor(m2 / 10), e - Math.floor((153 * m2 + 2) / 5) + 1];
 }
 
+// Даты ≤ 1918-01-31 хранятся по старому (юлианскому) стилю: на слое вывода и
+// сортировки переводим в новый (григорианский); хранение и экспорт остаются
+// старым стилем, чтобы реэкспорт не сдвигал даты повторно. Неполных дат тут
+// нет (d всегда полный ISO, урезание несёт abt), но пустые — как есть.
+const OLD_STYLE_END = "1918-01-31"; // последний юлианский день в России
+
+function newStyleDate(iso) {
+    if (!iso || iso > OLD_STYLE_END) return iso;
+    const [y, m, d] = iso.split("-").map(Number);
+    return jdnToGreg(julianToJdn(y, m, d)).map((v, i) => String(v).padStart(i ? 2 : 4, "0")).join("-");
+}
+
 function orthodoxEasterJdn(y) {
     const a = y % 4, b = y % 7, c = y % 19, d = (19 * c + 15) % 30, e = (2 * a + 4 * b - d + 34) % 7;
     return julianToJdn(y, Math.floor((d + e + 114) / 31), (d + e + 114) % 31 + 1);
@@ -245,4 +257,4 @@ function religiousYear(key) {
         .join("\n");
 }
 
-export { REL_DEFS, REL_ORDER, relDays, religiousDigest, religiousYear };
+export { REL_DEFS, REL_ORDER, relDays, religiousDigest, religiousYear, newStyleDate };
