@@ -1690,8 +1690,12 @@ function recordShownOf(peerId, key) {
     if (exact) return exact;
     const m = key.match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?)([?=<~]?)\s*$/);
     if (!m) return null;
+    // точное равенство хранимой даты — для ключей из фокус-шапок и payload-ов
+    // (focusHead печатает хранимый ключ старого стиля, показанная форма —
+    // новый; реакции/кнопки приходят и на те, и на другие сообщения)
     return [...personRows(peerId), ...weddingRows(peerId)]
-        .find(r => r.n === m[1] && approxOut(newStyleDate(r.d), r.abt || r.mabt || 0) === m[2].replace(/_/g, "-") + m[3]) || null;
+        .find(r => r.n === m[1] && (approxOut(newStyleDate(r.d), r.abt || r.mabt || 0) === m[2].replace(/_/g, "-") + m[3]
+            || r.d === m[2].replace(/_/g, "-") + m[3])) || null;
 }
 
 // ---- виды: «Имя Д» и «Имя+Имя Д» — выборка из дерева ----
@@ -4700,7 +4704,7 @@ async function longPollStep() {
     }
 }
 
-const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Пачкой древа в ответе на героя — замена его ветви (срезана и привита). Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата; /links (в ответ на триггер) — пачка ВЕТВИ героя (как «-+=» на фокусе), без ответа — пачка древа чата; /Иван — поиск по древу (/-Пётр — мужчины 0-го уровня, /--Иван — 1-го, /=… — женщины; «/ текст» — подстрока; /-, /--, /+…, /=… — все мужчины/свадьбы/женщины уровня).\nКнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf+.ged.txt — пачка радиуса: вверх и вниз), «-+=» — пачка ВЕТВИ: герой первой строкой, потомки — вся глубина; в фокусе цифры радиуса отдельным рядом ([цифры] / [🔔 🧬 -+= ❌]). /bellN (в ответ на триггер) — список родни в радиусе N (как 🔔 фокуса).\nПачка в ответе на цитату — ЗАМЕНА ветви цитируемого (срезана и привита); одной строкой без маркера в ответе на триггер — ПРАВКА записи целиком (пол и ветвь не трогаются); просто сообщением — добавление к древу; файлом .ged.txt — замена дерева чата («Нет / Да / Да, с резервом»).";
+const HELP = "Триггер: «Имя ГГГГММДД [ЧЧ:ММ] [(город)] [дата смерти]». Пачкой древа в ответе на героя — замена его ветви (срезана и привита). Кнопки под ответом: [цифры радиуса] 👎 удалить, 👀/🌙 подробно/сжато, 🔔 🧬 -+= — список/древо/пачка ветви в радиусе 1. Реакция 👎 — удалить событие/связь. Реакция 👀 — детально. /gedcom — древо чата; /links (в ответ на триггер) — пачка ВЕТВИ героя (как «-+=» на фокусе), без ответа — пачка древа чата; /Иван — поиск по древу (/-Пётр — мужчины 0-го уровня, /--Иван — 1-го, /=… — женщины; «/ текст» — подстрока; /-, /--, /+…, /=… — все мужчины/свадьбы/женщины уровня).\nКнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf+.ged.txt — пачка радиуса: вверх и вниз), «-+=» — пачка ВЕТВИ: герой первой строкой, потомки — вся глубина; в фокусе цифры радиуса отдельным рядом ([цифры] / [🔔 🧬 -+= ❌]). /bellN (в ответ на триггер) — список родни в радиусе N (как 🔔 фокуса).\nПачка в ответе на цитату — ЗАМЕНА ветви цитируемого (срезана и привита); одной строкой без маркера в ответе на триггер — ПРАВКА записи целиком (пол и ветвь не трогаются); просто сообщением — добавление к древу; файлом .ged.txt — замена дерева чата («Нет / Да / Да, с резервом»).";
 
 // большой ответ — одним файлом: «.ged.txt» (пачка древа) либо «.txt» (список
 // событий); не выложился — сообщение об ошибке (без кусков). Файл — ответом
@@ -4907,10 +4911,43 @@ async function focusKeyboard(peerId, userId, key, radius, depth) {
         .filter(n => n !== radius && n <= (depth === undefined ? 5 : depth))
         .map(n => mk(String(n), { c: "foc", k: key, r: n }));
     // 🗑-радиус снят: удаление — только глобальное (кнопка 🗑 у 🔔 чата)
-    // цифры своим рядом, второй ряд — 🔔 🧬 -+= ❌ (ВК: до 5 кнопок в ряду);
-    // цифр нет (глубина 1) — один ряд, пустой ряд не выводим
-    const base = [bell, tree, flat, mk("❌", { c: "close" })];
-    return JSON.stringify({ inline: true, buttons: digits.length ? [digits, base] : [base] });
+    // единая раскладка с юбилеем (jubileeKeyboard): ряд 1 [цифры 👎],
+    // ряд 2 [👀 🔔 🧬 -+= ❌] — новые кнопки не отпадают после тапа по
+    // 🔔/🧬/-+=/цифре на сообщении-юбилее
+    return JSON.stringify({ inline: true, buttons: [
+        [...digits, mk("👎", { c: "del1", k: key })],
+        [mk("👀", { c: "det", k: key }), bell, tree, flat, mk("❌", { c: "close" })],
+    ] });
+}
+
+// клавиатура сообщения-юбилея (ответ на триггер, поиск одного попадания,
+// развёрнутое 👀): ряд 1 — цифры радиуса (по глубине, радиус 1 скрыт) + 👎
+// (удалить событие, как реакция 👎); ряд 2 — 👀/🌙 (тоггл детальности),
+// 🔔/🧬/-+= в радиусе 1 и ❌ (payload-и stateless, как у фокуса);
+// detail=true — сообщение развёрнуто, кнопка 🌙 сворачивает обратно.
+// Раскладка единая с ТГ (jubileeMarkup): ряд 1 [2 3 4 5 👎], ряд 2 [👀 🔔 🧬 -+= ❌];
+// у свадьбы (wed, «Имя+Имя») цифры/🔔/🧬/-+= бессмысленны (пара-заглушка) —
+// один ряд [👀|🌙 👎 ❌]
+async function jubileeKeyboard(peerId, userId, key, depth, detail = false, wed = false) {
+    const mk = (label, payload) => ({
+        action: { type: "callback", label, payload: JSON.stringify(payload) },
+        color: "secondary"
+    });
+    if (wed) return JSON.stringify({ inline: true, buttons: [[
+        mk(detail ? "🌙" : "👀", { c: detail ? "mon" : "det", k: key }),
+        mk("👎", { c: "del1", k: key }), mk("❌", { c: "close" }),
+    ]] });
+    const digits = [2, 3, 4, 5]
+        .filter(n => n <= (depth === undefined ? 5 : depth))
+        .map(n => mk(String(n), { c: "foc", k: key, r: n }));
+    return JSON.stringify({ inline: true, buttons: [
+        [...digits, mk("👎", { c: "del1", k: key })],
+        [mk(detail ? "🌙" : "👀", { c: detail ? "mon" : "det", k: key }),
+            mk("🔔", { c: "foc:bell", k: key, r: 1 }),
+            mk("🧬", { c: "foc:tree", k: key, r: 1 }),
+            mk("-+=", { c: "foc:flat", k: key, r: 1 }),
+            mk("❌", { c: "close" })],
+    ] });
 }
 
 // список событий по множеству фокуса с ярлыками родства (kinLabel):
@@ -4979,6 +5016,16 @@ async function sendFocus(peerId, key, msgId, convMsgId, fromId, dd) {
     const kb = await focusKeyboard(peerId, fromId, key, 1, depth);
     await messagesSend(peerId, txt, msgId, convMsgId, kb);
     console.log("focus:", key, "peer", peerId);
+}
+
+// сжатый юбилей + клавиатура-юбилей (единая с ТГ jubileeMarkup): триггер,
+// правка триггером, поиск одного попадания
+async function sendJubileeMsg(peerId, rec, note, msgId, convMsgId, fromId = 0) {
+    const key = rec.n + " " + rec.d;
+    const depth = focusDepth(linkPairs(peerId), key);
+    await messagesSend(peerId, jubileeText(rec, note), msgId, convMsgId,
+        await jubileeKeyboard(peerId, fromId, key, depth, false, rec.n.includes("+")));
+    console.log("jubilee:", key, "peer", peerId);
 }
 
 // ответ на «/» или «Начать»: справка + клавиатура по чату/роли;
@@ -5125,50 +5172,16 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         const q = text.trim();
         const hits = flatSearch(chatFlatText(peerId), q);
         if (hits.length) {
-            // ровно одно попадание, резолвящееся в персону, — сразу
-            // фокус-сообщение: текст как у /bellN + панель кнопок (триггера
-            // нет — реплаить не на что, новое сообщение); нерезолвимое
-            // (свадьба, заглушка, тёзки) — списком/файлом как прежде
+            // ровно одно попадание, резолвящееся в персону, — сжатый юбилей
+            // с клавиатурой-юбилеем (триггера нет — реплаить не на что, новое
+            // сообщение); нерезолвимое (свадьба, заглушка, тёзки) —
+            // списком/файлом как прежде
             if (hits.length === 1) {
                 const key = flatHitKey(hits[0], personRows(peerId));
                 const rec = key ? recordOf(peerId, key) : null;
                 if (rec) {
-                    // текст панели — как 🧬: пачка ромба радиуса (текстом);
-                    // не влезает (лимит сообщения; VK API 914 «Message is
-                    // too long») — голова + целые строки + ✂️⏳, а ВЕСЬ пачка —
-                    // файлом (.ged.txt) асинхронно: upload долгий, ответ —
-                    // сразу; файл приклеивается к тому же сообщению (правка
-                    // с attachment), мимо — отдельным сообщением-файлом;
-                    // после прицепления ⏳ снят, ✂️ остаётся
-                    const head = focusHead(key, 1, rec.dd);
-                    const pack = branchFlatText(peerId, key);
-                    const kb = await focusKeyboard(peerId, fromId, key, 1,
-                        focusDepth(linkPairs(peerId), key));
-                    // перелив: порядок строк — герой, метка, пачка (см. правило
-                    // у NOT_FOR_GRAFT); префикс hold0 = hero + метка
-                    const ngHead = head + "\n" + NOT_FOR_GRAFT;
-                    let tail = null;
-                    if (head.length + 1 + pack.length > 4000) {
-                        tail = "";
-                        for (const l of pack.split("\n")) {
-                            if (ngHead.length + 1 + tail.length + l.length > 4000) break;
-                            tail += (tail ? "\n" : "") + l;
-                        }
-                    }
-                    const sent = await messagesSend(peerId,
-                        // метка — только на перелив (файл); влезающая ветвь —
-                        // как ответ на «-+=», без метки
-                        tail !== null ? ngHead + "\n" + tail + "\n✂️⏳" : head + "\n" + pack,
-                        msgId, convMsgId, kb);
-                    if (tail !== null) {
-                        // в прицепе полная ветвь (форма «-+=») — метка не нужна:
-                        // она лишь запретила бы реплай файла на триггер
-                        holdAttach(peerId, "panel", sent,
-                            ngHead + "\n" + tail + "\n✂️⏳", ngHead + "\n" + tail + "\n✂️",
-                            fileBaseOf(head) + ".ged.txt", "\uFEFF" + pack,
-                            kb, head, msgId, convMsgId);
-                    }
-                    console.log("flat search:", JSON.stringify(q), "-> фокус", key, "peer", peerId);
+                    await sendJubileeMsg(peerId, rec, "", msgId, convMsgId, fromId);
+                    console.log("flat search:", JSON.stringify(q), "-> юбилей", key, "peer", peerId);
                     return;
                 }
             }
@@ -5267,7 +5280,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
                     await messagesSend(peerId, "💥 " + lines[0] + "\n" + ed.error, msgId, convMsgId);
                     return;
                 }
-                await messagesSend(peerId, jubileeText(ed.rec, parsed.note), msgId, convMsgId);
+                await sendJubileeMsg(peerId, ed.rec, parsed.note, msgId, convMsgId, fromId);
                 console.log("edit:", anchor, "->", ed.rec.n, ed.rec.d, "peer", peerId);
                 return;
             }
@@ -5281,7 +5294,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             continue;
         }
         upsertPerson(peerId, parsed.rec);
-        await messagesSend(peerId, jubileeText(parsed.rec, parsed.note), msgId, convMsgId);
+        await sendJubileeMsg(peerId, parsed.rec, parsed.note, msgId, convMsgId, fromId);
         console.log("record:", parsed.rec.n, parsed.rec.d, "peer", peerId);
     }
 }
@@ -5427,15 +5440,17 @@ async function handleEvent(o) {
     console.log("кнопка:", JSON.stringify(p), "peer", peerId);
     // кнопки фокус-сообщения: радиус родни 1–5, 🔔/🧬 в радиусе, «-+=» ветвь
     if (p && typeof p === "object" && (p.c === "foc" || p.c === "foc:bell" || p.c === "foc:tree" || p.c === "foc:flat")) {
-        const key = String(p.k || "");
-        const depth = focusDepth(linkPairs(peerId), key);
-        // радиус не глубже имеющихся предков (старые сообщения могут нести снятые кнопки)
-        const radius = Math.min(5, Math.max(1, Number(p.r) || 1), Math.max(1, depth));
-        const rec = recordOf(peerId, key);
+        // герой — по сообщению (findRecordByCmid), не по payload-ключу:
+        // свадьба «Имя+Имя Д» и старый стиль/примерные даты по ключу мимоходили
+        const rec = await findRecordByCmid(peerId, o.conversation_message_id);
         if (!rec) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "персона не найдена");
             return;
         }
+        const key = pkey(rec);
+        const depth = focusDepth(linkPairs(peerId), key);
+        // радиус не глубже имеющихся предков (старые сообщения могут нести снятые кнопки)
+        const radius = Math.min(5, Math.max(1, Number(p.r) || 1), Math.max(1, depth));
         await answerEvent(o.event_id || o.id, o.user_id, peerId,
             p.c === "foc" ? focusLabel(radius)
                 : (p.c === "foc:bell" ? "список " : (p.c === "foc:flat" ? "пачка ветви " : "древо ")) + focusLabel(radius));
@@ -5509,6 +5524,32 @@ async function handleEvent(o) {
             tail += (tail ? "\n" : "") + l;
         }
         await editOrigin(o, head + "\n" + tail, kb);
+        return;
+    }
+    // кнопки сообщения-юбилея: 👎 — удалить событие, 👀/🌙 — тоггл
+    // детальности (как реакции 👀/снятие, но тапом; клавиатура едина с ТГ).
+    // Запись резолвим по сообщению — findRecordByCmid, как у реакций: payload
+    // несёт хранимый ключ (старый стиль/примерная дата), а свадьба «Имя+Имя Д»
+    // и вовсе не персона — по ключу были ложные «Событие не найдено»
+    if (p && typeof p === "object" && (p.c === "del1" || p.c === "det" || p.c === "mon")) {
+        const rec = await findRecordByCmid(peerId, o.conversation_message_id);
+        if (!rec) { await answerEvent(o.event_id || o.id, o.user_id, peerId, "Событие не найдено"); return; }
+        const key = pkey(rec);
+        if (p.c === "del1") {
+            // связи персоны, свадьба пары «Имя+Имя», висячие кандидаты, семьи
+            deleteEventCascade(peerId, key);
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, "удалено");
+            console.log("кнопка 👎: удалено событие", rec.n, rec.d, "peer", peerId);
+            await editOrigin(o, "🗑 Событие удалено: " + rec.n + " " + rec.d,
+                JSON.stringify({ inline: true, buttons: [] }));
+            return;
+        }
+        // det — развернуть (кнопка 🌙), mon — сжать обратно (как снятие реакции)
+        const detail = p.c === "det";
+        const depth = focusDepth(linkPairs(peerId), key);
+        await answerEvent(o.event_id || o.id, o.user_id, peerId, detail ? "подробно" : "сжато");
+        await editOrigin(o, jubileeText(rec, "", detail),
+            await jubileeKeyboard(peerId, o.user_id, key, depth, detail, rec.n.includes("+")));
         return;
     }
     // кнопки сообщения-связи: пол нового лица, свадьба, усыновление, удаление
@@ -5724,10 +5765,6 @@ async function handleEvent(o) {
     }
 }
 
-// сообщения, развёрнутые 👀 (peerId:cmid) — при снятии реакции им возвращается
-// пустая клавиатура (не трогаем кнопки фокус-сообщений)
-const detailedMsgs = new Set();
-
 // реакции на ответы/уведомления бота; формат события (по факту):
 // { reacted_id, peer_id, cmid, reaction_id } — 👎 = 9, 👀 = REACTION_EYES_ID
 async function handleReaction(o) {
@@ -5747,9 +5784,9 @@ async function handleReaction(o) {
             await vkApi("messages.edit", {
                 peer_id: peerId, conversation_message_id: cmid,
                 message: jubileeText(rec, ""),
-                // у развёрнутого 👀 — снять фокус-кнопки
-                ...(detailedMsgs.delete(peerId + ":" + cmid)
-                    ? { keyboard: JSON.stringify({ inline: true, buttons: [] }) } : {})
+                // клавиатура-юбилей возвращается (сжатое состояние, 👀)
+                keyboard: await jubileeKeyboard(peerId, from, pkey(rec),
+                    focusDepth(linkPairs(peerId), pkey(rec)), false, rec.n.includes("+"))
             });
             console.log("reaction снята: сжато", rec.n, rec.d, "peer", peerId);
         } catch (e) {
@@ -5813,11 +5850,10 @@ async function handleReaction(o) {
             await vkApi("messages.edit", {
                 peer_id: peerId, conversation_message_id: cmid,
                 message: jubileeText(rec, "", true),
-                // кнопки фокуса как у «/»-ответа: радиусы, 🔔/🧬 (payload несёт k/r)
-                keyboard: await focusKeyboard(peerId, from, pkey(rec), 1,
-                    focusDepth(linkPairs(peerId), pkey(rec)))
+                // клавиатура-юбилей с 🌙 (сворачивает обратно)
+                keyboard: await jubileeKeyboard(peerId, from, pkey(rec),
+                    focusDepth(linkPairs(peerId), pkey(rec)), true, rec.n.includes("+"))
             });
-            detailedMsgs.add(peerId + ":" + cmid);
             console.log("reaction 👀: детально", rec.n, rec.d, "peer", peerId);
         } catch (e) {
             console.error("reaction detail:", e.message);
@@ -5841,10 +5877,19 @@ async function findRecordByCmid(peerId, cmid) {
         return null;
     }
     // показанный текст несёт новый стиль/суффикс (см. recordShownOf); `_` в
-    // датах шапки — маркер нового стиля (см. jubileeText) — нормализуем
-    const m = text.match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/);
-    if (!m) return null;
-    return recordShownOf(peerId, m[1].trim() + " " + m[2].replace(/_/g, "-")) || null;
+    // датах шапки — маркер нового стиля (см. jubileeText) — нормализуем;
+    // фокус-сообщение печатает цифру радиуса перед ключом («2 Имя Д») —
+    // если без неё не нашлось, пробуем срезав (как replyHeadOf; прямой порядок
+    // не ломает имена вида «8 Марта»)
+    const RX = /^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/;
+    const m0 = text.match(RX);
+    if (m0) {
+        const r = recordShownOf(peerId, m0[1].trim() + " " + m0[2].replace(/_/g, "-"));
+        if (r) return r;
+    }
+    const m1 = text.match(/^\d\s+(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/);
+    if (!m1) return null;
+    return recordShownOf(peerId, m1[1].trim() + " " + m1[2].replace(/_/g, "-")) || null;
 }
 
 // ============================== ПЛАНИРОВЩИК ==============================

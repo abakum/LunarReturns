@@ -10,14 +10,14 @@ import { jubileeText, approxOut } from './text.js';
 export const HELP = "Отправьте «Имя ГГГГ-ММ-ДД [ЧЧ:ММ] [дата смерти]» — покажу лунно-солнечные юбилеи.\n"
     + "Можно с зоной: «… 12:30 (Пермь)» или «… 12:30 МСК+2», по одной строке на событие.\n"
     + "Пачкой древа в ответе на героя — ЗАМЕНА его ветви (срезана и привита);\n"
-    + "кнопка 🔗 под ответом — пачка ВЕТВИ персоны (как «-+=» на фокусе).\n"
     + ".ged-файл чатом — замена древа; /today — события сегодня (МСК), /gedcom — древо,\n"
     + "/bellN (в ответ на триггер) — список родни в радиусе N (как 🔔 фокуса),\n"
     + "/links (в ответ на триггер) — пачка ВЕТВИ героя (как «-+=» на фокусе),\n"
     + "без ответа — пачка древа чата; /Иван — поиск по древу\n"
     + "(/-Пётр — мужчины 0-го уровня, /--Иван — 1-го, /=… — женщины; «/ текст» — подстрока;\n"
     + "/-, /--, /+…, /=… — все мужчины/свадьбы/женщины уровня)\n"
-    + "Кнопки под ответом: 👎 удалить, 👀 подробно.\n"
+    + "Кнопки под ответом: [цифры радиуса] 👎 удалить, 👀/🌙 подробно/сжато,\n"
+    + "🔔 🧬 -+= — список/древо/пачка ветви в радиусе 1.\n"
     + "Кнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf+.ged.txt — пачка радиуса: вверх и вниз),\n"
     + "«-+=» — пачка ветви (герой первой строкой, потомки — вся глубина).\n"
     + "Пачкой в ответе на цитату — ЗАМЕНА ветви цитируемого: срезана и привита;\n"
@@ -197,8 +197,12 @@ export async function recordShownOf(chatId, key) {
     if (exact) return exact;
     const m = key.match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?)([?=<~]?)\s*$/);
     if (!m) return null;
+    // точное равенство хранимой даты — для ключей из фокус-шапок и payload-ов
+    // (focusHead печатает хранимый ключ старого стиля, показанная форма —
+    // новый; реакции/кнопки приходят и на те, и на другие сообщения)
     return [...await personRows(chatId), ...await weddingRows(chatId)]
-        .find(r => r.n === m[1] && approxOut(newStyleDate(r.d), r.abt || r.mabt || 0) === m[2].replace(/_/g, "-") + m[3]) || null;
+        .find(r => r.n === m[1] && (approxOut(newStyleDate(r.d), r.abt || r.mabt || 0) === m[2].replace(/_/g, "-") + m[3]
+            || r.d === m[2].replace(/_/g, "-") + m[3])) || null;
 }
 
 // запись по xref (индивидуальный — даже без birt_d — либо fam-пара со свадьбой)
@@ -1047,16 +1051,28 @@ export function mmddToday() {
     return String(mo).padStart(2, "0") + "-" + String(d).padStart(2, "0");
 }
 
-// кнопки под ответом бота на триггер: 👎 — удалить событие (как реакция VK),
-// 👀 — подробно, 🔗 — пачка ВЕТВИ персоны (как «-+=» на фокусе, тап —
-// handlers/callback_query.js links:); callback_data — xref
-export function eventMarkup(xref) {
+// кнопки под ответом на триггер и под найденной одним попаданием персоной:
+// ряд 1 — цифры радиуса (по фактической глубине focusDepth, радиус 1 скрыт)
+// и 👎 — удалить событие (как реакция 👎 в VK-боте); ряд 2 — 👀/🌙 тоггл
+// детальности, 🔔/🧬/-+= в радиусе 1 (callback_data — xref; фок-кнопки
+// работают через строку focus_view, которую вставляет отправитель);
+// handlers/callback_query.js det:/mon:; у свадьбы (wed) цифры/🔔/🧬/-+=
+// бессмысленны (пара-заглушка) — один ряд [👀|🌙 👎 ❌]
+export function jubileeMarkup(xref, depth, detail = false, wed = false) {
+    const btn = (text, data) => ({ text, callback_data: data });
+    if (wed) return { inline_keyboard: [[
+        btn(detail ? "🌙" : "👀", (detail ? "mon:" : "det:") + xref),
+        btn("👎", "del1:" + xref), btn("❌", "close"),
+    ]] };
+    const digits = [2, 3, 4, 5]
+        .filter(n => n <= (depth === undefined ? 5 : depth))
+        .map(n => btn(String(n), "foc" + n));
     return {
-        inline_keyboard: [[
-            { text: "👎", callback_data: "del1:" + xref },
-            { text: "👀", callback_data: "det:" + xref },
-            { text: "🔗", callback_data: "links:" + xref },
-        ]]
+        inline_keyboard: [
+            [...digits, btn("👎", "del1:" + xref)],
+            [btn(detail ? "🌙" : "👀", (detail ? "mon:" : "det:") + xref),
+                btn("🔔", "focbell"), btn("🧬", "foctree"), btn("-+=", "focflat"), btn("❌", "close")],
+        ]
     };
 }
 
@@ -1256,8 +1272,11 @@ export function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFul
 // 🔔/🧬 действуют в радиусе, а в ряд с ❌ добавлены неактивные цифры радиуса
 // (активная скрыта; цифра r выводится, если есть предки глубины r — depth
 // = focusDepth; grace при старом вызове без depth — все цифры);
-// колокольчик всегда 🔔 (подписки нет — список всегда «от сегодня»)
-export function focusMarkup(chat, chatId, s, radius, depth) {
+// колокольчик всегда 🔔 (подписки нет — список всегда «от сегодня»);
+// с xref — единая раскладка с юбилеем (jubileeMarkup): ряд 1 [цифры 👎],
+// ряд 2 [👀|🌙 🔔 🧬 -+= ❌] — новые кнопки не отпадают после тапа по
+// 🔔/🧬/-+=/цифре на сообщении-юбилее
+export function focusMarkup(chat, chatId, s, radius, depth, xref, detail = false) {
     const btn = (text, data) => ({ text, callback_data: data });
     const bell = btn("🔔", "focbell");
     const tree = btn("🧬", "foctree");
@@ -1265,6 +1284,11 @@ export function focusMarkup(chat, chatId, s, radius, depth) {
     const digits = [1, 2, 3, 4, 5]
         .filter(n => n !== radius && n <= (depth === undefined ? 5 : depth))
         .map(n => btn(String(n), "foc" + n));
+    if (xref) {
+        const row1 = [...digits, btn("👎", "del1:" + xref)];
+        const row2 = [btn(detail ? "🌙" : "👀", (detail ? "mon:" : "det:") + xref), bell, tree, flat, btn("❌", "close")];
+        return { inline_keyboard: [row1, row2] };
+    }
     // цифры (радиус — только 🔔/🧬) своим рядом; 🔔 🧬 -+= ❌ — вторым;
     // цифр нет (глубина 1) — один ряд, пустой ряд не выводим
     const base = [bell, tree, flat, btn("❌", "close")];
@@ -2001,8 +2025,10 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
 // Радиусный вызов (keys — ромб родни: тап 🧬 на фокусе и /gedcomN в ответ
 // на триггер): третий файл <имя>.ged.txt — пачка того же ромба
 // (chatFlatText по keys): форма «-+=», но не только вниз — и вверх, и вниз,
-// в пределах радиуса; всему древу чата пачки нет (его «-+=» и так весь)
-export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0) {
+// в пределах радиуса; всему древу чата пачки нет (его «-+=» и так весь).
+// markup — клавиатура, которую надо сохранить при правке текста пачкой
+// (editMessageText без reply_markup в TG клавиатуру снимает)
+export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0, markup = undefined) {
     const g = await gedcomText(chatId, keys);
     // заголовок чарта без цифры радиуса;
     // цифра → range героя для chartFor
@@ -2029,6 +2055,7 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
         const packFits = !!pack && pack.length < 4000;
         if (packFits && replyTo) await api.editMessageText({
             chat_id: chatId, message_id: replyTo, text: pack,
+            ...(markup !== undefined ? { reply_markup: markup } : {}),
         });
         const media = [{ type: "document", media: new InputFile(enc.encode(g), base + ".ged", { type: "text/plain" }),
             caption: head }];
@@ -2343,25 +2370,27 @@ export async function replaceWithGedcom(chatId, g, backup) {
 // текст jubileeText — HTML со спойлерами, поэтому parse_mode всегда HTML.
 // Если не влезает — ВЕСЬ текст одним .txt-файлом (имя name), разметка снята
 // (stripHtml), переносы сохранены; не выложился — сообщение об ошибке (без кусков)
-export async function sendLong(chatId, text, replyMarkup, name) {
+export async function sendLong(chatId, text, replyMarkup, name, replyTo = 0) {
+    const reply = replyTo
+        ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {};
     const parts = splitText(text);
     if (parts.length === 1) {
-        await api.sendMessage({ chat_id: chatId, text, parse_mode: 'HTML', reply_markup: replyMarkup });
-        return;
+        // возвращаем Message: отправщику нужен message_id (например, чтобы
+        // вставить строку focus_view под кнопки)
+        return api.sendMessage({ chat_id: chatId, text, parse_mode: 'HTML', reply_markup: replyMarkup, ...reply });
     }
     // BOM — чтобы Windows-редакторы (Блокнот) открывали как UTF-8, а не ANSI
     const base = fileBaseOf(name || "Ответ") + ".txt";
     try {
         const enc = new TextEncoder();
-        await api.sendDocument({
+        return await api.sendDocument({
             chat_id: chatId,
             document: new InputFile(enc.encode("\uFEFF" + stripHtml(text)), base, { type: "text/plain" }),
-            reply_markup: replyMarkup,
+            reply_markup: replyMarkup, ...reply,
         });
-        return;
     } catch (e) {
         console.error("tail document:", e.message);
-        await api.sendMessage({
+        return api.sendMessage({
             chat_id: chatId, text: "💥 Не удалось выложить файл " + base });
     }
 }

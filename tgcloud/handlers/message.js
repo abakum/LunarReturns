@@ -5,12 +5,12 @@ import { parseTrigger, parseGedcom, gedStats, parseTree } from '../lib/parse.js'
 import { fileBaseOf } from '../lib/chart.js';
 import { jubileeText } from '../lib/text.js';
 import {
-    HELP, startMarkup, chatAdmin, getSettings, todayText, eventMarkup, sendLong,
+    HELP, startMarkup, chatAdmin, getSettings, todayText, jubileeMarkup, sendLong,
     recordOf, recordShownOf, replaceWithGedcom,
-    linkPairs, personRows, weddingRows, sendGedPdf, focusKeys, focusHead, focusMarkup,
-    focusWithSpouses, focusListKeys, focusSpousePairs, focusDepth, focusListText, mmddToday, upcomingText, upsertPerson, applyTree, cutAndGraft, treeReport,
+    linkPairs, personRows, weddingRows, sendGedPdf, focusHead, focusMarkup,
+    focusListKeys, focusSpousePairs, focusDepth, focusListText, mmddToday, upcomingText, upsertPerson, applyTree, cutAndGraft, treeReport,
     editTrigger, hasTree, NOT_FOR_GRAFT,
-    chatFlatText, flatSearch, sendFlatPack, flatHitKey, branchFlatText,
+    chatFlatText, flatSearch, sendFlatPack, flatHitKey,
 } from '../lib/bot.js';
 
 // заголовок «Имя ГГГГ-ММ-ДД» (+ цифра радиуса у фокус-сообщений) в цитате;
@@ -19,6 +19,32 @@ import {
 const replyHeadOf = reply => reply && reply.from && !reply.from.is_bot
     ? String(reply.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/) : null;
 const keyOfHead = m => m[1].trim() + " " + m[2].replace(/_/g, "-");
+
+// сжатый юбилей + единая клавиатура (jubileeMarkup): цифры радиуса, 👎,
+// 👀/🌙, 🔔/🧬/-+=/❌; фок-кнопки работают через строку focus_view —
+// вставляем её по message_id отправленного сообщения (радиус 1);
+// replyTo — реплай на запрос поиска (как фокус-панель раньше)
+const sendJubilee = async (chatId, rec, note = "", replyTo = 0) => {
+    const key = rec.n + " " + rec.d;
+    const depth = Math.max(1, await focusDepth(await linkPairs(chatId), key));
+    // xref персоны, у свадьбы — fx fam-пары (recordByXref резолвит оба);
+    // свадьба — сокращённый ряд [👀|🌙 👎 ❌]
+    const xref = rec.xref ?? rec.fx ?? null;
+    if (!xref) throw new Error("нет xref у записи");
+    const sent = await sendLong(chatId, jubileeText(rec, note),
+        jubileeMarkup(xref, depth, false, rec.n.includes("+")), undefined, replyTo);
+    if (sent && sent.message_id) {
+        // чистка устаревших строк чата (старше 7 суток) + запись текущей
+        const weekAgo = Date.now() - 7 * 24 * 3600000;
+        const stale = (await db.select().from(focusView).where(eq(focusView.chatId, chatId)).all())
+            .filter(r => r.ts < weekAgo);
+        for (const r of stale) await db.delete(focusView).where(eq(focusView.id, r.id)).run();
+        await db.insert(focusView).values({
+            chatId, messageId: sent.message_id, pkey: key, radius: 1, ts: Date.now(),
+        }).run();
+    }
+    return sent;
+};
 
 // клавиатура дропа: «Да, с резервом» — только при непустом дереве чата
 const dropKb = hasTree => ({
@@ -135,11 +161,11 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
 // само сообщение — реплаем на «/» (как в VK sendFocus); body — готовое тело
 // (список 🔔, единственное попадание поиска) — сразу с панелью, не после тапа;
 // ng — вести тело с меткой «не для прививки» (перед головой: реплай на такое
-// сообщение прививкой не идёт)
-async function sendFocus(chat, chatId, key, radius, dd, replyTo = 0, body = "", ng = false) {
+// сообщение прививкой не идёт); xref — для единых кнопок 👎/👀 (focusMarkup)
+async function sendFocus(chat, chatId, key, radius, dd, replyTo = 0, body = "", ng = false, xref = null) {
     // тело (список/гедком) — после тапа по кнопке; цифры радиуса — по глубине предков
     const markup = focusMarkup(chat, chatId, await getSettings(chatId), radius,
-        focusDepth(await linkPairs(chatId), key));
+        focusDepth(await linkPairs(chatId), key), xref);
     const head = focusHead(key, radius, dd);
     const first = await api.sendMessage({
         chat_id: chatId,
@@ -219,7 +245,8 @@ export default async function (message, ctx) {
             const rec = await recordShownOf(chatId, key);
             if (rec) {
                 // показанный ключ → хранимый
-                await sendFocus(message.chat, chatId, rec.n + " " + rec.d, 1, rec.dd, message.message_id);
+                await sendFocus(message.chat, chatId, rec.n + " " + rec.d, 1, rec.dd, message.message_id,
+                    "", false, rec.xref ?? rec.fx ?? null);
                 return;
             }
         }
@@ -353,53 +380,15 @@ export default async function (message, ctx) {
     if (text.startsWith("/")) {
         const hits = flatSearch(await chatFlatText(chatId), text);
         if (hits.length) {
-            // ровно одно попадание, резолвящееся в персону, — сразу
-            // фокус-сообщение: текст как у /bellN + панель кнопок, реплаем
-            // на запрос; нерезолвимое (свадьба, заглушка, тёзки) — списком
+            // ровно одно попадание, резолвящееся в персону, — сжатый юбилей
+            // с единой клавиатурой, реплаем на запрос; нерезолвимое (свадьба,
+            // заглушка, тёзки) — списком
             if (hits.length === 1) {
                 const key = flatHitKey(hits[0], await personRows(chatId));
                 const rec = key ? await recordOf(chatId, key) : null;
-                if (rec) {
-                    const pairs = await linkPairs(chatId);
-                    const sexMap = new Map((await personRows(chatId))
-                        .map(rw => [rw.n + " " + rw.d, rw.sex ?? null]));
-                    const spPairs = await focusSpousePairs(chatId);
-                    const keys = focusListKeys(pairs, spPairs, key, 1,
-                        k => sexMap.get(k) ?? null);
-                    // текст панели — как «-+=»: пачка ВЕТВИ героя (текстом);
-                    // влезает — без метки (реплай заменой ветви работает);
-                    // не влезает (лимит сообщения; ВК: «914 Message is too
-                    // long») — метка + голова + целые строки + ✂️⏳, ВЕСЬ
-                    // пачка — файлом (.ged.txt) асинхронно: upload долгий,
-                    // ответ — сразу; после выкладки ⏳ снимается (✂️ остаётся)
-                    const head = focusHead(key, 1, rec.dd);
-                    const pack = await branchFlatText(chatId, key);
-                    let shown = pack, rest = false;
-                    if (head.length + 1 + pack.length > 4000) {
-                        rest = true;
-                        shown = "";
-                        for (const l of pack.split("\n")) {
-                            if (NOT_FOR_GRAFT.length + 1 + head.length + 1 + shown.length + 1 + l.length > 4000) break;
-                            shown += (shown ? "\n" : "") + l;
-                        }
-                        shown += "\n✂️⏳";
-                    }
-                    const first = await sendFocus(message.chat, chatId, key, 1,
-                        rec.dd, message.message_id, shown,
-                        // метка — только на перелив (файл); влезающая ветвь —
-                        // как ответ на «-+=», без метки
-                        rest);
-                    if (rest && first && first.message_id) {
-                        // порядок строк — герой, метка, пачка (правило — коммент
-                        // у NOT_FOR_GRAFT в lib/bot.js)
-                        const holdTxt = head + "\n" + NOT_FOR_GRAFT + "\n" + shown;
-                        const finalTxt = holdTxt.replace("\n✂️⏳", "\n✂️");
-                        // в прицепе полная ветвь (форма «-+=») — метка не нужна:
-                        // она лишь запретила бы реплай файла на триггер
-                        holdReply(chatId, first, holdTxt, finalTxt,
-                            pack, fileBaseOf(head) + ".ged.txt");
-                    }
-                    console.log("flat search:", JSON.stringify(text), "-> фокус", key, "чат", chatId);
+                if (rec && rec.xref) { // резолвится в персону (xref есть)
+                    await sendJubilee(chatId, rec, "", message.message_id);
+                    console.log("flat search:", JSON.stringify(text), "-> юбилей", key, "чат", chatId);
                     return;
                 }
             }
@@ -493,7 +482,7 @@ export default async function (message, ctx) {
                         await api.sendMessage({ chat_id: chatId, text: "💥 " + lines[0] + "\n" + ed.error });
                         return;
                     }
-                    await sendLong(chatId, jubileeText(ed.rec, parsed.note), eventMarkup(ed.rec.xref));
+                    await sendJubilee(chatId, ed.rec, parsed.note);
                     console.log("edit:", anchor, "->", ed.rec.n, ed.rec.d, "chat", chatId);
                     return;
                 }
@@ -508,7 +497,7 @@ export default async function (message, ctx) {
             continue;
         }
         const rec = await upsertPerson(chatId, parsed.rec);
-        await sendLong(chatId, jubileeText(rec, parsed.note), eventMarkup(rec.xref));
+        await sendJubilee(chatId, rec, parsed.note);
         console.log("record:", rec.n, rec.d, "xref", rec.xref, "chat", chatId);
     }
 }

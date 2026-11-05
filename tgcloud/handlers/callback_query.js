@@ -6,14 +6,14 @@ import { parseGedcom, parseTree } from '../lib/parse.js';
 import { fileBaseOf } from '../lib/chart.js';
 import { REL_DEFS, religiousYear } from '../lib/religion.js';
 import {
-    HELP, GED_TTL, relMarkup, chatFlatText, getSettings, startMarkup, chatAdmin, eventMarkup,
+    HELP, GED_TTL, relMarkup, chatFlatText, getSettings, startMarkup, chatAdmin, jubileeMarkup,
     recordOf, recordByXref, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong,
     deleteEventCascade, replaceWithGedcom, clearChatTree, deleteLink, setIndiSex, toggleAdopted,
     linkById, linkPairs, xrefOfKey, personRows, weddingRows, sendTreeBackup,
     NOT_FOR_GRAFT,
     upcomingText, mmddToday, focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText,
     focusWithSpouses, focusListKeys, focusSpousePairs, focusListText, focusDepth, sendGedPdf,
-    applyTree, branchFlatText, keyOfXref, cutAndGraft, treeReport, sendFlatPack, hasTree,
+    applyTree, cutAndGraft, treeReport, hasTree,
 } from '../lib/bot.js';
 
 export default async function (cq, ctx) {
@@ -240,44 +240,28 @@ export default async function (cq, ctx) {
         return;
     }
 
-    if (data.startsWith("det:")) {
-        // 👀 — детализировать правкой сообщения, кнопки сохраняются;
-        // повторное нажатие сворачивает обратно (как снятие реакции в VK)
+    if (data.startsWith("det:") || data.startsWith("mon:")) {
+        // 👀/🌙 — тоггл детальности правкой сообщения (подпись кнопки —
+        // состояние: 👀 на сжатом, 🌙 на подробном); xref — персоны (INDI)
+        // либо fam-пары (свадьба/развод)
         const xref = data.slice(4);
         const rec = await recordByXref(chatId, xref);
         if (!rec) { await answer("Событие не найдено"); return; }
-        // сжатый вид отличается от детального спойлером: если в сообщении нет
-        // spoiler-entity — оно детальное (в моке entity эмулирует repl)
-        const ent = cq.message?.entities || [];
-        const isDetail = !ent.some(e => e.type === 'spoiler');
+        const expand = data.startsWith("det:");
         const depth = focusDepth(await linkPairs(chatId), rec.n + " " + rec.d);
-        if (!isDetail) { // детализировать + кнопки фокуса (как «/»-ответ)
-            // строка focusView по id сообщения — чтобы foc*/focbell/foctree/del
-            // работали на развёрнутом отчёте
-            await db.delete(focusView).where(and(eq(focusView.chatId, chatId), eq(focusView.messageId, cq.message.message_id))).run();
-            await db.insert(focusView).values({
-                chatId, messageId: cq.message.message_id, pkey: rec.n + " " + rec.d, radius: 1, ts: Date.now(),
-            }).run();
+        // строка focusView по id сообщения — чтобы foc*/focbell/foctree
+        // работали и на развёрнутом отчёте, и на сжатом юбилее (радиус 1)
+        await db.delete(focusView).where(and(eq(focusView.chatId, chatId), eq(focusView.messageId, cq.message.message_id))).run();
+        await db.insert(focusView).values({
+            chatId, messageId: cq.message.message_id, pkey: rec.n + " " + rec.d, radius: 1, ts: Date.now(),
+        }).run();
+        if (expand) { // детализировать + кнопки остаются (ряд 2 с 🌙)
             await editText(jubileeText(rec, "", true),
-                focusMarkup(cq.message.chat, chatId, await getSettings(chatId), 1, depth), 'HTML');
-        } else { // повторное нажатие сворачивает обратно (как снятие реакции в VK)
-            await db.delete(focusView).where(and(eq(focusView.chatId, chatId), eq(focusView.messageId, cq.message.message_id))).run();
-            await editText(jubileeText(rec, "", false), eventMarkup(xref), 'HTML');
+                jubileeMarkup(xref, depth, true, rec.n.includes("+")), 'HTML');
+        } else { // 🌙 сворачивает обратно (как снятие реакции в VK)
+            await editText(jubileeText(rec, "", false), jubileeMarkup(xref, depth, false, rec.n.includes("+")), 'HTML');
         }
-        await answer(isDetail ? "сжато" : "подробно");
-        return;
-    }
-
-    // «🔗» на сообщении персоны: пачка ВЕТВИ героя — как тап «-+=» на фокусе
-    // и как /links в ответ на триггер (листинг сообщений-связей не восстановить)
-    if (data.startsWith("links:")) {
-        const key = await keyOfXref(chatId, data.slice(6));
-        if (!key) { await answer("персона не найдена"); return; }
-        const rec = await recordOf(chatId, key);
-        await answer("пачка ветви");
-        const ok = await sendFlatPack(chatId, key, focusHead(key, 1, rec ? rec.dd : null), cq.message.message_id);
-        if (!ok) await api.sendMessage({ chat_id: chatId, text: "ветвь пуста",
-            reply_parameters: { message_id: cq.message.message_id, allow_sending_without_reply: true } });
+        await answer(expand ? "подробно" : "сжато");
         return;
     }
 
@@ -350,6 +334,8 @@ export default async function (cq, ctx) {
         // обновляем focus_view и пересчитываем ключи под НОВЫЙ радиус
         const wantR = /^foc[1-5]$/.test(data) ? Number(data.slice(3)) : row.radius;
         const [radius, keys, depth] = await radiusOf(row.pkey, wantR);
+        // xref для единых кнопок 👎/👀 (персона — xref, свадьба — fx fam-пары)
+        const fxref = rec.xref ?? rec.fx ?? null;
         const bell = data === "focbell" || /^foc[1-5]$/.test(data);
         // список всегда по ММ-ДД (сортировка подписки касается только дампа)
         const byFull = false;
@@ -358,9 +344,11 @@ export default async function (cq, ctx) {
         await answer(data === "focbell" ? "список " + focusLabel(radius)
             : (data === "foctree" ? "древо " + focusLabel(radius)
                 : (data === "focflat" ? "пачка ветви " : "") + focusLabel(radius)));
-        // 🧬 в радиусе: <имя>.ged + <имя>.pdf (родство к герою), правка не нужна
+        // 🧬 в радиусе: <имя>.ged + <имя>.pdf (родство к герою); клавиатура
+        // передаётся в правку (пачка <4000 правит текст сообщения)
         if (data === "foctree") {
-            await sendGedPdf(chatId, keys, focusHead(row.pkey, radius, rec.dd), row.pkey, cq.message.message_id);
+            await sendGedPdf(chatId, keys, focusHead(row.pkey, radius, rec.dd), row.pkey, cq.message.message_id,
+                focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth, fxref));
             return;
         }
         const head = focusHead(row.pkey, radius, rec.dd);
@@ -369,7 +357,7 @@ export default async function (cq, ctx) {
         if (data === "focflat") {
             const pack = await branchFlatText(chatId, row.pkey);
             if (!pack) { await answer("ветвь пуста"); return; }
-            const fKb0 = focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth);
+            const fKb0 = focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth, fxref);
             if (pack.length > 4000) {
                 // перелив: порядок строк — герой, метка (правило — коммент
                 // у NOT_FOR_GRAFT в lib/bot.js); ВЕСЬ пачка — файлом ответом
@@ -391,7 +379,7 @@ export default async function (cq, ctx) {
                 || "(в радиусе нет событий)";
         }
         const full = head + (body ? "\n" + body : "");
-        const fKb = focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth);
+        const fKb = focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth, fxref);
         if (full.length > 4000) {
             // список начинается с сегодня — что не влезает в сообщение,
             // просто отрезаем (целые строки)
