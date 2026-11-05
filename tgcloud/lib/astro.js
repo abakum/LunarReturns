@@ -52,6 +52,11 @@ const tithiInt = m => Math.floor(m.phase * 30) + 1;
 const TITHI_BASE = ["пратипада", "двитья", "трития", "чатуртхи", "панчами", "шаштхи",
     "саптами", "аштами", "навами", "дашами", "экадаши", "двадаши", "трайодаши", "чатурдаши"];
 const tithiName = n => n === 15 ? "пурнима" : n === 30 ? "амавасья" : TITHI_BASE[(n - 1) % 15];
+// титхи цифрами вместо знаков луны: светлая половина (☽) — контурные ①…⑮,
+// тёмная (☾) — залитые ❶…❿ и ⓫…⓯; половина видна по начертанию цифры
+const TITHI_DIGIT_LIGHT = ["①","②","③","④","⑤","⑥","⑦","⑧","⑨","⑩","⑪","⑫","⑬","⑭","⑮"];
+const TITHI_DIGIT_DARK = ["❶","❷","❸","❹","❺","❻","❼","❽","❾","❿","⓫","⓬","⓭","⓮","⓯"];
+const tithiDigit = n => (n > 15 ? TITHI_DIGIT_DARK : TITHI_DIGIT_LIGHT)[(n - 1) % 15];
 
 const MZODIAC_ICON = ["♈︎", "♉︎", "♊︎", "♋︎", "♌︎", "♍︎", "♎︎", "♏︎", "♐︎", "♑︎", "♒︎", "♓︎"];
 const MZODIAC_RU = ["овен", "телец", "близнецы", "рак", "лев", "дева", "весы", "скорпион", "стрелец", "козерог", "водолей", "рыбы"];
@@ -110,13 +115,12 @@ function legend(t) {
     const [w0, wh] = wdLocale(t);
     const s0 = sunZodiacNames(t, false)[0];
     const v0 = chineseZodiacName(t, false);
-    const t0 = n0 > 15 ? "☾" : "☽";
     return s0 + hashTag(sunZodiacNames(t, true)[0]) + "\n" +
         v0 + hashTag(chineseZodiacName(t, true)) + "\n" +
         w0 + hashTag(wh) + "\n" +
         z0 + hashTag(moonZodiacName(mMid, true)) + "_\n" +
         p0 + hashTag(phaseName(n0, true)) + "\n" +
-        String((n0 - 1) % 15 + 1).padStart(2, "0") + (n0 > 15 ? "☾#" : "☽#") + tithiName(n0) + (n0 > 15 ? "_" : "");
+        tithiDigit(n0) + "#" + tithiName(n0) + (n0 > 15 ? "_" : "");
 }
 
 function la(birth, detail = false) {
@@ -128,7 +132,8 @@ function la(birth, detail = false) {
     const s0 = sunZodiacNames(birth, false)[0];
     const v0 = chineseZodiacName(birth, false);
     const sq = z0 === s0 ? "²" : "";
-    const t0 = n0 > 15 ? "☾" : "☽";
+    // титхи рождения цифрой вместо знака луны: ①… — светлая половина, ❶… — тёмная
+    const t0 = tithiDigit(n0);
     const yl = "г";
     const f = new Date().getFullYear() - birth.getUTCFullYear();
     const years = [legend(birth) + "\n#" + birth.getUTCFullYear() + yl + " " + v0 + w0 + z0 + sq + p0 + t0];

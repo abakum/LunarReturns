@@ -13,10 +13,10 @@ import {
     chatFlatText, flatSearch, sendFlatPack, flatHitKey, branchFlatText,
 } from '../lib/bot.js';
 
-// заголовок «Имя ГГГГ-ММ-ДД» (+ кейкап радиуса у фокус-сообщений) в цитате;
+// заголовок «Имя ГГГГ-ММ-ДД» (+ цифра радиуса у фокус-сообщений) в цитате;
 // якорь — только сообщение пользователя (не бота), как в ВК
 const replyHeadOf = reply => reply && reply.from && !reply.from.is_bot
-    ? String(reply.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
+    ? String(reply.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
 
 // клавиатура дропа: «Да, с резервом» — только при непустом дереве чата
 const dropKb = hasTree => ({

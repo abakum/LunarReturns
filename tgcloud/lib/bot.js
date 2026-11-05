@@ -1220,9 +1220,9 @@ export function focusDepth(pairs, key) {
 }
 
 // заголовок фокус-сообщения; dd — дата смерти/развода, если есть;
-// радиус — цифрой в квадрате (кейкап) перед ключом
+// радиус — цифрой перед ключом
 export const focusHead = (key, radius, dd) =>
-    String(radius) + "\u20E3 " + key + (dd ? " " + dd : "");
+    String(radius) + " " + key + (dd ? " " + dd : "");
 
 // список событий по множеству фокуса с ярлыками родства: строки
 // «Имя Д [Д(смерти)] [ЧЧ:ММ] родство»; items — записи {n, d, h, m, dd};
@@ -1263,7 +1263,7 @@ export function focusMarkup(chat, chatId, s, radius, depth) {
     const flat = btn("-+=", "focflat");
     const digits = [1, 2, 3, 4, 5]
         .filter(n => n !== radius && n <= (depth === undefined ? 5 : depth))
-        .map(n => btn(String(n) + "\u20E3", "foc" + n));
+        .map(n => btn(String(n), "foc" + n));
     // цифры (радиус — только 🔔/🧬) своим рядом; 🔔 🧬 -+= ❌ — вторым;
     // цифр нет (глубина 1) — один ряд, пустой ряд не выводим
     const base = [bell, tree, flat, btn("❌", "close")];
@@ -2003,11 +2003,11 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
 // в пределах радиуса; всему древу чата пачки нет (его «-+=» и так весь)
 export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0) {
     const g = await gedcomText(chatId, keys);
-    // заголовок чарта без цифры уровня (кейкап оставлен только фокусу);
+    // заголовок чарта без цифры радиуса;
     // цифра → range героя для chartFor
     const head0 = head || "Гедком-древо";
-    const chartHead = head0.replace(/^\d\u20E3\s*/, "");
-    const rm = /^(\d)\u20E3/.exec(head0);
+    const chartHead = head0.replace(/^\d\s+/, "");
+    const rm = /^(\d)\s/.exec(head0);
     const base = fileBaseOf(head0);
     // третий файл (радиусные 🧬 и /gedcomN): пачка ромба — chatFlatText по keys;
     // она идёт только файлом (пачка <4000 — текстом правки сообщения)

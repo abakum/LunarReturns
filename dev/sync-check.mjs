@@ -452,7 +452,7 @@ if (!osPack.includes('1663-07-14') || osPack.includes('1663-07-24'))
     { failed++; console.log('✗ экспорт/старый стиль: пачка пересдвинута\n  ' + osPack); }
 // показанный ключ (новый стиль/суффикс) резолвится обратно в хранимую запись;
 // ключ берётся тем же reply-regex'ом, что у обработчиков (усечён до первой даты)
-const osKey = t => t.match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/).slice(1).join(" ");
+const osKey = t => t.match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/).slice(1).join(" ");
 const normOf = r => r ? { n: r.n, d: r.d, dd: r.dd, abt: r.abt } : null;
 cmp('recordShownOf точный', normOf(VK.recordShownOf(OS_CH, 'Агафья 1663-07-14')), normOf(await TG.recordShownOf(OS_CH, 'Агафья 1663-07-14')));
 cmp('recordShownOf показ', normOf(VK.recordShownOf(OS_CH, osKey('Агафья 1663-07-24 1681-07-24'))), { n: 'Агафья', d: '1663-07-14', dd: '1681-07-14' });
@@ -532,11 +532,11 @@ cmp('focusHead подписи радиусов',
 cmp('focusHead с датой смерти',
     [1, 3, 5].map(r => VK.focusHead('Пётр 1930-01-01', r, '2001-02-03')),
     [1, 3, 5].map(r => TG.focusHead('Пётр 1930-01-01', r, '2001-02-03')));
-if (VK.focusHead('Имя 2000-01-01', 2) !== '2\u20E3 Имя 2000-01-01')
+if (VK.focusHead('Имя 2000-01-01', 2) !== '2 Имя 2000-01-01')
     { failed++; console.log('✗ focusHead: префикс кейкапа\n  ' + VK.focusHead('Имя 2000-01-01', 2)); }
 // кусковой regex «/»-ответа снимает префикс кейкапа с заголовка фокуса
-const RH_RE = /^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/;
-if ('2\u20E3 Константин Абакумов 1963-09-27 2001-03-03'.match(RH_RE)?.slice(1).join(' ')
+const RH_RE = /^(?:\d\s+)?(.+?)\s+(\d{4}-\d{2}-\d{2})/;
+if ('2 Константин Абакумов 1963-09-27 2001-03-03'.match(RH_RE)?.slice(1).join(' ')
     !== 'Константин Абакумов 1963-09-27')
     { failed++; console.log('✗ regex reply-заголовка'); }
 
@@ -589,7 +589,7 @@ const kinSpouses = [
 ];
 const sonKey = 'Сын 1980-06-06';
 // focusDepth: fynny-достижимость (min(5, max нужного радиуса)) — у Сына
-// троюродный (u4d3, слова 6) и кузина деда (u4d2, слова 5) требуют 5️⃣;
+// троюродный (u4d3, слова 6) и кузина деда (u4d2, слова 5) требуют 5;
 // у Двоюродного правнучатый (u2d4, слова 5); без боковой — вертикаль
 cmp('focusDepth глубины',
     [[kinPairs, sonKey], [kinPairs, kinKeys['Двоюродный']], [['Родитель 1930-01-01', 'Сын 1990-01-01'], 'Сын 1990-01-01']]
@@ -604,11 +604,11 @@ if (JSON.stringify([5, 5, 1]) !== JSON.stringify([
 const digs = (radius, depth) => TG.focusMarkup('private', 1, {}, radius, depth)
     .inline_keyboard[0].filter(b => /^\d/.test(b.text)).map(b => b.text).join('');
 if (digs(1, 1) !== '') { failed++; console.log('✗ focusMarkup: без дедов цифры не скрыты\n  ' + digs(1, 1)); }
-if (digs(1, 2) !== '2\u20E3') { failed++; console.log('✗ focusMarkup: с дедом нет 2️⃣\n  ' + digs(1, 2)); }
-if (digs(2, 2) !== '1\u20E3') { failed++; console.log('✗ focusMarkup: радиус 2/деды\n  ' + digs(2, 2)); }
-if (digs(1, 3) !== '2\u20E33\u20E3')
-    { failed++; console.log('✗ focusMarkup: прадеды 2⃣3⃣\n  ' + digs(1, 3)); }
-if (digs(3, 3) !== '1\u20E32\u20E3') { failed++; console.log('✗ focusMarkup: радиус 3/прадеды\n  ' + digs(3, 3)); }
+if (digs(1, 2) !== '2') { failed++; console.log('✗ focusMarkup: с дедом нет 2\n  ' + digs(1, 2)); }
+if (digs(2, 2) !== '1') { failed++; console.log('✗ focusMarkup: радиус 2/деды\n  ' + digs(2, 2)); }
+if (digs(1, 3) !== '23')
+    { failed++; console.log('✗ focusMarkup: прадеды 23\n  ' + digs(1, 3)); }
+if (digs(3, 3) !== '12') { failed++; console.log('✗ focusMarkup: радиус 3/прадеды\n  ' + digs(3, 3)); }
 const KIN_CASES = [
     [kinKeys['Отец'], 'отец'], [kinKeys['Мать'], 'мать'],
     [kinKeys['Дед'], 'отец отца'], [kinKeys['Бабка'], 'мать отца'],
@@ -691,7 +691,7 @@ if (VK.kinLabel(kinPairs, kinSpouses, k => kinSex[k] ?? null, kinKeys['Дед'],
     { failed++; console.log('✗ kinLabel отец жены сына сына'); }
 
 // fynny-ромб списков: доклеенный супруг остаётся, только если его ярлык
-// влезает в радиус («жена» — всегда; «муж сестры отца» — с 3️⃣; радиус 5 —
+// влезает в радиус («жена» — всегда; «муж сестры отца» — с 3; радиус 5 —
 // «показать всех», без лимита)
 const fkeysOf = (which, r) =>
     which.focusListKeys(kinPairs, kinSpouses, sonKey, r, k => kinSex[k] ?? null);
@@ -1213,7 +1213,7 @@ cmp('b64ToBytes (префикс с «=» и переносом)',
 cmp('parseTtf метрики', VK.parseTtf(FONT), TGC.parseTtf(FONT));
 // имя файла из заголовка: кейкап остаётся, эмодзи/разделители уходят, ≤ 64
 const FB_CASES = [
-    '1\u20E3 Пётр I Алексеевич Великий Романов 1672-05-30',
+    '1 Пётр I Алексеевич Великий Романов 1672-05-30',
     '🧬 Гедком-древо чата',
     'a/b\\c:d*e?f"g<h>i|j#k',
     'Имя с  точками...  и \n переносами ',
@@ -1222,7 +1222,7 @@ const FB_CASES = [
     '',
 ];
 for (const c of FB_CASES) cmp('fileBaseOf ' + JSON.stringify(c.slice(0, 30)), VK.fileBaseOf(c), TGC.fileBaseOf(c));
-if (VK.fileBaseOf(FB_CASES[0]) !== '1\u20E3 Пётр I Алексеевич Великий Романов 1672-05-30')
+if (VK.fileBaseOf(FB_CASES[0]) !== '1 Пётр I Алексеевич Великий Романов 1672-05-30')
     { failed++; console.log('✗ fileBaseOf: кейкап-префикс не сохранён\n  ' + VK.fileBaseOf(FB_CASES[0])); }
 if (VK.fileBaseOf(FB_CASES[1]) !== 'Гедком-древо чата')
     { failed++; console.log('✗ fileBaseOf: 🧬 не убран\n  ' + VK.fileBaseOf(FB_CASES[1])); }

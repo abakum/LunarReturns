@@ -67,6 +67,11 @@ const tithiInt = m => Math.floor(m.phase * 30) + 1;
 const TITHI_BASE = ["пратипада", "двитья", "трития", "чатуртхи", "панчами", "шаштхи",
     "саптами", "аштами", "навами", "дашами", "экадаши", "двадаши", "трайодаши", "чатурдаши"];
 const tithiName = n => n === 15 ? "пурнима" : n === 30 ? "амавасья" : TITHI_BASE[(n - 1) % 15];
+// титхи цифрами вместо знаков луны: светлая половина (☽) — контурные ①…⑮,
+// тёмная (☾) — залитые ❶…❿ и ⓫…⓯; половина видна по начертанию цифры
+const TITHI_DIGIT_LIGHT = ["①","②","③","④","⑤","⑥","⑦","⑧","⑨","⑩","⑪","⑫","⑬","⑭","⑮"];
+const TITHI_DIGIT_DARK = ["❶","❷","❸","❹","❺","❻","❼","❽","❾","❿","⓫","⓬","⓭","⓮","⓯"];
+const tithiDigit = n => (n > 15 ? TITHI_DIGIT_DARK : TITHI_DIGIT_LIGHT)[(n - 1) % 15];
 
 const MZODIAC_ICON = ["♈︎", "♉︎", "♊︎", "♋︎", "♌︎", "♍︎", "♎︎", "♏︎", "♐︎", "♑︎", "♒︎", "♓︎"];
 const MZODIAC_RU = ["овен", "телец", "близнецы", "рак", "лев", "дева", "весы", "скорпион", "стрелец", "козерог", "водолей", "рыбы"];
@@ -125,13 +130,12 @@ function legend(t) {
     const [w0, wh] = wdLocale(t);
     const s0 = sunZodiacNames(t, false)[0];
     const v0 = chineseZodiacName(t, false);
-    const t0 = n0 > 15 ? "☾" : "☽";
     return s0 + hashTag(sunZodiacNames(t, true)[0]) + "\n" +
         v0 + hashTag(chineseZodiacName(t, true)) + "\n" +
         w0 + hashTag(wh) + "\n" +
         z0 + hashTag(moonZodiacName(mMid, true)) + "_\n" +
         p0 + hashTag(phaseName(n0, true)) + "\n" +
-        String((n0 - 1) % 15 + 1).padStart(2, "0") + (n0 > 15 ? "☾#" : "☽#") + tithiName(n0) + (n0 > 15 ? "_" : "");
+        tithiDigit(n0) + "#" + tithiName(n0) + (n0 > 15 ? "_" : "");
 }
 
 function la(birth, detail = false) {
@@ -143,7 +147,8 @@ function la(birth, detail = false) {
     const s0 = sunZodiacNames(birth, false)[0];
     const v0 = chineseZodiacName(birth, false);
     const sq = z0 === s0 ? "²" : "";
-    const t0 = n0 > 15 ? "☾" : "☽";
+    // титхи рождения цифрой вместо знака луны: ①… — светлая половина, ❶… — тёмная
+    const t0 = tithiDigit(n0);
     const yl = "г";
     const f = new Date().getFullYear() - birth.getUTCFullYear();
     const years = [legend(birth) + "\n#" + birth.getUTCFullYear() + yl + " " + v0 + w0 + z0 + sq + p0 + t0];
@@ -4152,11 +4157,11 @@ async function vkUploadDoc(peerId, title, content) {
 // файлы (это долго) и правкой цепляются к тому же сообщению, ⏳ снимается
 async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = null, origin = null, kb = null) {
     const g = gedcomText(peerId, keys);
-    // заголовок чарта без цифры уровня (кейкап оставлен только фокусу);
+    // заголовок чарта без цифры радиуса;
     // цифра → range героя для chartFor
     const head0 = head || "Гедком-древо";
-    const chartHead = head0.replace(/^\d\u20E3\s*/, "");
-    const rm = /^(\d)\u20E3/.exec(head0);
+    const chartHead = head0.replace(/^\d\s+/, "");
+    const rm = /^(\d)\s/.exec(head0);
     const base = fileBaseOf(head0);
     // пачка ромба — chatFlatText по keys (метка NOT_FOR_GRAFT — первой строкой)
     const pack = Array.isArray(keys) && keys.length ? chatFlatText(peerId, keys) : "";
@@ -4854,8 +4859,8 @@ const rangeLevel = L => L === 1 ? "родители-дети" : L === 2 ? "де�
     : L === 3 ? "прадеды-правнуки"
     : "пра" + (L - 2) + "деды-пра" + (L - 2) + "внуки";
 const focusLabel = rangeLevel;
-// dd — дата смерти/развода, если есть; радиус — цифрой в квадрате перед ключом
-const focusHead = (key, radius, dd) => String(radius) + "\u20E3 " + key + (dd ? " " + dd : "");
+// dd — дата смерти/развода, если есть; радиус — цифрой перед ключом
+const focusHead = (key, radius, dd) => String(radius) + " " + key + (dd ? " " + dd : "");
 
 // клавиатура фокуса: как «/»-ответ по роли, но 🔔/🧬 действуют в радиусе,
 // а в ряд с ❌ добавлены неактивные цифры радиуса (активная скрыта;
@@ -4870,7 +4875,7 @@ async function focusKeyboard(peerId, userId, key, radius, depth) {
     const flat = mk("-+=", { c: "foc:flat", k: key, r: radius });
     const digits = [1, 2, 3, 4, 5]
         .filter(n => n !== radius && n <= (depth === undefined ? 5 : depth))
-        .map(n => mk(String(n) + "\u20E3", { c: "foc", k: key, r: n }));
+        .map(n => mk(String(n), { c: "foc", k: key, r: n }));
     // 🗑-радиус снят: удаление — только глобальное (кнопка 🗑 у 🔔 чата)
     // цифры своим рядом, второй ряд — 🔔 🧬 -+= ❌ (ВК: до 5 кнопок в ряду);
     // цифр нет (глубина 1) — один ряд, пустой ряд не выводим
@@ -4954,9 +4959,9 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     if (date) markSeen(date);
     if (isStart(text, payload)) {
         // «/» ответом на триггер — фокус-сообщение с радиусом родни
-        // (заголовок фокуса «2⃣ Имя ГГГГ-ММ-ДД» — префикс кейкапа снимаем)
+        // (заголовок фокуса «2 Имя ГГГГ-ММ-ДД» — цифру радиуса снимаем)
         const rh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
         if (rh) {
             const key = rh[1].trim() + " " + rh[2];
             const rec = recordShownOf(peerId, key);
@@ -4976,9 +4981,9 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     if (gm) {
         const radius = Number(gm[1]) || 1;
         // ответом на триггер — только текст родни выбранного радиуса, без кнопок
-        // (заголовок фокуса «2⃣ Имя ГГГГ-ММ-ДД» — префикс кейкапа снимаем)
+        // (заголовок фокуса «2 Имя ГГГГ-ММ-ДД» — цифру радиуса снимаем)
         const grh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
         if (grh) {
             const key = grh[1].trim() + " " + grh[2];
             const rec = recordShownOf(peerId, key);
@@ -5002,7 +5007,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     if (bm) {
         const radius = Number(bm[1]) || 1;
         const brh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
         if (brh) {
             const key = brh[1].trim() + " " + brh[2];
             const rec = recordShownOf(peerId, key);
@@ -5034,7 +5039,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     // древа чата (листинг сообщений-связей не восстанавливается)
     if (t === "/links" || t === "связи") {
         const lrh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\u20E3\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~]?)/) : null;
         let key = null, head = "";
         if (lrh) {
             const rk = lrh[1].trim() + " " + lrh[2];
