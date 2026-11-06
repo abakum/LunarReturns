@@ -659,9 +659,9 @@ function compactDates(s) {
 function parseTrigger(text) {
     // «^» — маркер примечания: всё после первого «^» — примечание дословно
     // (не разбирается на даты); внутренние «^» сохраняются — это переносы
-    // строк NOTE из гедкома (CONC/CONT → «^»)
+    // строк NOTE из гедкома (CONC/CONT → «^»); табуляции — прочь
     let hat = "";
-    let s = text.trim();
+    let s = String(text).replace(/\t/g, " ").trim();
     const hi = s.indexOf("^");
     if (hi >= 0) { hat = s.slice(hi + 1).trim(); s = s.slice(0, hi).trim(); }
     const m = compactDates(s).match(TRIGGER_RE);
@@ -717,7 +717,11 @@ function gdateToISO(s) {
 // (DATE, PLAC) у FAM; BURI (похороны) — фолбэк смерти: дата/место заходят
 // в deat, когда своей смерти нет (или нет её места)
 function parseGedcom(text) {
-    const lines = String(text).split(/\r?\n/).map(l => l.trim());
+    // строки не тримировать целиком: хвостовые пробелы строки принадлежат
+    // значению (GEDCOM: «Иванов » + 2 CONC «Иван» → «Иванов Иван»), ведущий
+    // отступ срезается; табуляции — прочь (пачки из Excel-CSV не ломают
+    // грамматику)
+    const lines = String(text).split(/\r?\n/).map(l => l.replace(/^[ \t]+/, "").replace(/\t/g, " "));
     if (!lines.some(l => /^0\s+HEAD\b/i.test(l))) return null;
     if (!lines.some(l => /^1\s+(?:GEDC|FAM|INDI)\b/i.test(l) || /@\s+(?:INDI|FAM)\s*$/i.test(l))) return null;
     const indis = new Map(), fams = new Map();
@@ -726,6 +730,7 @@ function parseGedcom(text) {
         const m = l.match(/^(\d)\s+(?:@([^@]+)@\s+)?([A-Za-z]+)?(?:\s(.*))?$/);
         if (!m) continue;
         const lvl = Number(m[1]), xref = m[2], tag = (m[3] || "").toUpperCase(), val = (m[4] || "").trim();
+        const valN = m[4] ?? ""; // NOTE/TITL/CONC/CONT — значение дословно (пробелы значимы)
         if (lvl === 0) {
             curTag = null;
             cur = null;
@@ -743,9 +748,9 @@ function parseGedcom(text) {
             else if (tag === "BURI") cur.buri = cur.buri || {};
             else if (tag === "MARR") cur.marr = cur.marr || {};
             else if (tag === "DIV") cur.div = cur.div || {};
-            else if (tag === "NOTE") cur.note = val;
+            else if (tag === "NOTE") cur.note = valN;
             // TITL — тоже хвост персоны (хранится в note, выводится как хвост пачки)
-            else if (tag === "TITL" && cur.note == null) cur.note = val;
+            else if (tag === "TITL" && cur.note == null) cur.note = valN;
             else if (tag === "HUSB" || tag === "WIFE" || tag === "CHIL") {
                 const r = val.match(/@([^@]+)@/);
                 if (r) {
@@ -777,9 +782,11 @@ function parseGedcom(text) {
             else if (curTag === "DIV" && cur.div) cur.div.plac = val;
         } else if (lvl === 2 && (tag === "CONC" || tag === "CONT") && (curTag === "NOTE" || curTag === "TITL")) {
             // продолжение NOTE/TITL: CONC — склейка без пробела, CONT — новая
-            // строка («^» в note — маркер переноса, симметричен пачке/экспорту)
-            if (cur.note) cur.note += (tag === "CONT" ? "^" : "") + val;
-            else if (val) cur.note = val;
+            // строка («^» в note — маркер переноса, симметричен пачке/экспорту);
+            // значение дословно — хвостовые пробелы строки и ведущие пробелы
+            // продолжения принадлежат тексту (склейка слов через границу строк)
+            if (cur.note) cur.note += (tag === "CONT" ? "^" : "") + valN;
+            else if (valN) cur.note = valN;
         }
     }
     // похороны → смерть: дата/место, когда своей смерти нет (или нет места)
@@ -1038,7 +1045,7 @@ function parseTree(text) {
     };
     for (const raw of String(text).split(/\r?\n/)) {
         ln++;
-        const line = raw.trim();
+        const line = raw.replace(/\t/g, " ").trim(); // табуляции — прочь
         if (!line || /^\s*#/.test(line)) continue; // пустые и комментарии — мимо
         const it = parseTreeLine(line);
         if (it.k === "err") { errors.push({ line: ln, msg: it.msg }); continue; }
@@ -3110,6 +3117,96 @@ function chatFlatText(peerId, keys = null) {
         [f.hKey, f.wKey, ...f.children].some(k => k != null && keys.includes(kOf.get(k) || ""))), true);
 }
 
+// ===================== ПАЧКА → CSV (Excel) =====================
+// «Древо чата.ged.csv» — преобразование текста пачки в таблицу с табами
+// (ТГ-копия дословно — tgcloud/lib/parse.js, packToCsv):
+//   - строки, начинающиеся с «#» (метка NOT_FOR_GRAFT, комментарии), — мимо;
+//     «#» внутри строки — обрезка от «#» до конца строки;
+//   - маркер пола не клеится к имени («=Имя» Excel считает формулой):
+//     сначала считается максимальная глубина префиксов пачки (maxDepth);
+//     строка глубины n — maxDepth−n пустых ячеек, затем символы префикса
+//     по одному в каждой колонке («--» → «-\t-»), затем Имя — у всех строк
+//     в колонке maxDepth+1 (выровнено слева), глубина видна по дефисам
+//     у правого края структуры; строке-половине без маркера — maxDepth
+//     пустых ячеек (колонка имени та же);
+//   - поля — свои ячейки, разделитель таб; перед датой рождения/смерти/
+//     свадьбы/развода и перед каждым местом — таб, отсутствие поля —
+//     пустая ячейка (резерв); скобки у мест снимаются; время остаётся
+//     в ячейке даты рождения; порядок ячеек персоны: имя, ДР, место,
+//     ДС, место смерти, примечание; свадьбы — те же колонки: ячейка имени
+//     пуста, дата свадьбы в колонке ДР, место свадьбы в колонке места ДР,
+//     дата развода в колонке ДС, место развода в колонке места смерти;
+//   - первый «^» строки — таб примечания (внутренние «^» — как есть).
+function packToCsv(pack) {
+    const DATE = /\d{4}(?:-\d{2}(?:-\d{2})?)?[?=<~>]?/;
+    const PAREN = /^\([^)]*\)/;
+    // проход 1: срез «#» и максимальная глубина префиксов
+    let maxDepth = 0;
+    const rows = [];
+    for (const raw of String(pack).replace(/^\uFEFF/, "").split(/\r?\n/)) {
+        if (!raw.trim() || /^#/.test(raw.trim())) continue; // метки/комментарии
+        const hi = raw.indexOf("#");
+        const line = hi >= 0 ? raw.slice(0, hi).trimEnd() : raw;
+        if (!line.trim()) continue;
+        const mm = line.match(/^([-+=]+)\s*(.*)$/);
+        if (mm && mm[1].length > maxDepth) maxDepth = mm[1].length;
+        rows.push([mm, mm ? mm[2] : line]);
+    }
+    // проход 2: ячейки
+    const out = [];
+    for (const [mm, rest] of rows) {
+        // пустые ячейки до глубины, затем символы префикса по одному
+        // («--» → «-\t-») и таб имени — имена в колонке maxDepth+1;
+        // строка-половина без маркера — только pad, без таба имени
+        const lead = mm ? mm[1].split("").join("\t") : "";
+        const pad = "\t".repeat(mm ? maxDepth - mm[1].length : maxDepth);
+        const sep = mm ? "\t" : "";
+        // примечание: первый «^» — граница ячейки, дальше дословно
+        const nIdx = rest.indexOf("^");
+        let body = rest, note = "";
+        if (nIdx >= 0) { body = rest.slice(0, nIdx).trim(); note = rest.slice(nIdx + 1); }
+        if (!mm || mm[1][0] !== "+") {
+            // персона/половина: маркеры глубины, имя, ДР [+ время], (место), ДС, (место)
+            let name = body.trim(), bd = "", bp = "", dd = "", dp = "";
+            const di = body.search(DATE);
+            if (di >= 0) {
+                name = body.slice(0, di).trim();
+                let i = di;
+                bd = DATE.exec(body.slice(i))[0];
+                i += bd.length;
+                while (body[i] === " ") i++;
+                const tm = /^\d{1,2}:\d{2}/.exec(body.slice(i));
+                if (tm) { bd += " " + tm[0]; i += tm[0].length; }
+                while (body[i] === " ") i++;
+                const pm = PAREN.exec(body.slice(i));
+                if (pm) { bp = pm[0].slice(1, -1); i += pm[0].length; }
+                while (body[i] === " ") i++;
+                const dm2 = DATE.exec(body.slice(i));
+                if (dm2) { dd = dm2[0]; i += dd.length; }
+                while (body[i] === " ") i++;
+                const pm2 = PAREN.exec(body.slice(i));
+                if (pm2) dp = pm2[0].slice(1, -1);
+            }
+            out.push(pad + lead + sep + name + "\t" + bd + "\t" + bp + "\t" + dd + "\t" + dp + "\t" + note);
+        } else {
+            // свадьба: ячейка имени пуста, дата, (место), развод — колонки
+            // те же, что у персоны; места развода в пачке нет — пустая ячейка
+            let wd = "", dv = "", wp = "", dp = "", i = 0;
+            while (body[i] === " ") i++;
+            const dm = DATE.exec(body.slice(i));
+            if (dm) { wd = dm[0]; i += wd.length; }
+            while (body[i] === " ") i++;
+            const dm2 = DATE.exec(body.slice(i));
+            if (dm2) { dv = dm2[0]; i += dv.length; }
+            while (body[i] === " ") i++;
+            const pm = PAREN.exec(body.slice(i));
+            if (pm) wp = pm[0].slice(1, -1);
+            out.push(pad + lead + sep + "\t" + wd + "\t" + wp + "\t" + dv + "\t" + dp + "\t" + note);
+        }
+    }
+    return out.join("\n");
+}
+
 // чистые подмножества пачки «ветвь героя»: fams, где герой/потомок является
 // половиной (его браки, рекурсивно до листьев); вторые половины включаются в
 // печать, но ветвь НЕ продолжают — другие семьи супруга в ветвь не годятся;
@@ -5172,16 +5269,23 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
                 try {
                     const att = await vkUploadDoc(peerId,
                         fileBaseOf("Древо чата") + ".ged.txt", "\uFEFF" + withGraftMark(pack));
+                    // рядом «Древо чата.ged.csv» — пачка таблицей с табами
+                    // (Excel); провал — .ged.txt остаётся, CSV молча мимо
+                    let csv = "";
+                    try {
+                        csv = await vkUploadDoc(peerId,
+                            fileBaseOf("Древо чата") + ".ged.csv", "\uFEFF" + packToCsv(pack));
+                    } catch (e2) { console.error("links csv upload:", e2.message); }
                     try {
                         await vkApi("messages.edit", {
                             peer_id: peerId, message_id: sent,
-                            attachment: att, message: "-+=" });
-                        console.log("links doc:", att, "peer", peerId);
+                            attachment: csv ? att + "," + csv : att, message: "-+=" });
+                        console.log("links doc:", att + (csv ? "," + csv : ""), "peer", peerId);
                     } catch (e) {
                         console.error("links edit:", e.message, "— повторяю");
                         try { await vkApi("messages.edit", {
                             peer_id: peerId, message_id: sent,
-                            attachment: att, message: "-+=" }); } catch {}
+                            attachment: csv ? att + "," + csv : att, message: "-+=" }); } catch {}
                     }
                 } catch (e) {
                     console.error("links doc upload:", e.message);
@@ -6213,7 +6317,7 @@ module.exports.__test = {
     clearChatTree, recordOf, recordAnyOf, chartPdf, chartModel, chartFor, fileBaseOf, b64ToBytes, parseTtf,
     gedcomText, importGedcom, jubileeText, setLinkCand, setLinkCmid, weddingByFx, upsertWedding, linkRowOf,
     chatFlatText, flatTreeText, branchFlatText, subsetBranch, flatRows, flatSearch,
-    flatHitPerson, flatHitKey,
+    flatHitPerson, flatHitKey, packToCsv,
     cutAndGraft, setPersonByXref, editTrigger, rootOf, uniqueKeyOf, upcomingEvents, hasTree,
     recordShownOf, newStyleDate, oldStyleDate,
 };

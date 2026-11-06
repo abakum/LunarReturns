@@ -6,6 +6,7 @@ import { mskToday } from './astro.js';
 import { kinLabel, fynny } from './kinship.js';
 import { REL_DEFS, religiousDigest, newStyleDate } from './religion.js';
 import { jubileeText, approxOut } from './text.js';
+import { packToCsv } from './parse.js';
 
 export const HELP = "Отправьте «Имя ГГГГ-ММ-ДД [ЧЧ:ММ] [дата смерти]» — покажу лунно-солнечные юбилеи.\n"
     + "Можно с зоной: «… 12:30 (Пермь)» или «… 12:30 МСК+2», по одной строке на событие.\n"
@@ -2437,6 +2438,17 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin =
                     { type: "text/plain" }),
                 reply_parameters: { message_id: holdId, allow_sending_without_reply: true },
             });
+            // рядом «Древо чата.ged.csv» — пачка таблицей с табами (Excel);
+            // провал — .ged.txt остаётся, CSV молча не выкладывается
+            try {
+                await api.sendDocument({
+                    chat_id: chatId,
+                    document: new InputFile(
+                        new TextEncoder().encode("\uFEFF" + packToCsv(content0)),
+                        fileBaseOf("Древо чата") + ".ged.csv", { type: "text/csv" }),
+                    reply_parameters: { message_id: holdId, allow_sending_without_reply: true },
+                });
+            } catch (e2) { console.error("flat pack csv:", e2.message); }
             await api.editMessageText({ chat_id: chatId, message_id: holdId, text: "-+=",
                 ...(origin?.edit ? { reply_markup: origin.edit.markup } : {}) });
         } catch (e) {

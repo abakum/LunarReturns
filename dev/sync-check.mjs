@@ -121,6 +121,21 @@ if (unfA.note !== '1960 год уточняется^вторая строка')
     { failed++; console.log('✗ NOTE+CONC+CONT: ' + JSON.stringify(unfA.note)); }
 if (unfF.note !== 'венчание^в Перми')
     { failed++; console.log('✗ FAM NOTE+CONT: ' + JSON.stringify(unfF.note)); }
+// хвостовые пробелы строки и ведущие пробелы CONT принадлежат значению
+// («Иванов » + 2 CONC «Иван» → «Иванов Иван»); табуляции при импорте — прочь
+const GED2 = [
+    '0 HEAD', '1 GEDC',
+    '0 @I1@ INDI', '1 NAME Иван\t/Иванов/', '1 BIRT', '2 DATE 10 MAY 1960',
+    '1 NOTE Иванов ', '2 CONC Иван', '2 CONT  отступ сохранён',
+    '0 @I2@ INDI', '1 NAME Мария /Петрова/', '1 NOTE текст\tс\tтабом',
+].join('\n');
+cmp('parseGedcom NOTE-пробелы/табы', VK.parseGedcom(GED2), TGP.parseGedcom(GED2));
+const g2 = VK.parseGedcom(GED2);
+const g2a = g2.indis.find(i => i.__xref === 'I1'), g2b = g2.indis.find(i => i.__xref === 'I2');
+if (g2a.note !== 'Иванов Иван^ отступ сохранён')
+    { failed++; console.log('✗ NOTE+CONC хвостовой пробел: ' + JSON.stringify(g2a.note)); }
+if (g2b.note !== 'текст с табом' || g2b.name !== 'Мария Петрова')
+    { failed++; console.log('✗ табы в значениях: ' + JSON.stringify(g2b.note) + ' / ' + g2b.name); }
 // «^» в триггере: дата в начале примечания — не смерть
 const hatP = VK.parseTrigger('Николай 1868-05-18 ^1917 отрёкся');
 if (!hatP || hatP.rec.dd !== undefined || hatP.tail !== '1917 отрёкся')
@@ -240,6 +255,39 @@ const noteGed = VK.gedcomText(NOTE_CH);
 if (!noteGed.includes('1 NOTE 1917 отрёкся') || !noteGed.includes('2 CONT вторая строка примечания')
     || !noteGed.includes('1 NOTE венчание в Зимнем'))
     { failed++; console.log('✗ гедком с NOTE/CONT:\n  ' + noteGed); }
+// пачка → CSV (Excel): маркер пола не клеится к имени («=Имя» — формула
+// для Excel); maxDepth — максимум глубины префиксов пачки; строка глубины
+// n — maxDepth−n пустых ячеек, затем символы префикса по одному в каждой
+// колонке («--Сын» → «-\t-\tСын» при maxDepth=2), затем Имя — имена у
+// всех строк в колонке maxDepth+1, глубина видна по дефисам у правого
+// края структуры; поля — свои ячейки (даты/места/примечание), пустые
+// резервируются; скобки мест сняты; первый «^» — таб примечания; строки
+// с «#» — мимо, «#» в строке — обрезка
+const CSV_SRC = [
+    '#not for cut and graft',
+    '-Иван 1980-01-01 12:30 (Пермь) 2010-01-02 (Казань)^заметка^строка два',
+    '+1985-05-10 1995-01-02 (Москва)',
+    'Мария 1962-03-01',
+    '++',
+    'Ева',
+    '--Сын 2010-02-03',
+    'Комментарий в строке # хвост',
+    '==Дочь 2012-03-04 (Киев)',
+].join('\n');
+const CSV_EXPECT = [
+    '\t-\tИван\t1980-01-01 12:30\tПермь\t2010-01-02\tКазань\tзаметка^строка два',
+    '\t+\t\t1985-05-10\tМосква\t1995-01-02\t\t',
+    '\t\tМария\t1962-03-01\t\t\t\t',
+    '+\t+\t\t\t\t\t\t',
+    '\t\tЕва\t\t\t\t\t',
+    '-\t-\tСын\t2010-02-03\t\t\t\t',
+    '\t\tКомментарий в строке\t\t\t\t\t',
+    '=\t=\tДочь\t2012-03-04\tКиев\t\t\t',
+].join('\n');
+cmp('packToCsv «примечания»', VK.packToCsv(noteFlat), TGP.packToCsv(noteFlat));
+cmp('packToCsv', VK.packToCsv(CSV_SRC), TGP.packToCsv(CSV_SRC));
+if (VK.packToCsv(CSV_SRC) !== CSV_EXPECT)
+    { failed++; console.log('✗ packToCsv:\n' + VK.packToCsv(CSV_SRC).split('\n').map(l => '  ' + JSON.stringify(l)).join('\n')); }
 
 // ===================== 4б. ветвь героя: резка-прививка =====================
 // «-+=» на фокусе — пачка ветви: поддерево потомков на всю глубину, герой
