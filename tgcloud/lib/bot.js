@@ -2403,7 +2403,8 @@ export async function sendLong(chatId, text, replyMarkup, name, replyTo = 0) {
 // провал — «💥». origin={edit:{message_id,markup}} — для тапа кнопки.
 // false — пачки нет (древо/ветвь пусты). Листинг сообщений-связей
 // больше не восстанавливается.
-const INVISIBLE = "\u2063";
+// sendFlatPack key=null: метки-держатели «-+=⏳» / «🧬⏳», по готовности
+// файлов остаётся видимая метка («-+=», «🧬») — цитата на /links живёт
 export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin = null) {
     const pack = key === null ? await chatFlatText(chatId) : await branchFlatText(chatId, key);
     if (!pack) return false;
@@ -2415,16 +2416,17 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin =
         const content0 = pack.trimStart().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase())
             ? pack : NOT_FOR_GRAFT + "\n" + pack;
         try {
-            // ⏳: правка сообщения с кнопками (клавиатура остаётся) либо
-            // новое сообщение ответом на /links
+            // метка-держатель «-+=⏳»: правка сообщения с кнопками (клавиатура
+            // остаётся) либо новое сообщение ответом на /links; файл ответом
+            // на него; по готовности — «-+=» (видимая цитата на /links живёт)
             let holdId = 0;
             if (origin?.edit) {
                 await api.editMessageText({ chat_id: chatId,
-                    message_id: origin.edit.message_id, text: "⏳",
+                    message_id: origin.edit.message_id, text: "-+=⏳",
                     reply_markup: origin.edit.markup });
                 holdId = origin.edit.message_id;
             } else {
-                const hold = await api.sendMessage({ chat_id: chatId, text: "⏳", ...reply });
+                const hold = await api.sendMessage({ chat_id: chatId, text: "-+=⏳", ...reply });
                 holdId = hold.message_id;
             }
             // BOM — чтобы Windows-редакторы открывали как UTF-8
@@ -2435,7 +2437,7 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin =
                     { type: "text/plain" }),
                 reply_parameters: { message_id: holdId, allow_sending_without_reply: true },
             });
-            await api.editMessageText({ chat_id: chatId, message_id: holdId, text: INVISIBLE,
+            await api.editMessageText({ chat_id: chatId, message_id: holdId, text: "-+=",
                 ...(origin?.edit ? { reply_markup: origin.edit.markup } : {}) });
         } catch (e) {
             console.error("flat pack doc:", e.message);

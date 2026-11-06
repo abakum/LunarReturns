@@ -4214,8 +4214,17 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
         }
     }
     const headTxt = head + (packFits ? "\n" + pack : "");
-    const holdTxt = overflow ? head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️⏳" : headTxt + "\n⏳";
-    const finalTxt = overflow ? head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️" : headTxt;
+    // держатель: чат-кейс (/gedcom без кнопки) и тап 🧬 (origin) — «🧬⏳»
+    // с цитатой на команду/кнопку (⏳ = «выполняю, подождите»); при переливе
+    // пачка целиком уходит в .ged.txt-прицеп — текста и ✂️ в сообщении нет
+    // (✂️ живёт на тапах по фокусам); радиусные вызовы (keys) — голова + ⏳
+    // или перелив «метка + голова + … + ✂️⏳». Финал: метка «🧬» / голова —
+    // ⏳ снят правкой того же сообщения
+    const chatHold = !keys && !origin;
+    const holdTxt = !keys ? "🧬⏳"
+        : overflow ? head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️⏳" : headTxt + "\n⏳";
+    const finalTxt = !keys ? "🧬"
+        : overflow ? head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️" : headTxt;
     // 1) мгновенно: текст + ⏳ (правкой исходника фокуса или новым сообщением)
     let sent = 0;
     try {
@@ -4226,8 +4235,10 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
             sent = await messagesSend(peerId, holdTxt, msgId, convMsgId, null);
         }
     } catch (e) { console.error("ged hold:", e.message); }
-    console.log("ged hold:", base, overflow ? "✂️⏳" : "⏳", "peer", peerId);
-    // 2) асинхронно: pdf и прицепы; когда готовы — ⏳ снят, всё цепляется тем же сообщением
+    console.log("ged hold:", base, !keys ? "🧬⏳" : overflow ? "✂️⏳" : "⏳", chatHold ? "(чат)" : "", "peer", peerId);
+    // 2) асинхронно: pdf и прицепы; когда готовы — цепляются правкой к тому
+    // же сообщению (чат-кейс: одна комбинированная правка — ⏳ снят, метка
+    // и файлы; тап и радиусы: clique (вложение) + текстовая правка tlex)
     (async () => {
     try {
         let pdf = null, persons = 0, chartErr = null;
@@ -4245,29 +4256,46 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
         // .ged.txt-пачка — третьим прицепом ТОЛЬКО когда текстом не вместилась;
         // влезла — её текст уже в сообщении, прицепляем только .ged+.pdf
         if (overflow) { t0 = Date.now(); atts.push(await vkUploadDoc(peerId, base + ".ged.txt", "\uFEFF" + pack)); console.log("ged upload:", base + ".ged.txt", (Date.now() - t0) + "ms"); }
-        // ВК-кварк: messages.edit с message+attachment применяет вложение, но
-        // не текст; правка без attachment СБРАСЫВАЕТ вложения — поэтому в
-        // текстовую правку вложения включаем повторно
-        const clique = { peer_id: peerId, attachment: atts.join(","), keyboard: kb };
-        const tlex = { peer_id: peerId, attachment: atts.join(","), keyboard: kb,
-            message: finalTxt };
-        if (origin && sent === -1) { clique.conversation_message_id = origin.conversation_message_id;
-            tlex.conversation_message_id = origin.conversation_message_id; }
-        else { clique.message_id = sent; tlex.message_id = sent; }
+        // Чат-кейс: ОДНА комбинированная правка {attachment, message} — часы
+        // сняты, метка «🧬» и файлы в том же сообщении; комбинированная правка
+        // message+attachment по message_id применяет и текст, и вложение
+        // (цитата при ней исчезает — принято; `keyboard: null` правку ломает,
+        // поэтому ключа keyboard нет). Тап/радиусы: clique (вложение) +
+        // текстовая правка tlex (вложения включены повторно)
         try {
             t0 = Date.now();
-            await vkApi("messages.edit", clique);
-            console.log("ged edit: attachment", (Date.now() - t0) + "ms");
-            try {
-                t0 = Date.now();
-                await vkApi("messages.edit", tlex);
-                console.log("ged edit: text", (Date.now() - t0) + "ms");
-            } catch (e2) {
-                console.error("ged origin text:", e2.message, "— правлю текст без клавиатуры");
-                const bare = { ...tlex }; delete bare.keyboard;
-                try { await vkApi("messages.edit", bare); } catch {}
+            if (chatHold) {
+                const edit = { peer_id: peerId, message_id: sent,
+                    attachment: atts.join(","), message: finalTxt };
+                try {
+                    await vkApi("messages.edit", edit);
+                    console.log("ged edit: text+attachment", (Date.now() - t0) + "ms");
+                } catch (e2) {
+                    console.error("ged edit:", e2.message, "— повторяю");
+                    try { await vkApi("messages.edit", edit); } catch {}
+                }
+                console.log("ged artifacts edited:", base + ".ged", "peer", peerId);
+            } else {
+                const clique = { peer_id: peerId, attachment: atts.join(","), keyboard: kb };
+                if (origin && sent === -1) clique.conversation_message_id = origin.conversation_message_id;
+                else clique.message_id = sent;
+                await vkApi("messages.edit", clique);
+                console.log("ged edit: attachment", (Date.now() - t0) + "ms");
+                const tlex = { peer_id: peerId, attachment: atts.join(","), keyboard: kb,
+                    message: finalTxt };
+                if (origin && sent === -1) tlex.conversation_message_id = origin.conversation_message_id;
+                else tlex.message_id = sent;
+                try {
+                    t0 = Date.now();
+                    await vkApi("messages.edit", tlex);
+                    console.log("ged edit: text", (Date.now() - t0) + "ms");
+                } catch (e2) {
+                    console.error("ged origin text:", e2.message, "— правлю текст без клавиатуры");
+                    const bare = { ...tlex }; delete bare.keyboard;
+                    try { await vkApi("messages.edit", bare); } catch {}
+                }
+                console.log("ged artifacts edited into origin:", base + ".ged", "peer", peerId);
             }
-            console.log("ged artifacts edited into origin:", base + ".ged", "peer", peerId);
         } catch (e) {
             console.error("editOriginAtts:", e.message, "— отношу файлом");
             await messagesSend(peerId, finalTxt, 0, 0, null, atts.join(","));
@@ -4317,9 +4345,8 @@ function relKeyboard(peerId) {
     return JSON.stringify({
         inline: true,
         buttons: [
-            [mk("🗑", { c: "del" }, "secondary"), mk("🔔", { c: "bell" }, "secondary"), mk("🧬", { c: "tree" }, "secondary"), mk("-+=", { c: "flat" }, "secondary"), btn("orth")],
-            [btn("islam"), btn("bud"), btn("cath"), btn("jud")],
-            [mk("❌", { c: "close" }, "secondary")]
+            [mk("🗑", { c: "del" }, "secondary"), mk("🔔", { c: "bell" }, "secondary"), mk("🧬", { c: "tree" }, "secondary"), mk("-+=", { c: "flat" }, "secondary"), mk("❌", { c: "close" }, "secondary")],
+            [btn("orth"), btn("islam"), btn("bud"), btn("cath"), btn("jud")]
         ]
     });
 }
@@ -5075,7 +5102,10 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             }
         }
         if (!hasTree(peerId)) { await messagesSend(peerId, "связей пока нет", msgId, convMsgId); return; }
-        await sendGedArtifacts(peerId, undefined, "🧬 Гедком-древо чата", msgId, convMsgId);
+        // чат-кейс: «🧬⏳» ответом с цитатой на команду, затем .ged+.pdf
+        // (при переливе пачки ещё и .ged.txt) комбинированной правкой цепляются
+        // в то же сообщение — часы сняты, остаётся «🧬»
+        await sendGedArtifacts(peerId, undefined, "Древо чата", msgId, convMsgId);
         return;
     }
     // /bellN (в ответ на триггер): список родни в радиусе N — как тап 🔔 на
@@ -5130,29 +5160,33 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         if (!pack) { await messagesSend(peerId, key ? "ветвь пуста" : "связей пока нет", msgId, convMsgId); return; }
         if (!key) {
             // пачка ромба — ВСЕГДА файлом (зеркало ТГ sendFlatPack key=null):
-            // «⏳» ответом, файл — вложением правкой того же сообщения (акт:
-            // messages.edit без attachment сбросил бы вложение), потом
-            // ⏳ → невидимый символ; провал выкладки — правка «💥». Метка
-            // NOT_FOR_GRAFT — первой строкой файла (пачка ромба прививке
-            // не подлежит)
-            const sent = await messagesSend(peerId, "⏳", msgId, convMsgId);
-            const editMsg = (message, att = null) => vkApi("messages.edit", {
-                peer_id: peerId, message_id: sent,
-                ...(att ? { attachment: att } : {}), message });
+            // «-+=⏳» ответом с цитатой на команду (⏳ = «выполняю, подождите»),
+            // затем ОДНА комбинированная правка того же сообщения — часы
+            // сняты, метка «-+=» и файл в нём же (комбинированная правка
+            // message+attachment по message_id применяет и текст, и вложение;
+            // цитата при ней исчезает — принято); повтор при ошибке; провал
+            // выкладки — текстовая правка «💥». Метка NOT_FOR_GRAFT —
+            // первой строкой файла (пачка ромба прививке не подлежит)
+            const sent = await messagesSend(peerId, "-+=⏳", msgId, convMsgId);
             (async () => {
                 try {
                     const att = await vkUploadDoc(peerId,
                         fileBaseOf("Древо чата") + ".ged.txt", "\uFEFF" + withGraftMark(pack));
                     try {
-                        await editMsg("\u2063", att); // невидимый юникод (ТГ: \u2063)
+                        await vkApi("messages.edit", {
+                            peer_id: peerId, message_id: sent,
+                            attachment: att, message: "-+=" });
                         console.log("links doc:", att, "peer", peerId);
                     } catch (e) {
-                        console.error("links edit:", e.message, "— отношу файлом");
-                        try { await editMsg("\u2063", att); } catch {}
+                        console.error("links edit:", e.message, "— повторяю");
+                        try { await vkApi("messages.edit", {
+                            peer_id: peerId, message_id: sent,
+                            attachment: att, message: "-+=" }); } catch {}
                     }
                 } catch (e) {
                     console.error("links doc upload:", e.message);
-                    try { await editMsg("💥 Не удалось выложить файл «Древо чата.ged.txt»"); } catch {}
+                    try { await vkApi("messages.edit", { peer_id: peerId, message_id: sent,
+                        message: "💥 Не удалось выложить файл «Древо чата.ged.txt»" }); } catch {}
                 }
             })();
         } else if (pack.length >= 4000) {
@@ -5747,10 +5781,11 @@ async function handleEvent(o) {
         await editOrigin(o, shownList || "Событий нет", await peerKeyboard(peerId, o.user_id));
     } else if (payload === "flat") {
         // «-+=» — пачка древа чата: ВСЕГДА файлом .ged.txt (зеркало ТГ:
-        // sendFlatPack key=null) — правка этого сообщения «⏳», вложение
+        // sendFlatPack key=null) — правка этого сообщения «-+=⏳», вложение
         // правкой в него же (editOrigin без attachment сбросил бы вложение),
-        // потом ⏳ → невидимый символ; клавиатура (kb0) остаётся на сообщении;
-        // провал — правка «💥». Метка NOT_FOR_GRAFT — первой строкой файла
+        // потом держатель → «-+=» (видимая метка — цитата живёт); клавиатура
+        // (kb0) остаётся на сообщении; провал — правка «💥». Метка
+        // NOT_FOR_GRAFT — первой строкой файла
         const flat = chatFlatText(peerId);
         if (!flat) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "древо пусто");
@@ -5759,20 +5794,20 @@ async function handleEvent(o) {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "пачка древа чата");
         const kb0 = await peerKeyboard(peerId, o.user_id);
         try {
-            await editOrigin(o, "⏳", kb0);
+            await editOrigin(o, "-+=⏳", kb0);
             const att = await vkUploadDoc(peerId,
                 fileBaseOf("Древо чата") + ".ged.txt", "\uFEFF" + withGraftMark(flat));
             try {
                 await vkApi("messages.edit", {
                     peer_id: peerId, conversation_message_id: o.conversation_message_id,
-                    attachment: att, message: "\u2063", keyboard: kb0 }); // невидимый юникод
+                    attachment: att, message: "-+=", keyboard: kb0 });
                 console.log("flat doc:", att, "peer", peerId);
             } catch (e) {
                 console.error("flat edit:", e.message, " — отношу файлом");
                 try {
                     await vkApi("messages.edit", {
                         peer_id: peerId, conversation_message_id: o.conversation_message_id,
-                        attachment: att, message: "\u2063", keyboard: kb0 });
+                        attachment: att, message: "-+=", keyboard: kb0 });
                 } catch {}
             }
         } catch (e) {
@@ -5785,7 +5820,7 @@ async function handleEvent(o) {
             return;
         }
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "гедком-древо чата");
-        await sendGedArtifacts(peerId, undefined, "🧬 Гедком-древо чата", 0, o.conversation_message_id, null,
+        await sendGedArtifacts(peerId, undefined, "Древо чата", 0, o.conversation_message_id, null,
             o, await peerKeyboard(peerId, o.user_id));
     } else if (payload.startsWith("rel:")) {
         const key = payload.slice(4);

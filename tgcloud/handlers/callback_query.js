@@ -259,14 +259,19 @@ export default async function (cq, ctx) {
         return;
     }
 
-    // 🧬 — гедком-древо чата (как /gedcom); /start править нельзя — тост
+    // 🧬 — гедком-древо чата (как /gedcom); /start править нельзя — тост.
+    // «🧬⏳» на сообщении (клавиатура остаётся), прицепы — медиа-группой
+    // ответом на это сообщение; по готовности — «🧬»
     if (data === "tree") {
         if (!(await hasTree(chatId))) {
             await answer("связей пока нет");
             return;
         }
         await answer("гедком-древо чата");
+        const kb = cq.message.reply_markup;
+        await editText("🧬⏳", kb);
         await sendGedPdf(chatId, undefined, "🧬 Гедком-древо чата", null, cq.message.message_id);
+        await editText("🧬", kb);
         return;
     }
 

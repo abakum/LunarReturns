@@ -337,7 +337,14 @@ export default async function (message, ctx) {
             await api.sendMessage({ chat_id: chatId, text: "связей пока нет" });
             return;
         }
+        // «🧬⏳» ответом; прицепы (.ged+.pdf) — медиа-группой в ответ на
+        // /gedcom (цитата — на само сообщение); по готовности — «🧬»
+        const hold = await api.sendMessage({
+            chat_id: chatId, text: "🧬⏳",
+            reply_parameters: { message_id: message.message_id, allow_sending_without_reply: true } });
         await sendGedPdf(chatId, undefined, "🧬 Гедком-древо чата", null, message.message_id);
+        await api.editMessageText({ chat_id: chatId,
+            message_id: hold.message_id, text: "🧬" }).catch(() => {});
         return;
     }
 
