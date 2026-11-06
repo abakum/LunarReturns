@@ -2396,13 +2396,54 @@ export async function sendLong(chatId, text, replyMarkup, name, replyTo = 0) {
 }
 
 // «/links» и тап 🔗: пачка ВЕТВИ героя (key) — как «-+=» на фокусе, или
-// пачка всего древа чата (key=null). Короткая — текстом, длинная (>4000) —
-// файлом «.ged.txt» (как tailDoc). false — пачки нет (древо/ветвь пусты).
-// Листинг сообщений-связей больше не восстанавливается.
-export async function sendFlatPack(chatId, key, head = "", replyTo = 0) {
+// пачка всего древа чата (key=null). Ветвь: короткая — текстом, длинная
+// (>4000) — файлом «.ged.txt» (как tailDoc). Пачка ромба — ВСЕГДА файлом:
+// ⏳ (origin.edit — правка сообщения с кнопками, клавиатура на ней же),
+// файл ответом на него, потом ⏳ заменён невидимым символом (\u2063);
+// провал — «💥». origin={edit:{message_id,markup}} — для тапа кнопки.
+// false — пачки нет (древо/ветвь пусты). Листинг сообщений-связей
+// больше не восстанавливается.
+const INVISIBLE = "\u2063";
+export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin = null) {
     const pack = key === null ? await chatFlatText(chatId) : await branchFlatText(chatId, key);
     if (!pack) return false;
     const reply = replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {};
+    if (key === null) {
+        const base = fileBaseOf("Древо чата") + ".ged.txt";
+        // метка «не для прививки» первой строкой (как в tailDoc): пачка ромба
+        // в ответе на триггер правок не делает (parseTree → noGraft)
+        const content0 = pack.trimStart().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase())
+            ? pack : NOT_FOR_GRAFT + "\n" + pack;
+        try {
+            // ⏳: правка сообщения с кнопками (клавиатура остаётся) либо
+            // новое сообщение ответом на /links
+            let holdId = 0;
+            if (origin?.edit) {
+                await api.editMessageText({ chat_id: chatId,
+                    message_id: origin.edit.message_id, text: "⏳",
+                    reply_markup: origin.edit.markup });
+                holdId = origin.edit.message_id;
+            } else {
+                const hold = await api.sendMessage({ chat_id: chatId, text: "⏳", ...reply });
+                holdId = hold.message_id;
+            }
+            // BOM — чтобы Windows-редакторы открывали как UTF-8
+            const content = "\uFEFF" + content0;
+            await api.sendDocument({
+                chat_id: chatId,
+                document: new InputFile(new TextEncoder().encode(content), base,
+                    { type: "text/plain" }),
+                reply_parameters: { message_id: holdId, allow_sending_without_reply: true },
+            });
+            await api.editMessageText({ chat_id: chatId, message_id: holdId, text: INVISIBLE,
+                ...(origin?.edit ? { reply_markup: origin.edit.markup } : {}) });
+        } catch (e) {
+            console.error("flat pack doc:", e.message);
+            await api.sendMessage({ chat_id: chatId,
+                text: "💥 Не удалось выложить файл " + base, ...reply }).catch(() => {});
+        }
+        return true;
+    }
     // метка «не для прививки»: у пачки ромба (древо чата) она уже есть —
     // первой строкой пачки; влезающая ветвь — как ответ на «-+=», БЕЗ метки
     // (прививка ей дозволена); в переливе метка есть всегда (текст усечён).

@@ -5128,7 +5128,34 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         }
         const pack = key ? branchFlatText(peerId, key) : chatFlatText(peerId);
         if (!pack) { await messagesSend(peerId, key ? "ветвь пуста" : "связей пока нет", msgId, convMsgId); return; }
-        if (pack.length >= 4000) {
+        if (!key) {
+            // пачка ромба — ВСЕГДА файлом (зеркало ТГ sendFlatPack key=null):
+            // «⏳» ответом, файл — вложением правкой того же сообщения (акт:
+            // messages.edit без attachment сбросил бы вложение), потом
+            // ⏳ → невидимый символ; провал выкладки — правка «💥». Метка
+            // NOT_FOR_GRAFT — первой строкой файла (пачка ромба прививке
+            // не подлежит)
+            const sent = await messagesSend(peerId, "⏳", msgId, convMsgId);
+            const editMsg = (message, att = null) => vkApi("messages.edit", {
+                peer_id: peerId, message_id: sent,
+                ...(att ? { attachment: att } : {}), message });
+            (async () => {
+                try {
+                    const att = await vkUploadDoc(peerId,
+                        fileBaseOf("Древо чата") + ".ged.txt", "\uFEFF" + withGraftMark(pack));
+                    try {
+                        await editMsg("\u2063", att); // невидимый юникод (ТГ: \u2063)
+                        console.log("links doc:", att, "peer", peerId);
+                    } catch (e) {
+                        console.error("links edit:", e.message, "— отношу файлом");
+                        try { await editMsg("\u2063", att); } catch {}
+                    }
+                } catch (e) {
+                    console.error("links doc upload:", e.message);
+                    try { await editMsg("💥 Не удалось выложить файл «Древо чата.ged.txt»"); } catch {}
+                }
+            })();
+        } else if (pack.length >= 4000) {
             // голова + ✂️⏳ первым сообщением (полное — в файле); ВЕСЬ пачка —
             // файлом асинхронно: upload долгий, ответ — сразу; файл правкой
             // приклеивается к тому же сообщению (⏳ снят, ✂️ остаётся),
@@ -5719,24 +5746,39 @@ async function handleEvent(o) {
         }
         await editOrigin(o, shownList || "Событий нет", await peerKeyboard(peerId, o.user_id));
     } else if (payload === "flat") {
-        // «-+=» — плоская пачка древа чата (.ged.txt, импортируется пачкой);
-        // не влезает — файлом ответом на это сообщение
+        // «-+=» — пачка древа чата: ВСЕГДА файлом .ged.txt (зеркало ТГ:
+        // sendFlatPack key=null) — правка этого сообщения «⏳», вложение
+        // правкой в него же (editOrigin без attachment сбросил бы вложение),
+        // потом ⏳ → невидимый символ; клавиатура (kb0) остаётся на сообщении;
+        // провал — правка «💥». Метка NOT_FOR_GRAFT — первой строкой файла
         const flat = chatFlatText(peerId);
         if (!flat) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "древо пусто");
             return;
         }
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "пачка древа чата");
-        if (flat.length >= 4000) {
-            // голова + ✂️⏳ (не влезает — полное в файле); вся пачка — вложением
-            // в это сообщение, потом ⏳ снят (✂️ остаётся)
-            const kb0 = await peerKeyboard(peerId, o.user_id);
-            await editOrigin(o, NOT_FOR_GRAFT + "\nДрево чата\n✂️⏳", kb0);
-            await editOriginDoc(o, fileBaseOf("Древо чата") + ".ged.txt", "\uFEFF" + withGraftMark(flat), kb0);
-            try { await editOrigin(o, NOT_FOR_GRAFT + "\nДрево чата\n✂️", kb0); } catch {}
-            return;
+        const kb0 = await peerKeyboard(peerId, o.user_id);
+        try {
+            await editOrigin(o, "⏳", kb0);
+            const att = await vkUploadDoc(peerId,
+                fileBaseOf("Древо чата") + ".ged.txt", "\uFEFF" + withGraftMark(flat));
+            try {
+                await vkApi("messages.edit", {
+                    peer_id: peerId, conversation_message_id: o.conversation_message_id,
+                    attachment: att, message: "\u2063", keyboard: kb0 }); // невидимый юникод
+                console.log("flat doc:", att, "peer", peerId);
+            } catch (e) {
+                console.error("flat edit:", e.message, " — отношу файлом");
+                try {
+                    await vkApi("messages.edit", {
+                        peer_id: peerId, conversation_message_id: o.conversation_message_id,
+                        attachment: att, message: "\u2063", keyboard: kb0 });
+                } catch {}
+            }
+        } catch (e) {
+            console.error("flat doc:", e.message);
+            await editOrigin(o, "💥 Не удалось выложить файл «Древо чата.ged.txt»", kb0);
         }
-        await editOrigin(o, flat, await peerKeyboard(peerId, o.user_id));
     } else if (payload === "tree") { // 🧬 — гедком-древо чата (как /gedcom)
         if (!hasTree(peerId)) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "связей пока нет");

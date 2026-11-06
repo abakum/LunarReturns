@@ -4,9 +4,10 @@ import { settings, gedDrops, focusView } from '../schema.js';
 import { jubileeText } from '../lib/text.js';
 import { parseGedcom, parseTree } from '../lib/parse.js';
 import { fileBaseOf } from '../lib/chart.js';
+import { sendFlatPack } from '../lib/bot.js';
 import { REL_DEFS, religiousYear } from '../lib/religion.js';
 import {
-    HELP, GED_TTL, relMarkup, chatFlatText, getSettings, startMarkup, chatAdmin, jubileeMarkup,
+    HELP, GED_TTL, relMarkup, getSettings, startMarkup, chatAdmin, jubileeMarkup, branchFlatText,
     recordOf, recordByXref, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong,
     deleteEventCascade, replaceWithGedcom, clearChatTree, deleteLink, setIndiSex, toggleAdopted,
     linkById, linkPairs, xrefOfKey, personRows, weddingRows, sendTreeBackup,
@@ -118,22 +119,15 @@ export default async function (cq, ctx) {
     }
 
     if (data === "flat") {
-        // «-+=» — плоская пачка древа чата (.ged.txt, импортируется пачкой);
-        // не влезает — файлом ответом на это сообщение
-        const flat = await chatFlatText(chatId);
-        if (!flat) { await answer("древо пусто"); return; }
-        await answer("пачка древа чата");
+        // «-+=» — плоская пачка древа чата: ВСЕГДА файлом .ged.txt — правка
+        // этого сообщения «⏳», файл ответом на него, потом ⏳ → невидимый
+        // символ (sendFlatPack с key=null; клавиатура остаётся на сообщении)
         const markup = await startMarkup(cq.message.chat, await chatAdmin(cq.message.chat, cq.from?.id),
             chatId, await getSettings(chatId));
-        if (flat.length > 4000) {
-            // голова + ✂️⏳ (не влезает — полное в файле); ВЕСЬ список — файлом
-            // ответом на это сообщение, потом ⏳ снят (✂️ остаётся)
-            await editText(NOT_FOR_GRAFT + "\nДрево чата\n✂️⏳", markup);
-            await tailDoc(flat, "Древо чата", ".ged.txt",
-                NOT_FOR_GRAFT + "\nДрево чата\n✂️");
-            return;
-        }
-        await editText(flat, markup);
+        await answer("пачка древа чата");
+        const ok = await sendFlatPack(chatId, null, "", 0,
+            { edit: { message_id: cq.message.message_id, markup } });
+        if (!ok) await answer("древо пусто");
         return;
     }
 
