@@ -130,7 +130,9 @@ export function parseTtf(b) {
 //   5 пра3деды-пра3внуки); у героя и вне крови — просто «Год»
 // rel.phantoms — дети супругов вне чарта (не попали в радиус): рисовать
 //   линию между супругами в годы их рождения — [{ fam: [супруг, супруг],
-//   years: [год…] }]
+//   years: [год…] }]; fam из одного супруга (второй вне чарта — при
+//   радиусе 1 полукровные сиблинги героя вырезаются из строк чарта) —
+//   точка + зарубка на баре присутствующего
 // marriages — свадьбы с датой: [{ fam: [супруг, супруг], year: год свадьбы }]
 //   — вертикаль между супругами в год свадьбы, без точек, цветом семьи; год
 //   учитывается в распределении цветов и слотах вертикалей своего года
@@ -244,17 +246,17 @@ export function chartModel(title, rows, links, rel = null, marriages = null) {
     // фантомные рождения (rel.phantoms): те же fam-структуры + записи для
     // рисования; годы детей вне чарта — в диапазон оси X; у семьи без ссылок
     // в чарте цвет берётся от её порядкового номера
-    const phantom = [];             // { fam, year, a, b } — a/b ключи супругов
+    const phantom = [];             // { fam, year, a, b? } — a/b ключи супругов (b может не быть)
     if (rel && Array.isArray(rel.phantoms))
         for (const ph of rel.phantoms) {
-            const ks = Array.isArray(ph.fam) && ph.fam.length === 2 ? ph.fam : null;
-            if (!ks || !rowOf.has(ks[0]) || !rowOf.has(ks[1])) continue;
-            const fam = [...ks].sort().join(" и ");
+            const ks = Array.isArray(ph.fam) && (ph.fam.length === 1 || ph.fam.length === 2) ? ph.fam : null;
+            if (!ks || (ks.length === 2 && ks[0] === ks[1]) || ks.some(k => !rowOf.has(k))) continue;
+            const fam = ks.length === 2 ? [...ks].sort().join(" и ") : ks[0];
             if (!famOf.has(fam)) { famOf.set(fam, famOf.size); famYears.set(fam, new Set()); }
             for (const yr of ph.years || [])
                 if (Number.isFinite(yr)) {
                     famYears.get(fam).add(yr);
-                    phantom.push({ fam, year: yr, a: ks[0], b: ks[1] });
+                    phantom.push({ fam, year: yr, a: ks[0], b: ks[1] ?? null });
                     allYears.push(yr);
                 }
         }
@@ -405,12 +407,18 @@ export function chartModel(title, rows, links, rel = null, marriages = null) {
     // (ребёнка в чарте нет), точки на строках супругов — как у связей;
     // вниз линия переходит нижнюю точку на 8px — не спутать с прямой
     // родитель→ребёнок (у неё точка на одной строке родителей); сдвиг по
-    // слоту — единый со связями: толщина линии вправо (точка супруга в баре)
+    // слоту — единый со связями: толщина линии вправо (точка супруга в баре);
+    // супруг в чарте один (второй вне радиуса) — точка + зарубка на его баре
     for (const ph of phantom) {
         const col = famColor(ph.fam);
         const kk = ph.fam + "\0" + ph.year;
         const x = xS(ph.year) + 1.5 * slotOf.get(kk);
-        const p1 = rowOf.get(ph.a), p2 = rowOf.get(ph.b);
+        const p1 = rowOf.get(ph.a), p2 = ph.b != null ? rowOf.get(ph.b) : null;
+        if (!p2) { // второй супруг вне чарта — точка + зарубка вниз от бара
+            draws.push({ k: "dot", x, y: p1.cy, r: 3.5, fill: col });
+            draws.push({ k: "line", x1: x, y1: p1.cy, x2: x, y2: p1.cy + 8, stroke: col, w: 1.5 });
+            continue;
+        }
         const yTop = Math.min(p1.cy, p2.cy), yBot = Math.max(p1.cy, p2.cy) + 8;
         if (p1.cy !== p2.cy)
             draws.push({ k: "line", x1: x, y1: yTop, x2: x, y2: yBot, stroke: col, w: 1.5 });

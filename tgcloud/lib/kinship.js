@@ -292,13 +292,30 @@ function kinChain(pairs, sexOf, from, to) {
     if (!b) return link(upPath(from, 0, new Set([from])).reverse().map(p => parWord(sex(p))));
     if (!a) return link(downPath(k, 0, new Set([k])).reverse().map(p => kidWord(sex(p))));
     // боковая: спуск от to к перелому «брат/сестра» предка на глубине a−1,
-    // затем подъём к цитируемому: «сын сына сестры отца»
+    // затем подъём к цитируемому: «сын сына сестры отца». Обваливаем
+    // «вверх+вниз» в слово «брат/сестра» только полнокровным сиблингам
+    // (общих родителей ≥ 2, либо у одной из сторон другой родитель неизвестен
+    // — лакуны не наказываем); полукровный сиблинг идёт двумя словами:
+    // «сын отца/дочь матери» — 2 слова = 2 шага (уровни = словам ярлыка)
     const ups = upPath(from, 0, new Set([from]));
     const downs = downPath(k, 0, new Set([k])); // [C_1 … C_b], C_1 — сиблинг A_{a−1}
-    const words = downs.slice().reverse()
-        .map((p, i) => i === b - 1 ? sibWord(sex(p)) : kidWord(sex(p)));
+    const words = [];
+    for (let i = b - 1; i >= 1; i--) words.push(kidWord(sex(downs[i])));
+    if (fullSiblings(parentsOf, a > 1 ? ups[a - 2] : from, downs[0], k))
+        words.push(sibWord(sex(downs[0])));
+    else words.push(kidWord(sex(downs[0])), parWord(sex(k)));
     for (let i = a - 2; i >= 0; i--) words.push(parWord(sex(ups[i])));
     return link(words);
+}
+
+// полнокровные ли X и Y (оба — дети общего родителя k — по нему и смотрим):
+// общих родителей ≥ 2; если у одной из сторон известен только k (неполные
+// данные) — считаем полнокровными (лакуны не наказываем); полукровные идут
+// «вверх+вниз» двумя словами — «сын отца/дочь матери», сводные — через брак
+function fullSiblings(parentsOf, X, Y, k) {
+    const px = parentsOf.get(X) || [], py = parentsOf.get(Y) || [];
+    if (px.length <= 1 || py.length <= 1) return true;
+    return px.filter(p => py.includes(p)).length >= 2;
 }
 
 // родительный падеж ярлыка: «сын» → «сына», «двоюродный брат» → «двоюродного

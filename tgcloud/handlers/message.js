@@ -26,7 +26,7 @@ const keyOfHead = m => m[1].trim() + " " + m[2].replace(/_/g, "-");
 // replyTo — реплай на запрос поиска (как фокус-панель раньше)
 const sendJubilee = async (chatId, rec, note = "", replyTo = 0) => {
     const key = rec.n + " " + rec.d;
-    const depth = Math.max(1, await focusDepth(await linkPairs(chatId), key));
+    const depth = Math.max(1, await focusDepth(await linkPairs(chatId), await focusSpousePairs(chatId), key));
     // xref персоны, у свадьбы — fx fam-пары (recordByXref резолвит оба);
     // свадьба — сокращённый ряд [👀|🌙 👎 ❌]
     const xref = rec.xref ?? rec.fx ?? null;
@@ -165,7 +165,7 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
 async function sendFocus(chat, chatId, key, radius, dd, replyTo = 0, body = "", ng = false, xref = null) {
     // тело (список/гедком) — после тапа по кнопке; цифры радиуса — по глубине предков
     const markup = focusMarkup(chat, chatId, await getSettings(chatId), radius,
-        focusDepth(await linkPairs(chatId), key), xref);
+        focusDepth(await linkPairs(chatId), await focusSpousePairs(chatId), key), xref);
     const head = focusHead(key, radius, dd);
     const first = await api.sendMessage({
         chat_id: chatId,
@@ -281,13 +281,14 @@ export default async function (message, ctx) {
                 const skey = rec.n + " " + rec.d; // показанный ключ → хранимый
                 // как тап: радиус не глубже имеющихся связей
                 const pairs = await linkPairs(chatId);
-                const r = Math.min(radius, Math.max(1, focusDepth(pairs, skey)));
+                const r = Math.min(radius, Math.max(1, focusDepth(pairs, await focusSpousePairs(chatId), skey)));
                 const sexMap = new Map((await personRows(chatId))
                     .map(rw => [rw.n + " " + rw.d, rw.sex ?? null]));
                 const spPairs = await focusSpousePairs(chatId);
-                // fynny-ромб: супруги по лимиту слов ярлыка
+                // уровневый радиус («жизненный»: кровь 1, брак 1, полнокровный
+                // сиблинг 1); супруги — по лимиту слов ярлыка (fynny)
                 const keys = focusListKeys(pairs, spPairs, skey, r,
-                    k => sexMap.get(k) ?? null);
+                    k => sexMap.get(k) ?? null, true);
                 const items = [...await personRows(chatId), ...await weddingRows(chatId)];
                 const body = focusListText(items, keys, skey, pairs,
                     spPairs, k => sexMap.get(k) ?? null, false, mmddToday(), r)

@@ -152,14 +152,16 @@ export default async function (cq, ctx) {
     // пол по ключу «Имя Д» (ярлыки родства)
     const sexOf = async () => (rows => k => (rows.find(r => r.n + " " + r.d === k) || {}).sex ?? null)
         (await personRows(chatId));
-    // радиус не глубже имеющихся предков; [radius, ключи родни]
-    // (fynny-ромб: супруги по лимиту слов ярлыка — едины для списка и 🧬/PDF;
-    // радиус 5 — «показать всех»)
-    const radiusOf = async (key, fvRadius) => {
-        const depth = Math.max(1, focusDepth(await linkPairs(chatId), key));
+    // радиус не глубже имеющихся связей; [radius, ключи родни]
+    // levels=true — уровневый BFS («жизненный» радиус, список 🔔 и цифры),
+    // иначе кровный ромб без браков (экспорт 🧬/PDF);
+    // (супруги — по лимиту слов ярлыка, fynny)
+    const radiusOf = async (key, fvRadius, levels) => {
+        const pairs = await linkPairs(chatId);
+        const spPairs = await focusSpousePairs(chatId);
+        const depth = Math.max(1, focusDepth(pairs, spPairs, key));
         const r = Math.min(fvRadius, depth);
-        const keys = focusListKeys(await linkPairs(chatId),
-            await focusSpousePairs(chatId), key, r, await sexOf());
+        const keys = focusListKeys(pairs, spPairs, key, r, await sexOf(), levels);
         return [r, keys, depth];
     };
 
@@ -242,7 +244,7 @@ export default async function (cq, ctx) {
         const rec = await recordByXref(chatId, xref);
         if (!rec) { await answer("Событие не найдено"); return; }
         const expand = data.startsWith("det:");
-        const depth = focusDepth(await linkPairs(chatId), rec.n + " " + rec.d);
+        const depth = focusDepth(await linkPairs(chatId), await focusSpousePairs(chatId), rec.n + " " + rec.d);
         // строка focusView по id сообщения — чтобы foc*/focbell/foctree
         // работали и на развёрнутом отчёте, и на сжатом юбилее (радиус 1)
         await db.delete(focusView).where(and(eq(focusView.chatId, chatId), eq(focusView.messageId, cq.message.message_id))).run();
@@ -332,10 +334,12 @@ export default async function (cq, ctx) {
         // foc[1-5] — целевой радиус из кнопки (row.radius мог быть другим):
         // обновляем focus_view и пересчитываем ключи под НОВЫЙ радиус
         const wantR = /^foc[1-5]$/.test(data) ? Number(data.slice(3)) : row.radius;
-        const [radius, keys, depth] = await radiusOf(row.pkey, wantR);
+        // список/цифры — уровневый радиус (bell), 🧬 — кровный ромб (экспорт);
+        // «-+=» ключи не использует — levels=false безвредно
+        const bell = data === "focbell" || /^foc[1-5]$/.test(data);
+        const [radius, keys, depth] = await radiusOf(row.pkey, wantR, bell);
         // xref для единых кнопок 👎/👀 (персона — xref, свадьба — fx fam-пары)
         const fxref = rec.xref ?? rec.fx ?? null;
-        const bell = data === "focbell" || /^foc[1-5]$/.test(data);
         // список всегда по ММ-ДД (сортировка подписки касается только дампа)
         const byFull = false;
         if (/^foc[1-5]$/.test(data))

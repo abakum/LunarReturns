@@ -674,17 +674,18 @@ const kinSpouses = [
     ['Кузина 1956-06-06', 'Муж Кузины 1955-11-11'],
 ];
 const sonKey = 'Сын 1980-06-06';
-// focusDepth: fynny-достижимость (min(5, max нужного радиуса)) — у Сына
-// троюродный (u4d3, слова 6) и кузина деда (u4d2, слова 5) требуют 5;
-// у Двоюродного правнучатый (u2d4, слова 5); без боковой — вертикаль
+// focusDepth: глубина уровней (объединённый граф: кровь 1, брак 1,
+// полнокровный сиблинг 1; уровни = числам слов ярлыка) — у Сына 5
+// (Правнучатый/ДвВнуч на пятом), у Двоюродного 5, вертикаль 1/2
+const depthCases = [
+    [kinPairs, kinSpouses, sonKey], [kinPairs, kinSpouses, kinKeys['Двоюродный']],
+    [[['Родитель 1930-01-01', 'Сын 1990-01-01']], [], 'Сын 1990-01-01'],
+];
 cmp('focusDepth глубины',
-    [[kinPairs, sonKey], [kinPairs, kinKeys['Двоюродный']], [['Родитель 1930-01-01', 'Сын 1990-01-01'], 'Сын 1990-01-01']]
-        .map(c => VK.focusDepth(c[0], c[1])),
-    [[kinPairs, sonKey], [kinPairs, kinKeys['Двоюродный']], [['Родитель 1930-01-01', 'Сын 1990-01-01'], 'Сын 1990-01-01']]
-        .map(c => TG.focusDepth(c[0], c[1])));
-if (JSON.stringify([5, 5, 1]) !== JSON.stringify([
-    VK.focusDepth(kinPairs, sonKey), VK.focusDepth(kinPairs, kinKeys['Двоюродный']),
-    VK.focusDepth([['Родитель 1930-01-01', 'Сын 1990-01-01']], 'Сын 1990-01-01')]))
+    depthCases.map(c => VK.focusDepth(c[0], c[1], c[2])),
+    depthCases.map(c => TG.focusDepth(c[0], c[1], c[2])));
+if (JSON.stringify([5, 5, 1]) !== JSON.stringify(depthCases
+    .map(c => VK.focusDepth(c[0], c[1], c[2]))))
     { failed++; console.log('✗ focusDepth: неверные глубины'); }
 // цифры радиуса: при depth 1 активная 1 скрыта и 2–5 нет — ряд [💬 цифры]
 const digs = (radius, depth) => TG.focusMarkup('private', 1, {}, radius, depth)
@@ -723,6 +724,24 @@ for (const [to, want] of KIN_CASES) {
     if (vkL !== want) kinOK = false;
 }
 if (!kinOK) { failed++; console.log('✗ kinLabel: неверные ярлыки (см. выше)'); }
+// полнота сиблинга: полнокровный — «брат», полукровный — «сын отца/дочь
+// матери» (2 слова = 2 шага), сводный — через брак «сын мужа матери» / «сын
+// жены отца» (3 шага); ярлыку верит уровневый BFS (focusGraphKeys)
+const halfPairs = [
+    ['Отец 1930-01-01', 'Герой 1955-11-11'], ['Отец 1930-01-01', 'Полукровный 1958-01-01'],
+    ['Мать 1932-01-01', 'Герой 1955-11-11'], ['ДругаяМать 1934-01-01', 'Полукровный 1958-01-01'],
+];
+const noSp = [];
+if (VK.kinLabel(halfPairs, noSp, k => /Мать|ДругаяМать|Мам/.test(k) ? 'F' : 'M', 'Герой 1955-11-11', 'Полукровный 1958-01-01') !== 'сын отца')
+    { failed++; console.log('✗ kinLabel: полукровный сиблинг не «сын отца»'); }
+// сводный: ребёнок мачехи (у него нет общих родителей с героем)
+const stepPairs = [
+    ['Отец 1930-01-01', 'Герой 1955-11-11'],
+    ['ДедСводного 1920-01-01', 'Сводный 1958-01-01'], ['Мачеха 1935-01-01', 'Сводный 1958-01-01'],
+];
+const stepSp = [['Отец 1930-01-01', 'Мачеха 1935-01-01']];
+if (VK.kinLabel(stepPairs, stepSp, k => k === 'Мачеха 1935-01-01' ? 'F' : 'M', 'Герой 1955-11-11', 'Сводный 1958-01-01') !== 'сын жены отца')
+    { failed++; console.log('✗ kinLabel: сводный сиблинг не «сын жены отца»'); }
 // без пола — нейтральные ярлыки
 const noSex = { ...kinSex };
 delete noSex[kinKeys['Отец']];
@@ -792,6 +811,18 @@ if (!fkeysOf(VK, 3).includes(kinKeys['Тесть']))
 // «муж дочки брата отца отца отца» (6 слов) — вне
 if (!fkeysOf(VK, 5).includes(kinKeys['Жена Дядьки']) || fkeysOf(VK, 5).includes(kinKeys['Муж Кузины']))
     { failed++; console.log('✗ focusListKeys r5: слова ≤ 5'); }
+// уровневый список (levels=true, «жизненный» радиус): кровь 1, брак 1,
+// полнокровный сиблинг 1 → «отец жены» и «брат жены» уже на 2️⃣; Married
+// супруги доклеиваются и фильтруются словами ярлыка, как раньше
+const lkeysOf = (which, r) =>
+    which.focusListKeys(kinPairs, kinSpouses, sonKey, r, k => kinSex[k] ?? null, true);
+for (const r of [1, 2, 3, 5]) cmp('focusListKeys levels ' + r, lkeysOf(VK, r), lkeysOf(TG, r));
+if (!lkeysOf(VK, 1).includes(kinKeys['Сноха']) || !lkeysOf(VK, 1).includes(kinKeys['Мать']))
+    { failed++; console.log('✗ levels r1: без жены/матери'); }
+if (!lkeysOf(VK, 2).includes(kinKeys['Отец Снохи']) || !lkeysOf(VK, 2).includes(kinKeys['Тётя']))
+    { failed++; console.log('✗ levels r2: без 1-го уровня супругов (отец жены/тётя)'); }
+if (lkeysOf(VK, 2).includes(kinKeys['Прадед']))
+    { failed++; console.log('✗ levels r2: прадед проникнул на 2'); }
 
 // ==================== 8. focusListText: список с датой смерти и родством ====================
 const kinItems = [
@@ -881,7 +912,7 @@ if (kinAt(VK, 3).includes(kinKeys['Брат Прадеда'])) { failed++; conso
 if (!kinAt(VK, 4).includes(kinKeys['Брат Прадеда'])) { failed++; console.log('✗ r4 без брата прадеда (u4d1)'); }
 // отражённый коб: потомки есть, родителей нет — цифра радиуса всё равно видна
 if (JSON.stringify(VK.focusDepth([['A 1900-01-01', 'B 1930-01-01'], ['B 1930-01-01', 'C 1960-01-01'],
-    ['C 1960-01-01', 'D 1985-01-01']], 'B 1930-01-01')) !== '2')
+    ['C 1960-01-01', 'D 1985-01-01']], [], 'B 1930-01-01')) !== '2')
     { failed++; console.log('✗ focusDepth: глубина по потомкам (max 1,2 = 2)'); }
 
 // ==================== 3. импорт → полный экспорт гедкома ====================
@@ -1135,6 +1166,20 @@ cmp('chartFor бездатный в связях (байты)',
     const ph = { phantoms: [{ fam: ['Анна Т 1900-01-01', 'Пётр Бездатный 1900'], years: [1935] }] };
     cmp('chartModel бездатный в связях', VK.chartModel('l', rows, ln, ph), TGC.chartModel('l', rows, ln, ph));
     cmp('chartPdf бездатный в связях (байты)', VK.chartPdf('l', rows, ln, FONT, ph), TGC.chartPdf('l', rows, ln, FONT, ph));
+    // фантом с fam из ОДНОГО родителя (второй вне чарта — при радиусе 1
+    // полукровные сиблинги героя вырезаны из строк): точка + зарубка вниз
+    // от бара присутствующего, цвет семьи; обе копии дословно
+    const ph1 = { phantoms: [{ fam: ['Анна Т 1900-01-01'], years: [1935] }] };
+    cmp('chartModel фантом одного родителя', VK.chartModel('l', rows, ln, ph1), TGC.chartModel('l', rows, ln, ph1));
+    cmp('chartPdf фантом одного родителя (байты)', VK.chartPdf('l', rows, ln, FONT, ph1), TGC.chartPdf('l', rows, ln, FONT, ph1));
+    {
+        const m1 = VK.chartModel('l', rows, ln, ph1);
+        const dots1 = m1.draws.filter(d => d.k === 'dot');
+        if (dots1.length !== 4) // ребёнок+два родителя на 1930 + точка фантома на 1935
+            { failed++; console.log('✗ chart фантом-одиночка: точек ' + dots1.length + ', ожидается 4'); }
+        if (!m1.draws.some(d => d.k === 'line' && d.w === 1.5 && d.y2 === d.y1 + 8))
+            { failed++; console.log('✗ chart фантом-одиночка: зарубки cy…cy+8 нет'); }
+    }
     const m = VK.chartModel('l', rows, ln, ph);
     const dots = m.draws.filter(d => d.k === 'dot');
     if (dots.length !== 5) // ребёнок + два родителя на вертикали 1930 и фантом-пара 1935

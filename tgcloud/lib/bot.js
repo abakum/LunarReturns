@@ -1141,6 +1141,50 @@ function focusKeys(pairs, key, radius) {
     return [...best.keys()];
 }
 
+// уровневая достижимость «жизненного» радиуса: BFS по объединённому графу —
+// кровь (родитель↔ребёнок) 1, брак 1, полнокровные сиблинги 1 (см. ниже);
+// полукровная родня сама выходит на 2 (вверх+вниз), сводные — на 3
+// (вверх+брак+вниз). Супермножество ярлыков: каждое слово fynny-цепочки
+// покрывает ≥1 ребро (сиблинговое слово — ровно ребро полнокровным).
+// Возвращает Map ключ → дистанция (узлы дальше radius не включаются)
+function focusGraphDist(pairs, spousePairs, key, radius) {
+    const adj = new Map();
+    const put = (a, b) => { if (!adj.has(a)) adj.set(a, []); adj.get(a).push(b); };
+    const parentsOf = new Map();
+    for (const [p, c] of pairs) {
+        put(p, c); put(c, p);
+        if (!parentsOf.has(c)) parentsOf.set(c, []);
+        parentsOf.get(c).push(p);
+    }
+    for (const [a, b] of spousePairs) { put(a, b); put(b, a); }
+    // сиблинговое ребро — только полнокровным: дети одной родительской пары
+    // (полукровные без ребра идут вверх+вниз = 2, сводные — через брак = 3)
+    const groups = new Map(); // «родитель1|родитель2» → дети
+    for (const [c, ps] of parentsOf) {
+        if (ps.length === 2) {
+            const g = ps.slice().sort().join("|");
+            if (!groups.has(g)) groups.set(g, []);
+            groups.get(g).push(c);
+        }
+    }
+    for (const kids of groups.values())
+        for (let i = 1; i < kids.length; i++) { put(kids[0], kids[i]); put(kids[i], kids[0]); }
+    const dist = new Map([[key, 0]]);
+    const queue = [key];
+    for (let qi = 0; qi < queue.length; qi++) {
+        const d = dist.get(queue[qi]);
+        if (d >= radius) continue;
+        for (const x of (adj.get(queue[qi]) || []))
+            if (!dist.has(x)) { dist.set(x, d + 1); queue.push(x); }
+    }
+    return dist;
+}
+
+// ключи уровневого радиуса: дистанция ≤ radius (см. focusGraphDist)
+function focusGraphKeys(pairs, spousePairs, key, radius) {
+    return [...focusGraphDist(pairs, spousePairs, key, radius).keys()];
+}
+
 // входит ли событие-пара «Имя1+Имя2 ДАТА» в фокус: оба имени среди персон множества
 function focusHasPair(name, keys) {
     if (!name.includes("+")) return false;
@@ -1159,13 +1203,17 @@ function focusWithSpouses(keys, spousePairs) {
     return [...set];
 }
 
-// ключи 🔔-списка при fynny: как focusWithSpouses, но доклеенный супруг
-// остаётся, только если его ярлык-цепочка влезает в радиус (супруг героя
-// «муж/жена» — всегда; «жена брата» — с 2️⃣, «жена сына сына» — с 3️⃣…);
-// экспорту (🧬/PDF) нужна полная связность — там focusWithSpouses без лимита;
+// ключи 🔔-списка при fynny: core — уровневый BFS по объединённому графу
+// при levels («жизненный» радиус: кровь 1, брак 1, полнокровный сиблинг 1;
+// уровни = числам слов ярлыка: «отец жены» и «брат жены» — 2️⃣), либо
+// кровный ромб без браков для экспорта 🧬/PDF; далее супруги доклеиваются;
+// доклеенный супруг остаётся, только если его ярлык-цепочка влезает в радиус
+// (супруг героя «муж/жена» — всегда; «жена брата» — с 2️⃣…);
 // 5-й радиус — обычный, как остальные (слова ≤ 5; «показать всех» снято)
-function focusListKeys(pairs, spousePairs, key, radius, sexOf) {
-    const core = new Set(focusKeys(pairs, key, radius));
+function focusListKeys(pairs, spousePairs, key, radius, sexOf, levels) {
+    const core = new Set(levels
+        ? focusGraphKeys(pairs, spousePairs, key, radius)
+        : focusKeys(pairs, key, radius));
     const keys = focusWithSpouses(core, spousePairs);
     if (!fynny) return keys;
     // доклеенный супруг остаётся, только если ярлык непуст и влезает:
@@ -1187,54 +1235,17 @@ export async function focusSpousePairs(chatId) {
 // как в колонке чарта у героя (rangeLevel)
 export const focusLabel = rangeLevel;
 
-// fynny-достижимость родни персоны key (0 = ни родителей, ни потомков) —
-// для доступности цифр радиуса и шапки «радиус не глубже имеющихся связей»:
-// нужный радиус узла — прямая линия max(u,d), боковая (u,d ≥ 1) — u+d−1
-// (число слов цепочки); результат min(5, max needed) с ранним выходом при 5;
-// узлы с нужным радиусом за 5 (слова 6+, глубже 5 поколений) — вне всех
-// радиусов. Так цифры 2️⃣3️⃣ видны у «горизонтальных» героев (кузены без
-// дедов), а 5️⃣ — только когда есть родня за пределами 4 слов/поколений
-export function focusDepth(pairs, key) {
-    const kidsOf = new Map(), parentsOf = new Map();
-    for (const [p, c] of pairs) {
-        if (!kidsOf.has(p)) kidsOf.set(p, []);
-        kidsOf.get(p).push(c);
-        if (!parentsOf.has(c)) parentsOf.set(c, []);
-        parentsOf.get(c).push(p);
-    }
-    // обход состояний (узел, вверх, вниз) с недоминируемыми векторами —
-    // как в focusKeys; векторы с needed > 5 не хранятся (за пределами всех
-    // радиусов), итог — max по узлам их минимального нужного радиуса
-    const best = new Map([[key, [[0, 0]]]]);
-    const dominated = (arr, u, d) => arr.some(s => s[0] <= u && s[1] <= d);
-    let five = false;
-    const queue = [[key, 0, 0]];
-    while (queue.length && !five) {
-        const [k, u, d] = queue.pop();
-        const step = (adj, nu, nd) => {
-            if (nu > 5 || nd > 5 || (nu && nd && nu + nd - 1 > 5)) return;
-            for (const x of (adj.get(k) || [])) {
-                let arr = best.get(x);
-                if (!arr) best.set(x, arr = []);
-                if (dominated(arr, nu, nd)) continue;
-                for (let i = arr.length - 1; i >= 0; i--)
-                    if (nu <= arr[i][0] && nd <= arr[i][1]) arr.splice(i, 1);
-                arr.push([nu, nd]);
-                if (nu + nd > 5) five = true; // прямая глубже 5 — 5️⃣ максимум
-                queue.push([x, nu, nd]);
-            }
-        };
-        step(parentsOf, u + 1, d);
-        step(kidsOf, u, d + 1);
-    }
-    if (five) return 5;
+// глубина уровней родни персоны key (0 = изолированный узел) — по
+// объединённому графу (кровь 1, брак 1, полнокровный сиблинг 1; полукровка —
+// 2 «вверх+вниз», сводный — 3 «вверх+брак+вниз»): максимальная дистанция,
+// капнутое 5; уровни = числам слов fynny-ярлыков, дистанции совпадают —
+// для доступности цифр радиуса и шапки «радиус не глубже имеющихся связей».
+// 5️⃣ — как только есть родня за пределами 5 уровней
+export function focusDepth(pairs, spousePairs, key) {
     let m = 0;
-    for (const arr of best.values())
-        for (const [u, d] of arr) {
-            const needed = u && d ? u + d - 1 : Math.max(u, d);
-            if (needed > m) m = needed;
-        }
-    return Math.min(m, 5);
+    for (const d of focusGraphDist(pairs, spousePairs, key, 5).values())
+        if (d > m) { m = d; if (m >= 5) return 5; }
+    return m;
 }
 
 // заголовок фокус-сообщения; dd — дата смерти/развода, если есть;
@@ -2040,9 +2051,20 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
     // третий файл (радиусные 🧬 и /gedcomN): пачка ромба — chatFlatText по keys;
     // она идёт только файлом (пачка <4000 — текстом правки сообщения)
     const pack = Array.isArray(keys) && keys.length ? await chatFlatText(chatId, keys) : "";
+    // персон чарта — список 🔔 (уровневый focusListKeys): полукровные
+    // сиблинги и цепочки длиннее радиуса («сын сына отца» при 2️⃣) — не
+    // барами, их годы рождения — точки/зарубки на баре общего родителя
+    // (chartModel рисует phantom с fam из одного родителя); .ged и пачка —
+    // по-прежнему keys-ромб (полные данные); без героя/радиуса — keys
+    let chartKeys = keys;
+    if (heroKey && rm) {
+        const sexMap = new Map((await personRows(chatId)).map(r => [pkey(r), r.sex ?? null]));
+        chartKeys = focusListKeys(await linkPairs(chatId), await focusSpousePairs(chatId),
+            heroKey, Number(rm[1]), k => sexMap.get(k) ?? null, true);
+    }
     let pdf = null, persons = 0, chartErr = null;
     try {
-        const res = await chartFor(chatId, keys, chartHead, heroKey, rm ? Number(rm[1]) : null);
+        const res = await chartFor(chatId, chartKeys, chartHead, heroKey, rm ? Number(rm[1]) : null);
         // chartPdf сам отсекает до CHART_MAX младших — файл всегда строится
         persons = res.persons;
         pdf = res.pdf;
@@ -2080,7 +2102,7 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
     }
 }
 
-export { focusKeys, focusHasPair, focusWithSpouses, focusListKeys };
+export { focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys };
 
 // ============================== ГЕДКОМ: импорт = ЗАМЕНА ==============================
 
