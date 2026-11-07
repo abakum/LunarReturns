@@ -1,17 +1,10 @@
 import { la, ageSuffix } from './astro.js';
 import { newStyleDate } from './religion.js';
+// approxOut — общий канон tgcloud/lib/text.cjs (план
+// .kilo/plans/20261107-shared-modules-plan.md); правки — только в .cjs
+import { approxOut } from './text.cjs';
 
 const htmlEsc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-// примерная дата текстом: гранулярность G — урезание («1234», «1234-05»),
-// квалификатор Q — суффикс за датой: «?» ABT, «=» CAL, «<» BEF, «>» AFT,
-// «~» EST (на любой гранулярности: «1234-05-06?», «1234-05?», «1234~»);
-// точная дата — как есть (так же печатаются коллизии ключа в отчёте импорта)
-const ABT_MARK = { 1: "?", 2: "=", 3: "<", 4: ">", 5: "~" };
-function approxOut(d, abt) {
-    const a = abt || 0, q = Math.floor(a / 3), g = a % 3;
-    return d.slice(0, 10 - g * 3) + (ABT_MARK[q] || "");
-}
 
 function jubileeText(rec, note, detail = false) {
     const hasTime = rec.h !== undefined && rec.m !== undefined;

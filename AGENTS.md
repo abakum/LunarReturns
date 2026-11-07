@@ -12,8 +12,10 @@ and true. For the full SDK reference (db, Bot API, fetch), see
 
 1. **Web-страница/PWA** — живёт в отдельном репо `../abakum.github.io`
    (`LunarReturns/index.html`, весь расчёт инлайн). Сюда не входит.
-2. **VK-бот** — `lunarreturns.js` (один файл, CJS, ноль зависимостей,
-   Node ≥ 18, long poll VK API, локальный `db.json`, systemd-сервис
+2. **VK-бот** — `lunarreturns.js` (логика-клей VK + общий канон
+   `tgcloud/lib/*.cjs`, ноль внешних зависимостей,
+   Node ≥ 22.5 (node:sqlite; проверено на 24.15), long poll VK API, локальный
+   SQLite `lunarreturns.db`, systemd-сервис
    `lunarreturns.service`). Запуск: `VK_TOKEN=... node lunarreturns.js`;
    проверка логики без токена: `node lunarreturns.js test "Имя 1963-09-27 12:30 (Пермь)"`.
 3. **Облачные функции Yandex Cloud** — `function/handler.py` (presigned URL
@@ -25,11 +27,12 @@ and true. For the full SDK reference (db, Bot API, fetch), see
    платформа исполняет их в V8-изоляте. CLI `tgcloud` синхронизирует проект
    с облаком бота — как `wrangler`/`vercel` + `drizzle-kit`. См. ниже.
 
-**Важно:** чистая логика расчётов (astro, религиозные дни, разбор триггеров,
-связи/семьи/гедком, тексты) существует в двух копиях: инлайн в `lunarreturns.js`
-(VK) и в `tgcloud/lib/` (Telegram, извлечена дословно). Меняя формулы — правь
-**обе** копии; ВК-эталон, ТГ подтягивается (кроме осознанных платформенных
-разниц: реакции в ВК).
+**Важно:** общая логика расчётов (astro, религиозные дни, разбор триггеров,
+связи/семьи/гедком, фокус-родня, диаграмма) — единый канон `tgcloud/lib/*.cjs`,
+оба бота исполняют один и тот же файл: ВК — `require` через `reqLib()` из
+`lunarreturns.js`, ТГ — через ESM-шимы `tgcloud/lib/*.js`. Меняя формулы —
+править **только .cjs** (план: `.kilo/plans/20261107-shared-modules-plan.md`;
+платформенные исключения: `jubileeText` — ТГ tg-spoiler, ВК plain; реакции в ВК).
 
 **Требование синхронности и тестирования:**
 1. `node dev/sync-check.mjs` — исполняет обе копии на одинаковых сценариях
@@ -86,7 +89,8 @@ and true. For the full SDK reference (db, Bot API, fetch), see
 | `deploy.sh`           | Деплой YC-функций (bootstrap/deploy, ротация ключей, таймер).      |
 | `tgcloud/schema.js`   | Схема БД Telegram-бота — таблицы как **именованные экспорты**. Один файл. |
 | `tgcloud/lib/`        | Общие модули TG-бота. Подпапки разрешены (`lib/internal/util.js`). |
-| `tgcloud/lib/*.js`    | **Копии** чистой логики из `lunarreturns.js` — держать синхронно. |
+| `tgcloud/lib/*.cjs`   | **Канон** общей логики (план shared-modules) — исполняют ОБА бота. |
+| `tgcloud/lib/*.js`    | ESM-шимы канона (`export { … } from './x.cjs'`) + платформенные тексты (`text.js`: jubileeText). |
 | `tgcloud/handlers/`   | Обработчики апдейтов TG, **один уровень**. Имена = типам апдейтов Bot API (`message`, `callback_query`, …). |
 | `tgcloud/endpoints/`  | Функции для Mini App (`POST /api/<name>`), **один уровень**.       |
 | `tgcloud.jsonc`       | Конфиг проекта TG-бота (static-хостинг Mini App).                  |

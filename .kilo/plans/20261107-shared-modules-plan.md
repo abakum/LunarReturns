@@ -40,15 +40,15 @@ vk-repl запускаются из корня репо; chdir нигде не �
 
 | Модуль ТГ | Инлайн в ВК | Статус тел | Шаг |
 |---|---|---|---|
-| kinship.js (347) | 1258–1606 + fynny(1282) | идентичны (kinLabel — только `export`) | **1 — пример, сделан** |
-| astro.js (196) | 20–203 | идентичны (moonNew, зодиаки, wdLocale…) | 2 |
-| religion.js (277) | 204–501 | идентичны (все 25 функций) | 2 |
-| parse.js (660) | 502–1119, 3175–3250 | идентичны (parseTrigger, parseGedcom, parseTree, dateTimeToMsk…) | 3 |
-| chart.js (612) | 3595–4188 | идентичны (переставлены комментарии; заодно уходит fs-хак шрифта) | 4 |
-| focus-набор в bot.js | 1120–1290, 2657, 2889 | идентичны (focusKeys…focusListKeys, famsByGenerations) — перенести в tree.cjs, bot.js реэкспортирует | 5 |
+| kinship.js (347) | 1258–1606 + fynny(1282) | идентичны (kinLabel — только `export`) | **1 — сделан** |
+| astro.js (196) | 20–203 | идентичны (36 деклараций, diff тел) | **2a — сделан** |
+| religion.js (277) | 204–501 | идентичны (40 деклараций, diff тел) | **2b — сделан** |
+| parse.js (660) | 502–1119, 3175–3250 | идентичны (diff тел; + withGraftMark из ВК в канон) | **3 — сделан** |
+| chart.js (612) | 3595–4188 | идентичны (комментарии — ВК-версии; fs-хак шрифта удалён) | **4 — сделан** |
+| focus-набор в bot.js | 1120–1290, 2657, 2889 | идентичны (отличия — комментарии, взяты ВК) | **5 — сделан (tree.cjs)** |
 | text.js jubileeText | 1607–1652 | **расхождение платформенное**: ТГ — tg-spoiler/htmlEsc, ВК — plain. Не шарить; позже, если нужно — fmt-параметр | — |
-| approxOut, text.js (54) | 932–987 | идентичны | 3 |
-| importGedcom, gedcomText, chartFor, linkPairs, personRows… | DB/API-функции | волнy B — store-абстракция, отдельный план | — |
+| approxOut, text.js (54) | 932–987 | идентичны | **2c — сделан (text.cjs)** |
+| importGedcom, gedcomText, chartFor, linkPairs, personRows… | DB/API-функции | волна B — store-абстракция, отдельный план | — |
 
 Проверка: `node scripts/diff-fn.mjs lunarreturns.js tgcloud/lib/<mod>.js <fn…>`
 (скрипт-помощник; после шага 1 пути для kinship меняются на .cjs).
@@ -84,3 +84,30 @@ vk-repl запускаются из корня репо; chdir нигде не �
   шрифта; зафиксировано комментарием у require.
 - serverless ТГ: бандлится `tgcloud/` целиком — шим + .cjs едут вместе,
   деплой не меняется.
+
+## Отчёт: волна A завершена (шаги 2–5)
+
+Серия поверх шага 1 (kinship): reqLib-загрузчик → astro (2a) → religion (2b) →
+text/approxOut (2c) → parse (3) → chart+font-cyr (4) → tree/focus-набор (5).
+
+- общий канон: `tgcloud/lib/{kinship,astro,religion,text,parse,chart,font-cyr,tree}.cjs`;
+  ТГ потребляет через ESM-шимы `*.js` (bot.js реэкспортирует фокус-набор из
+  tree.cjs), ВК — `reqLib()` в lunarreturns.js; handlers/endpoints не тронуты
+- lunarreturns.js: 6384 → 4096 строк (дословные дубли логики ушли все);
+  bot.js: 2559 → 2391
+- lunarreturns-install.sh: копирует `tgcloud/lib/*.cjs` (шрифт включён);
+  плоская копия font-cyr.js не нужна — fs-хак chartFont удалён, шрифт берётся
+  require'ом; dev/font-subset.mjs пишет сразу .cjs-канон
+- канон=ВК: тела сверялись диффом перед каждым шагом; расхождения — только
+  комментарии (chartModel, focusKeys/focusGraphDist — взяты ВК-версии, в ТГ-
+  копии CHART_MAX-комментарий стоял на хвосте rangeLevel — перенесён);
+  chartFont — осознанная замена (fs-поиск → require FONT_B64); withGraftMark
+  (ВК-only) переехал в parse.cjs с экспортом; jubileeText остался
+  платформенным (ТГ: tg-spoiler, ВК: plain)
+- регресс каждого шага: `node dev/sync-check.mjs` (30/30), `node dev/est-diag.mjs`,
+  `node lunarreturns.js test "Дедушка Костя 1963-09-27 12:30 (Пермь)"`;
+  ESM-шимы проверялись импортом (cjs-module-lexer распознаёт shorthand-экспорт)
+- волна B (DB/API-функции: importGedcom, gedcomText, chartFor, linkPairs,
+  personRows, applyTree, cutAndGraft…) — отдельный план под store-абстракцию:
+  у копий разные сигнатуры (peerId/SQLite vs chatId/sdk-db), механический
+  перенос не подходит

@@ -2,9 +2,9 @@
 // dev/font-subset.mjs — офлайн-генератор шрифта для диаграммы tree.pdf.
 // Берёт системный DejaVu Sans, сабсетирует его pyftsubset (venv с fonttools:
 //   python3 -m venv /tmp/kilo/fontenv && /tmp/kilo/fontenv/bin/pip install fonttools
-// ) и кладёт результат base64-строкой в tgcloud/lib/font-cyr.js — единственный
-// источник шрифта для ОБЕИХ копий диаграммы: ТГ импортирует модуль, ВК читает
-// файл и вырезает строку регуляркой. Запуск:
+// ) и кладёт результат base64-строкой в tgcloud/lib/font-cyr.cjs — единственный
+// источник шрифта для ОБЕИХ копий диаграммы (канон shared-modules: chart.cjs
+// require-ит рядом, ТГ — через ESM-шим tgcloud/lib/font-cyr.js). Запуск:
 //   node dev/font-subset.mjs [/путь/к/pyftsubset] [/путь/к/DejaVuSans.ttf]
 import fs from 'node:fs';
 import path from 'node:path';
@@ -31,11 +31,14 @@ execFileSync(PYFT, [
 ], { stdio: 'inherit' });
 
 const b64 = fs.readFileSync(TMP).toString('base64');
-const out = path.join(ROOT, 'tgcloud', 'lib', 'font-cyr.js');
+const out = path.join(ROOT, 'tgcloud', 'lib', 'font-cyr.cjs');
 fs.writeFileSync(out,
-    '// СГЕНЕРИРОВАНО dev/font-subset.mjs — не редактировать руками.\n'
+    '// font-cyr.cjs — общий канон для ВК и ТГ (план\n'
+    + '// .kilo/plans/20261107-shared-modules-plan.md).\n'
+    + '// СГЕНЕРИРОВАНО dev/font-subset.mjs — не редактировать руками.\n'
     + '// Сабсет DejaVu Sans (base ' + path.basename(SRC) + ') для диаграммы tree.pdf\n'
-    + '// (кириллица+латиница+цифры+пунктуация; без хинтинга). Читают обе копии\n'
-    + '// диаграммы: ТГ — импортом, ВК — файлом и регуляркой (см. ГЕДКОМ → PDF).\n'
-    + 'export const FONT_B64 = "' + b64 + '";\n');
+    + '// (кириллица+латиница+цифры+пунктуация; без хинтинга). Обе копии диаграммы\n'
+    + '// берут FONT_B64 из этого канона: chart.cjs — require рядом, ТГ — ESM-шим.\n'
+    + 'const FONT_B64 = "' + b64 + '";\n'
+    + '\nmodule.exports = { FONT_B64 };\n');
 console.log(out + ': ' + (b64.length / 1024).toFixed(1) + ' КБ base64');
