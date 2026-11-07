@@ -669,4 +669,7 @@ const withGraftMark = t =>
 
 
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
-module.exports = { gedStats, packToCsv, parseGedcom, parseTree, parseTreeLine, parseTrigger, withGraftMark };
+// NOT_FOR_GRAFT экспортируется: пачку метит платформенный chatFlatText
+// (bot.js для ТГ, инлайн ВК), sendGedArtifacts ВК режет перелив по метке;
+// у bot.js своя идентичная копия как точка реэкспорта для ТГ-хендлеров
+module.exports = { NOT_FOR_GRAFT, gedStats, packToCsv, parseGedcom, parseTree, parseTreeLine, parseTrigger, withGraftMark };

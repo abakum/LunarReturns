@@ -47,7 +47,7 @@ const {
 // Канон — tgcloud/lib/parse.cjs (план .kilo/plans/20261107-shared-modules-plan.md): его же импортирует
 // ТГ-копия через ESM-шим; правки — только в .cjs, дословных копий больше нет.
 const {
-    parseDateGroups, parseTrigger, parseGedcom, gedStats, parseTreeLine, NOT_FOR_GRAFT, withGraftMark, parseTree, packToCsv} = reqLib("parse");
+    parseTrigger, parseGedcom, gedStats, parseTreeLine, NOT_FOR_GRAFT, withGraftMark, parseTree, packToCsv} = reqLib("parse");
 
 
 // ============================== РЕЛИГИОЗНЫЕ ДНИ (общий модуль) ==============================
