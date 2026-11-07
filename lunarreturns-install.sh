@@ -54,11 +54,17 @@ if systemctl is-active --quiet $UNIT 2>/dev/null; then
 fi
 pkill -u "$RUN_USER" -f "node .*$DIR/lunarreturns.js" 2>/dev/null && echo "ручной экземпляр остановлен" || true
 
-# 4. скрипт, шрифт диаграммы (tree.pdf) и база — в /var/lib/lunarreturns
+# 4. скрипт, общие модули (tgcloud/lib/*.cjs), шрифт диаграммы (tree.pdf)
+#    и база — в /var/lib/lunarreturns
 #    (домашние каталоги пользователей не читаются системным сервисом),
 #    старая база из репо переносится
 install -d -m 700 /var/lib/lunarreturns
 install -m 644 "$DIR/lunarreturns.js" /var/lib/lunarreturns/lunarreturns.js
+# общий канон логики (план .kilo/plans/20261107-shared-modules-plan.md):
+# lunarreturns.js требует tgcloud/lib/<мод>.cjs (kinship и далее по плану);
+# layout повторяет репо — тот же путь require, что и в клоне
+install -d -m 755 /var/lib/lunarreturns/tgcloud/lib
+install -m 644 "$DIR"/tgcloud/lib/*.cjs /var/lib/lunarreturns/tgcloud/lib/
 install -m 644 "$DIR/tgcloud/lib/font-cyr.js" /var/lib/lunarreturns/font-cyr.js
 if [ -f "$DIR/db.json" ] && [ ! -f /var/lib/lunarreturns/db.json ] && [ ! -f /var/lib/lunarreturns/db.json.migrated ]; then
     install -m 600 "$DIR/db.json" /var/lib/lunarreturns/db.json
