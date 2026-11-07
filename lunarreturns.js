@@ -1182,7 +1182,12 @@ function focusGraphDist(pairs, spousePairs, key, radius) {
     }
     for (const [a, b] of spousePairs) { put(a, b); put(b, a); }
     // сиблинговое ребро — только полнокровным: дети одной родительской пары
-    // (полукровные без ребра идут вверх+вниз = 2, сводные — через брак = 3)
+    // (полукровные без ребра идут вверх+вниз = 2, сводные — через брак = 3);
+    // клика всех пар детей — дистанция сиблингов всегда 1, независимо от
+    // порядка строк связей (SELECT по индексу отдаёт их по алфавиту,
+    // ТГ-копия — по id; звезда от kids[0] давала дистанцию 2 «лишним»
+    // сиблингам — ВК терял Феодору Алексеевну из радиуса 1 Петра I
+    // на Romanov_family.ged)
     const groups = new Map(); // «родитель1|родитель2» → дети
     for (const [c, ps] of parentsOf) {
         if (ps.length === 2) {
@@ -1192,7 +1197,8 @@ function focusGraphDist(pairs, spousePairs, key, radius) {
         }
     }
     for (const kids of groups.values())
-        for (let i = 1; i < kids.length; i++) { put(kids[0], kids[i]); put(kids[i], kids[0]); }
+        for (let i = 1; i < kids.length; i++)
+            for (let j = 0; j < i; j++) { put(kids[j], kids[i]); put(kids[i], kids[j]); }
     const dist = new Map([[key, 0]]);
     const queue = [key];
     for (let qi = 0; qi < queue.length; qi++) {
@@ -1826,7 +1832,10 @@ function famList(peerId) {
         .map(r => famView(peerId, r.xref)).filter(Boolean);
 }
 function linkPairs(peerId) {
-    return qa("SELECT p,c FROM links WHERE chat=?", peerId).map(l => [l.p, l.c]);
+    // ORDER BY id — тот же порядок, что в ТГ-копии (edgeRows по id): SELECT
+    // без сортировки идёт по индексу UNIQUE(chat,p,c) — по алфавиту, и
+    // порядок-зависимая логика (клика сиблингов, ярлыки) расходилась с ТГ
+    return qa("SELECT p,c FROM links WHERE chat=? ORDER BY id", peerId).map(l => [l.p, l.c]);
 }
 // есть ли древо чата как структура (fam с хоть одной половиной или хоть
 // один ребёнок в fam): гейт выгрузки 🧬/.ged — численность связей «Имя Д»
@@ -4375,16 +4384,23 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
         let pdf = null, persons = 0, chartErr = null;
         let t0 = Date.now();
         try {
-            // персон чарта — список 🔔 (уровневый focusListKeys): полукровные
-            // сиблинги и цепочки длиннее радиуса («сын сына отца» при 2️⃣) — не
-            // барами, их годы рождения — точки/зарубки на баре общего родителя
-            // (chartModel рисует phantom с fam из одного родителя); .ged и
-            // пачка — по-прежнему keys-ромб (полные данные); без героя — keys
+            // персон чарта — список 🔔 (уровневый focusListKeys): полнокровные
+            // сиблинги на 1, полукровные и цепочки длиннее радиуса («сын сына
+            // отца» при 2️⃣) — не барами, их годы рождения — точки/зарубки на
+            // баре общего родителя (chartModel рисует phantom с fam из одного
+            // родителя). ПЛЮС персоны с примерной ДР (abt != 0 — ABT/CAL/BEF/
+            // AFT и выдуманные EST импорта: даты бездатных изобретались как
+            // раз ради шкалы PDF) из keys-ромба — из-за уровневого радиуса их
+            // не теряем (полукровка с EST на 1️⃣ — снова бар, как до уровневого
+            // радиуса); .ged и пачка — по-прежнему keys-ромб (полные данные);
+            // без героя — keys
             let chartKeys = keys;
             if (heroKey && rm) {
                 const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
-                chartKeys = focusListKeys(linkPairs(peerId), focusSpousePairs(peerId),
+                const lv = focusListKeys(linkPairs(peerId), focusSpousePairs(peerId),
                     heroKey, Number(rm[1]), k => sexMap.get(k) ?? null, true);
+                const approx = new Set(personRows(peerId).filter(r => r.abt).map(r => pkey(r)));
+                chartKeys = [...new Set([...lv, ...(Array.isArray(keys) ? keys.filter(k => approx.has(k)) : [])])];
             }
             const res = chartFor(peerId, chartKeys, chartHead, heroKey, rm ? Number(rm[1]) : null);
             persons = res.persons;

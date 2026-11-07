@@ -1,0 +1,61 @@
+0 HEAD
+1 SOUR test
+1 GEDC
+2 VERS 5.5.1
+1 CHAR UTF-8
+0 @I1@ INDI
+1 NAME Отец Отцович
+1 SEX M
+1 BIRT
+2 DATE 01 MAR 1950
+0 @I2@ INDI
+1 NAME Мать Матерьевна
+1 SEX F
+1 BIRT
+2 DATE 05 MAY 1955
+0 @I3@ INDI
+1 NAME Герой Героевич
+1 SEX M
+1 FAMC @F1@
+1 BIRT
+2 DATE 06 JUN 1980
+0 @I4@ INDI
+1 NAME Сестра Сестренична
+1 SEX F
+1 FAMC @F1@
+1 BIRT
+2 DATE 07 JUL 1983
+0 @I5@ INDI
+1 NAME Мачеха Вторая
+1 SEX F
+1 FAMS @F2@
+0 @I6@ INDI
+1 NAME Полубрат Полукровка
+1 SEX M
+1 FAMC @F2@
+0 @I7@ INDI
+1 NAME Мачеха Третья
+1 SEX F
+1 FAMS @F3@
+1 BIRT
+2 DATE 12 DEC 1952
+0 @I8@ INDI
+1 NAME Полусестра Точная
+1 SEX F
+1 FAMC @F3@
+1 BIRT
+2 DATE 14 FEB 1986
+0 @F1@ FAM
+1 HUSB @I1@
+1 WIFE @I2@
+1 CHIL @I3@
+1 CHIL @I4@
+0 @F2@ FAM
+1 HUSB @I1@
+1 WIFE @I5@
+1 CHIL @I6@
+0 @F3@ FAM
+1 HUSB @I1@
+1 WIFE @I7@
+1 CHIL @I8@
+0 TRL

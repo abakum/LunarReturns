@@ -1158,7 +1158,11 @@ function focusGraphDist(pairs, spousePairs, key, radius) {
     }
     for (const [a, b] of spousePairs) { put(a, b); put(b, a); }
     // сиблинговое ребро — только полнокровным: дети одной родительской пары
-    // (полукровные без ребра идут вверх+вниз = 2, сводные — через брак = 3)
+    // (полукровные без ребра идут вверх+вниз = 2, сводные — через брак = 3);
+    // клика всех пар детей — дистанция сиблингов всегда 1, независимо от
+    // порядка строк связей (ВК-индекс отдаёт их по алфавиту, ТГ — по id;
+    // звезда от kids[0] давала дистанцию 2 «лишним» сиблингам — ВК терял
+    // Феодору Алексеевну из радиуса 1 Петра I на Romanov_family.ged)
     const groups = new Map(); // «родитель1|родитель2» → дети
     for (const [c, ps] of parentsOf) {
         if (ps.length === 2) {
@@ -1168,7 +1172,8 @@ function focusGraphDist(pairs, spousePairs, key, radius) {
         }
     }
     for (const kids of groups.values())
-        for (let i = 1; i < kids.length; i++) { put(kids[0], kids[i]); put(kids[i], kids[0]); }
+        for (let i = 1; i < kids.length; i++)
+            for (let j = 0; j < i; j++) { put(kids[j], kids[i]); put(kids[i], kids[j]); }
     const dist = new Map([[key, 0]]);
     const queue = [key];
     for (let qi = 0; qi < queue.length; qi++) {
@@ -2051,16 +2056,22 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
     // третий файл (радиусные 🧬 и /gedcomN): пачка ромба — chatFlatText по keys;
     // она идёт только файлом (пачка <4000 — текстом правки сообщения)
     const pack = Array.isArray(keys) && keys.length ? await chatFlatText(chatId, keys) : "";
-    // персон чарта — список 🔔 (уровневый focusListKeys): полукровные
-    // сиблинги и цепочки длиннее радиуса («сын сына отца» при 2️⃣) — не
-    // барами, их годы рождения — точки/зарубки на баре общего родителя
-    // (chartModel рисует phantom с fam из одного родителя); .ged и пачка —
+    // персон чарта — список 🔔 (уровневый focusListKeys): полнокровные
+    // сиблинги на 1, полукровные и цепочки длиннее радиуса («сын сына отца»
+    // при 2️⃣) — не барами, их годы рождения — точки/зарубки на баре общего
+    // родителя (chartModel рисует phantom с fam из одного родителя). ПЛЮС
+    // персоны с примерной ДР (abt != 0 — ABT/CAL/BEF/AFT и выдуманные EST
+    // импорта: даты бездатных изобретались как раз ради шкалы PDF) из
+    // keys-ромба — из-за уровневого радиуса их не теряем (полукровка с EST
+    // на 1️⃣ — снова бар, как до уровневого радиуса); .ged и пачка —
     // по-прежнему keys-ромб (полные данные); без героя/радиуса — keys
     let chartKeys = keys;
     if (heroKey && rm) {
         const sexMap = new Map((await personRows(chatId)).map(r => [pkey(r), r.sex ?? null]));
-        chartKeys = focusListKeys(await linkPairs(chatId), await focusSpousePairs(chatId),
+        const lv = focusListKeys(await linkPairs(chatId), await focusSpousePairs(chatId),
             heroKey, Number(rm[1]), k => sexMap.get(k) ?? null, true);
+        const approx = new Set((await personRows(chatId)).filter(r => r.abt).map(r => pkey(r)));
+        chartKeys = [...new Set([...lv, ...(Array.isArray(keys) ? keys.filter(k => approx.has(k)) : [])])];
     }
     let pdf = null, persons = 0, chartErr = null;
     try {

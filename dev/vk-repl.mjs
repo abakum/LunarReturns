@@ -296,6 +296,13 @@ async function exec(line) {
         } catch (e) { fail(e); }
         return;
     }
+    // !wait N — пауза N мс: досидеть fire-and-forget хвосты (sendGedArtifacts
+    // строит файлы асинхронно, пайп-скрипт без паузы закрывает сервер раньше
+    // выгрузки — ECONNREFUSED 127.0.0.1:PORT в логе)
+    if (m = line.match(/^!wait\s+(\d+)$/)) {
+        await new Promise(r => setTimeout(r, Number(m[1])));
+        return;
+    }
     // !sendged «ключ» N [>N] — sendGedArtifacts радиуса N (как 🧬 на фокусе);
     // с >N — правка сообщения N (как нажатие 🧬 на его кнопках)
     if (m = line.match(/^!sendged (.+) (\d+)(?:\s+>(\d+))?$/)) {
