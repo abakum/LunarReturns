@@ -4,7 +4,7 @@
 //   python3 -m venv /tmp/kilo/fontenv && /tmp/kilo/fontenv/bin/pip install fonttools
 // ) и кладёт результат base64-строкой в tgcloud/lib/font-cyr.cjs — единственный
 // источник шрифта для ОБЕИХ копий диаграммы (канон shared-modules: chart.cjs
-// require-ит рядом, ТГ — через ESM-шим tgcloud/lib/font-cyr.js). Запуск:
+// require-ит рядом, ТГ — через импорт tgcloud/lib/font-cyr.cjs). Запуск:
 //   node dev/font-subset.mjs [/путь/к/pyftsubset] [/путь/к/DejaVuSans.ttf]
 import fs from 'node:fs';
 import path from 'node:path';

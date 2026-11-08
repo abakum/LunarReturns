@@ -15,7 +15,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'lr-est-'));
 process.env.LR_DEV_DB = path.join(TMP, 'tg-db.json');
 fs.cpSync(path.join(ROOT, 'dev', 'sdk-mock'), path.join(ROOT, 'node_modules', 'sdk'), { recursive: true });
 const TG = await import(path.join(ROOT, 'tgcloud', 'lib', 'bot.js'));
-const TGP = await import(path.join(ROOT, 'tgcloud', 'lib', 'parse.js'));
+const TGP = await import(path.join(ROOT, 'tgcloud', 'lib', 'parse.cjs'));
 
 const CHAT = 1;
 

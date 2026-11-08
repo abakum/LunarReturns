@@ -45,11 +45,11 @@ const VKX = require(vkFile).__extra; // низкоуровневые qa/q1/qr д
 process.env.LR_DEV_DB = path.join(TMP, 'tg-db.json');
 fs.cpSync(path.join(ROOT, 'dev', 'sdk-mock'), path.join(ROOT, 'node_modules', 'sdk'), { recursive: true });
 const TG = await import(path.join(ROOT, 'tgcloud', 'lib', 'bot.js'));
-const TGP = await import(path.join(ROOT, 'tgcloud', 'lib', 'parse.js'));
-const TGOS = await import(path.join(ROOT, 'tgcloud', 'lib', 'religion.js'));
+const TGP = await import(path.join(ROOT, 'tgcloud', 'lib', 'parse.cjs'));
+const TGOS = await import(path.join(ROOT, 'tgcloud', 'lib', 'religion.cjs'));
 // chart нужен уже в блоке 3в (бездатные в связях) — грузим сразу;
-// шрифт — единственный источник tgcloud/lib/font-cyr.js (ВК читает его же)
-const TGC = await import(path.join(ROOT, 'tgcloud', 'lib', 'chart.js'));
+// шрифт — единственный источник tgcloud/lib/font-cyr.cjs (ВК читает его же)
+const TGC = await import(path.join(ROOT, 'tgcloud', 'lib', 'chart.cjs'));
 const FONT = TGC.chartFont();
 
 // ============================== 1. parseTrigger ==============================
@@ -627,7 +627,7 @@ if ('Агафья 1663_07_24'.match(RH_RE)?.slice(1).map(s => s.replace(/_/g, "-
     { failed++; console.log('✗ regex reply-заголовка (`_`)'); }
 
 // ==================== 7. kinLabel: ярлыки родства ====================
-const TGK = await import(path.join(ROOT, 'tgcloud', 'lib', 'kinship.js'));
+const TGK = await import(path.join(ROOT, 'tgcloud', 'lib', 'kinship.cjs'));
 const kinPersons = [
     ['Дед', '1930-01-01', 'M'], ['Бабка', '1932-02-02', 'F'],
     ['Отец', '1955-03-03', 'M'], ['Тётя', '1957-04-04', 'F'], ['Мать', '1956-05-05', 'F'],

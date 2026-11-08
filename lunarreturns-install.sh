@@ -60,9 +60,10 @@ pkill -u "$RUN_USER" -f "node .*$DIR/lunarreturns.js" 2>/dev/null && echo "ру�
 #    старая база из репо переносится
 install -d -m 700 /var/lib/lunarreturns
 install -m 644 "$DIR/lunarreturns.js" /var/lib/lunarreturns/lunarreturns.js
-# общий канон логики (план .kilo/plans/20261107-shared-modules-plan.md):
-# lunarreturns.js требует tgcloud/lib/<мод>.cjs (kinship, astro, religion,
-# text, parse, chart, font-cyr); layout повторяет репо — тот же путь
+# общий канон логики (план .kilo/plans/20261107-shared-modules-plan.md,
+# волна A2 — 20261108): lunarreturns.js требует tgcloud/lib/<мод>.cjs
+# (kinship, astro, religion, text, parse, chart, font-cyr, tree, flat);
+# layout повторяет репо — тот же путь
 # require, что и в клоне; шрифт диаграммы — font-cyr.cjs рядом с chart.cjs
 install -d -m 755 /var/lib/lunarreturns/tgcloud/lib
 install -m 644 "$DIR"/tgcloud/lib/*.cjs /var/lib/lunarreturns/tgcloud/lib/

@@ -60,8 +60,11 @@ const PATCHES = [
      + '    peerKeyboard, getSettings, qa, isChatAdmin, dailyCheck, mskNowParts,\n'
      + '    sendGedArtifacts: typeof sendGedArtifacts === "function" ? sendGedArtifacts : null,\n};'],
     // подмена «сегодня»: !date YYYY-MM-DD [hh] → globalThis.__LR_TODAY/[__LR_HOUR]
-    ['const mskToday = () => {',
-     'const mskToday = () => {\n    if (globalThis.__LR_TODAY) return globalThis.__LR_TODAY;'],
+    // (волна A: mskToday переехал в канон tgcloud/lib/astro.cjs — обёртка на нём же;
+    // mskToday возвращает [y, mo, d], __LR_TODAY — такой же массив)
+    ['const { TZ_MS, moonNew, la, ageSuffix, mskToday} = reqLib("astro");',
+     'const { TZ_MS, moonNew, la, ageSuffix, mskToday: _mskToday} = reqLib("astro");\n'
+     + 'const mskToday = () => {\n    if (globalThis.__LR_TODAY) return globalThis.__LR_TODAY;\n    return _mskToday();\n};'],
     ['function mskNowParts() {\n    const t = new Date(Date.now() + TZ_MS);',
      'function mskNowParts() {\n'
      + '    if (globalThis.__LR_TODAY) {\n'

@@ -1,8 +1,8 @@
 import { api, db, InputFile } from 'sdk';
 import { eq } from 'sdk/db';
 import { gedDrops, focusView } from '../schema.js';
-import { parseTrigger, parseGedcom, gedStats, parseTree } from '../lib/parse.js';
-import { fileBaseOf } from '../lib/chart.js';
+import { parseTrigger, parseGedcom, gedStats, parseTree } from '../lib/parse.cjs';
+import { fileBaseOf } from '../lib/chart.cjs';
 import { jubileeText } from '../lib/text.js';
 import {
     HELP, startMarkup, chatAdmin, getSettings, todayText, jubileeMarkup, sendLong,

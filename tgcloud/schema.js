@@ -16,7 +16,7 @@ export const indi = table('indi', {
   birtM: integer('birt_m'),
   srcH: integer('src_h'),         // исходное местное время рождения (2 TIME)
   srcM: integer('src_m'),
-  birtAbt: integer('birt_abt'),   // abt = Q*3+G: квалификатор×гранулярность (lib/parse.js) — юбилеи молчат
+  birtAbt: integer('birt_abt'),   // abt = Q*3+G: квалификатор×гранулярность (lib/parse.cjs) — юбилеи молчат
   deatAbt: integer('deat_abt'),   // смерть с abt!=0 (в оповещения не попадает)
   deatD: text('deat_d'),
   deatH: integer('deat_h'), deatM: integer('deat_m'),

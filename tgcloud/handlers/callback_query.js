@@ -2,10 +2,10 @@ import { api, db, InputFile } from 'sdk';
 import { and, eq } from 'sdk/db';
 import { settings, gedDrops, focusView } from '../schema.js';
 import { jubileeText } from '../lib/text.js';
-import { parseGedcom, parseTree } from '../lib/parse.js';
-import { fileBaseOf } from '../lib/chart.js';
+import { parseGedcom, parseTree } from '../lib/parse.cjs';
+import { fileBaseOf } from '../lib/chart.cjs';
 import { sendFlatPack } from '../lib/bot.js';
-import { REL_DEFS, religiousYear } from '../lib/religion.js';
+import { REL_DEFS, religiousYear } from '../lib/religion.cjs';
 import {
     HELP, GED_TTL, relMarkup, getSettings, startMarkup, chatAdmin, jubileeMarkup, branchFlatText,
     recordOf, recordByXref, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong,

@@ -1,5 +1,5 @@
-import { la, ageSuffix } from './astro.js';
-import { newStyleDate } from './religion.js';
+import { la, ageSuffix } from './astro.cjs';
+import { newStyleDate } from './religion.cjs';
 // approxOut — общий канон tgcloud/lib/text.cjs (план
 // .kilo/plans/20261107-shared-modules-plan.md); правки — только в .cjs
 import { approxOut } from './text.cjs';
