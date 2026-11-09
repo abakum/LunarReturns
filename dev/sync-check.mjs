@@ -518,9 +518,8 @@ if (!osPack.includes('1663-07-14') || osPack.includes('1663-07-24'))
     { failed++; console.log('✗ экспорт/старый стиль: пачка пересдвинута\n  ' + osPack); }
 // показанный ключ (новый стиль/суффикс, `_`-маркер нового стиля) резолвится
 // обратно в хранимую запись; ключ берётся тем же reply-regex'ом, что у
-// обработчиков (усечён до первой даты), `_` нормализуется как в обработчиках
-const osKey = t => t.match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/).slice(1)
-    .map(s => s.replace(/_/g, "-")).join(" ");
+// обработчиков (усечён до первой даты), `_` сохраняется до общего fallback
+const osKey = t => t.match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)/).slice(1).join(" ");
 const normOf = r => r ? { n: r.n, d: r.d, dd: r.dd, abt: r.abt } : null;
 cmp('recordShownOf точный', normOf(VK.recordShownOf(OS_CH, 'Агафья 1663-07-14')), normOf(await TG.recordShownOf(OS_CH, 'Агафья 1663-07-14')));
 cmp('recordShownOf показ', normOf(VK.recordShownOf(OS_CH, osKey('Агафья 1663-07-24 1681-07-24'))), { n: 'Агафья', d: '1663-07-14', dd: '1681-07-14' });
@@ -538,6 +537,37 @@ for (const [key, d] of [['Тёзка 1900-01-13', '1900-01-13'], ['Тёзка 19
     const expected = { n: 'Тёзка', d };
     cmp('A3 recordShownOf ВК приоритет ' + key, normOf(VK.recordShownOf(SHOWN_CH, key)), expected);
     cmp('A3 recordShownOf ТГ приоритет ' + key, normOf(await TG.recordShownOf(SHOWN_CH, key)), expected);
+}
+const WED_SHOWN_CH = 150;
+const shownWeddings = ['0 HEAD', '0 @I1@ INDI', '1 NAME Альфа', '1 SEX M', '1 BIRT', '2 DATE 1 JAN 1870',
+    '0 @I2@ INDI', '1 NAME Бета', '1 SEX F', '1 BIRT', '2 DATE 1 JAN 1872',
+    '0 @F1@ FAM', '1 HUSB @I1@', '1 WIFE @I2@', '1 MARR', '2 DATE 1 JAN 1900',
+    '0 @F2@ FAM', '1 HUSB @I1@', '1 WIFE @I2@', '1 MARR', '2 DATE 13 JAN 1900', '0 TRLR'].join('\n');
+VK.importGedcom(WED_SHOWN_CH, VK.parseGedcom(shownWeddings));
+await TG.importGedcom(WED_SHOWN_CH, TGP.parseGedcom(shownWeddings));
+for (const [key, d] of [['Альфа+Бета 1900-01-13', '1900-01-13'],
+    ['Альфа+Бета 1900_01_13', '1900-01-01'], ['Альфа+Бета 1900.01.13', '1900-01-01']]) {
+    for (const [platform, rec] of [['VK', VK.recordShownOf(WED_SHOWN_CH, key)],
+        ['TG', await TG.recordShownOf(WED_SHOWN_CH, key)]])
+        cmp('wedding exact/displayed ' + platform + ' ' + key, rec && { n: rec.n, d: rec.d }, { n: 'Альфа+Бета', d });
+}
+for (const abt of [12, 13, 14]) {
+    const r = { n: 'После' + abt, d: '2000-02-03', abt };
+    VK.upsertPerson(SHOWN_CH, r);
+    await TG.upsertPerson(SHOWN_CH, r);
+    for (const sep of ['-', '_', '.']) {
+        const key = r.n + ' ' + ['2000-02-03>', '2000-02>', '2000>'][abt - 12].replaceAll('-', sep);
+        for (const [platform, rec] of [['VK', VK.recordShownOf(SHOWN_CH, key)], ['TG', await TG.recordShownOf(SHOWN_CH, key)]])
+            cmp('AFT adapter ' + platform + ' ' + key, rec && { n: rec.n, d: rec.d, abt: rec.abt }, r);
+    }
+}
+for (const mabt of [12, 13, 14]) {
+    const n = 'ПослеМуж' + mabt + '+ПослеЖена' + mabt;
+    VK.upsertPerson(SHOWN_CH, { n, d: '2000-02-03', abt: mabt });
+    await TG.upsertPerson(SHOWN_CH, { n, d: '2000-02-03', abt: mabt });
+    const key = n + ' ' + ['2000.02.03>', '2000.02>', '2000>'][mabt - 12];
+    for (const [platform, rec] of [['VK', VK.recordShownOf(SHOWN_CH, key)], ['TG', await TG.recordShownOf(SHOWN_CH, key)]])
+        cmp('AFT wedding adapter ' + platform + ' ' + key, rec && { n: rec.n, d: rec.d, mabt: rec.mabt }, { n, d: '2000-02-03', mabt });
 }
 // скопипащенная шапка как триггер: `_`-даты конвертируются в хранимые —
 // та же запись (дубля нет), dd и свадьба — по тому же правилу

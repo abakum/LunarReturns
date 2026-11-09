@@ -204,7 +204,7 @@ export async function recordOf(chatId, key) {
 // ключ из показанного текста (новый стиль + суффикс: юбилей/🔔 печатает
 // приближённые даты через approxOut): точный ключ — как хранение; мимо —
 // поиск по отображённой форме (имя ≃ и approxOut(newStyleDate) совпал);
-// `_` в датах — маркер нового стиля (см. jubileeText) — нормализуем
+// `_` — маркер нового стиля; нормализация только в общем fallback
 export async function recordShownOf(chatId, key) {
     const exact = await recordOf(chatId, key);
     if (exact) return exact;

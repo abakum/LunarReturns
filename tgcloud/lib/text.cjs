@@ -18,10 +18,10 @@ function approxOut(d, abt) {
 
 // Exact-key lookup stays in the adapters, before this displayed-form fallback.
 function findShownRecord(records, key) {
-    const m = key.match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?)([?=<~]?)\s*$/);
+    const m = key.match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?)([?=<>~]?)\s*$/);
     if (!m) return null;
-    return records.find(r => r.n === m[1] && (approxOut(newStyleDate(r.d), r.abt || r.mabt || 0) === m[2].replace(/_/g, "-") + m[3]
-        || r.d === m[2].replace(/_/g, "-") + m[3])) || null;
+    return records.find(r => r.n === m[1] && (approxOut(newStyleDate(r.d), r.abt || r.mabt || 0) === m[2].replace(/[._]/g, "-") + m[3]
+        || r.d === m[2].replace(/[._]/g, "-") + m[3])) || null;
 }
 
 module.exports = { approxOut, findShownRecord };

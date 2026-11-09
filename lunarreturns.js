@@ -193,12 +193,14 @@ function nextFamXref(peerId, pref) {
 }
 
 function recordOf(peerId, key) {
-    return personRows(peerId).find(r => pkey(r) === key) || null;
+    return personRows(peerId).find(r => pkey(r) === key)
+        || weddingRows(peerId).find(r => pkey(r) === key) || null;
 }
 
 // ключ из показанного текста (новый стиль + суффикс: юбилей/🔔 печатает
 // приближённые даты через approxOut): точный ключ — как хранение; мимо —
 // поиск по отображённой форме (имя ≃ и approxOut(newStyleDate) совпал)
+// `_` сохраняется до fallback, чтобы не совпасть с точной датой другой записи
 function recordShownOf(peerId, key) {
     const exact = recordOf(peerId, key);
     if (exact) return exact;
@@ -255,7 +257,7 @@ function weddingRows(peerId) {
 
 // запись по ключу «Имя Д» или «Имя+Имя Д» (правка сообщений по cmid)
 function recordAnyOf(peerId, key) {
-    return recordOf(peerId, key) || weddingRows(peerId).find(r => pkey(r) === key) || null;
+    return recordOf(peerId, key);
 }
 
 function indiOf(peerId, xref) {
@@ -2384,11 +2386,11 @@ async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
         return;
     }
     const rh = replyMsg && replyMsg.from_id > 0
-        ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/) : null;
+        ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)/) : null;
     if (rh) {
         // в ответе на триггер — резка-прививка: цитируемый — герой пачки
         let anchor = null;
-        const sh = recordShownOf(peerId, rh[1].trim() + " " + rh[2].replace(/_/g, "-"));
+        const sh = recordShownOf(peerId, rh[1].trim() + " " + rh[2]);
         if (sh) anchor = sh.n + " " + sh.d;
         if (!anchor) {
             // цитата на триггера не нашлась — добавлять молча нельзя: так
@@ -2545,9 +2547,9 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         // «/» ответом на триггер — фокус-сообщение с радиусом родни
         // (заголовок фокуса «2 Имя ГГГГ-ММ-ДД» — цифру радиуса снимаем)
         const rh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)/) : null;
         if (rh) {
-            const key = rh[1].trim() + " " + rh[2].replace(/_/g, "-");
+            const key = rh[1].trim() + " " + rh[2];
             const rec = recordShownOf(peerId, key);
             if (rec) {
                 await sendFocus(peerId, rec.n + " " + rec.d, msgId, convMsgId, fromId, rec.dd);
@@ -2567,9 +2569,9 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         // ответом на триггер — только текст родни выбранного радиуса, без кнопок
         // (заголовок фокуса «2 Имя ГГГГ-ММ-ДД» — цифру радиуса снимаем)
         const grh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)/) : null;
         if (grh) {
-            const key = grh[1].trim() + " " + grh[2].replace(/_/g, "-");
+            const key = grh[1].trim() + " " + grh[2];
             const rec = recordShownOf(peerId, key);
             if (rec) {
                 const skey = rec.n + " " + rec.d; // показанный ключ → хранимый
@@ -2595,9 +2597,9 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     if (bm) {
         const radius = Number(bm[1]) || 1;
         const brh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)/) : null;
         if (brh) {
-            const key = brh[1].trim() + " " + brh[2].replace(/_/g, "-");
+            const key = brh[1].trim() + " " + brh[2];
             const rec = recordShownOf(peerId, key);
             if (rec) {
                 const skey = rec.n + " " + rec.d; // показанный ключ → хранимый
@@ -2624,10 +2626,10 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     // древа чата (листинг сообщений-связей не восстанавливается)
     if (t === "/links" || t === "связи") {
         const lrh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/) : null;
+            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)/) : null;
         let key = null, head = "";
         if (lrh) {
-            const rk = lrh[1].trim() + " " + lrh[2].replace(/_/g, "-");
+            const rk = lrh[1].trim() + " " + lrh[2];
             const rec = recordShownOf(peerId, rk);
             if (rec) { key = rec.n + " " + rec.d; head = focusHead(key, 1, rec.dd); } // показанный ключ → хранимый
             else key = null; // ответ не на триггер — вся пачка
@@ -2761,7 +2763,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     }
     // цитата для пачки «плоское древо»: ветвь цитируемого срезана, пачка привита
     const replyHead = replyMsg && replyMsg.from_id > 0
-        ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/) : null;
+        ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)/) : null;
     // сообщение-гедком → замена древа (до разбора триггеров); не пустой чат —
     // сначала автоматический резерв прежнего дерева файлом
     const g = parseGedcom(text);
@@ -2786,7 +2788,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             // в ответе на триггер — ветвь цитируемого заменяется пачкой
             let anchor = null;
             if (replyHead) {
-            const sh = recordShownOf(peerId, replyHead[1].trim() + " " + replyHead[2].replace(/_/g, "-"));
+                const sh = recordShownOf(peerId, replyHead[1].trim() + " " + replyHead[2]);
                 if (sh) anchor = sh.n + " " + sh.d;
             }
             const rep = anchor ? cutAndGraft(peerId, anchor, tree) : applyTree(peerId, tree);
@@ -3406,15 +3408,15 @@ async function findRecordByCmid(peerId, cmid) {
     // фокус-сообщение печатает цифру радиуса перед ключом («2 Имя Д») —
     // если без неё не нашлось, пробуем срезав (как replyHeadOf; прямой порядок
     // не ломает имена вида «8 Марта»)
-    const RX = /^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/;
+    const RX = /^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)/;
     const m0 = text.match(RX);
     if (m0) {
-        const r = recordShownOf(peerId, m0[1].trim() + " " + m0[2].replace(/_/g, "-"));
+        const r = recordShownOf(peerId, m0[1].trim() + " " + m0[2]);
         if (r) return r;
     }
-    const m1 = text.match(/^\d\s+(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<~]?)/);
+    const m1 = text.match(/^\d\s+(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)/);
     if (!m1) return null;
-    return recordShownOf(peerId, m1[1].trim() + " " + m1[2].replace(/_/g, "-")) || null;
+    return recordShownOf(peerId, m1[1].trim() + " " + m1[2]) || null;
 }
 
 // ============================== ПЛАНИРОВЩИК ==============================
