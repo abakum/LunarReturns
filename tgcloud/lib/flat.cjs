@@ -1,7 +1,10 @@
 // flat.cjs — общий канон чистых функций плоского древа (волна A2, план
-// .kilo/plans/20261108-canon-flat-pure-plan.md):
+// .kilo/plans/20261108-canon-flat-pure-plan.md; волна A3 — поиск/обрезка,
+// план .kilo/plans/20261108-canon-pure-a3-plan.md):
 //   flatTreeText, subsetBranch — печать пачки «плоское древо» / «ветвь героя»;
 //   flatSearch, flatHitPerson, flatHitKey — поиск по пачке → фокус;
+//   searchHead — заголовок выдачи поиска «Найдено N строк …»;
+//   cutLines — обрезка текста целыми строками под бюджет сообщения;
 //   datePlusYears — сдвиг даты на годы (фиктивные даты импорта);
 //   treeReport, rootOf — отчёт о применении пачки, корень разобранной пачки.
 //
@@ -334,4 +337,37 @@ function flatHitKey(line, persons) {
     return byD ? pkey(byD) : null;
 }
 
-module.exports = { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, datePlusYears, treeReport, rootOf };
+// заголовок выдачи поиска: «Найдено N строк …» — по запросу и числу
+// найденных строк. «/Ива» — «начинающихся с Ива», «/ Ива» — «с подстрокой
+// Ива», серия маркеров («/-», «/--», «/=», «/++») — «с маркером «…»».
+// Дословно из копий (lunarreturns.js, handlers/message.js; ethalon — ВК)
+function searchHead(q, count) {
+    const sub = /^\/\s/.test(q);
+    const mark = (q.slice(1).match(/^([-+=])\1*/) || [""])[0];
+    const needle = (sub ? q.slice(1) : q.slice(1 + mark.length)).trim();
+    return "Найдено " + count + " строк "
+        + (needle ? (sub ? "с подстрокой " : "начинающихся с ") + needle
+                  : "с маркером «" + mark + "»");
+}
+
+// обрезка целыми строками: строки text накапливаются, пока
+// reserved + накопленное + соединитель + длина строки не превышает budget.
+// joinReserve (по умолчанию) — консервативный запас ВК: «+1» под соединитель
+// строк считается и перед первой строкой накопления (переливы поиска/пачки,
+// списки событий без заголовка). joinReserve=false — бюджет «заголовок +
+// хвост» (reserved уже несёт соединитель заголовка; межстрочных «+1» в
+// бюджете нет — как в ВК у хвоста после заголовка). Сборка держателя/финала
+// и суффиксы (✂️, ⏳) — снаружи, у вызывающих мест (бюджеты дословно ВК):
+//   переливы пачки: reserved = head.length + 1 + NOT_FOR_GRAFT.length + 1
+//   перелив поиска: reserved = NOT_FOR_GRAFT.length + 1
+//   список событий: reserved = 0;  хвост после заголовка: head.length + 1, false
+function cutLines(text, budget, reserved = 0, joinReserve = true) {
+    let acc = "";
+    for (const l of String(text).split("\n")) {
+        if (reserved + acc.length + (joinReserve ? 1 : 0) + l.length > budget) break;
+        acc += (acc ? "\n" : "") + l;
+    }
+    return acc;
+}
+
+module.exports = { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, searchHead, cutLines, datePlusYears, treeReport, rootOf };

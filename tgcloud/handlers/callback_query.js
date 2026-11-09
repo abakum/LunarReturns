@@ -11,7 +11,7 @@ import {
     recordOf, recordByXref, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong,
     deleteEventCascade, replaceWithGedcom, clearChatTree, deleteLink, setIndiSex, toggleAdopted,
     linkById, linkPairs, xrefOfKey, personRows, weddingRows, sendTreeBackup,
-    NOT_FOR_GRAFT,
+    NOT_FOR_GRAFT, cutLines,
     upcomingText, mmddToday, focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText,
     focusWithSpouses, focusListKeys, focusSpousePairs, focusListText, focusDepth, sendGedPdf,
     applyTree, cutAndGraft, treeReport, hasTree,
@@ -109,11 +109,7 @@ export default async function (cq, ctx) {
         const markup = await startMarkup(cq.message.chat, await chatAdmin(cq.message.chat, cq.from?.id),
             chatId, await getSettings(chatId));
         // целые строки, суммарно не превышающие лимит сообщения
-        let shownList = "";
-        for (const l of list.split("\n")) {
-            if (shownList.length + 1 + l.length > 4000) break;
-            shownList += (shownList ? "\n" : "") + l;
-        }
+        const shownList = cutLines(list, 4000);
         await editText(shownList || "Событий нет", markup);
         return;
     }
@@ -361,13 +357,14 @@ export default async function (cq, ctx) {
             const pack = await branchFlatText(chatId, row.pkey);
             if (!pack) { await answer("ветвь пуста"); return; }
             const fKb0 = focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth, fxref);
-            if (pack.length > 4000) {
+            if ((head + "\n" + pack).length >= 4000) {
                 // перелив: порядок строк — герой, метка (правило — коммент
                 // у NOT_FOR_GRAFT в lib/bot.js); ВЕСЬ пачка — файлом ответом
                 // на это сообщение, потом ⏳ снят
-                await editText(head + "\n" + NOT_FOR_GRAFT + "\n✂️⏳", fKb0);
+                const inner = cutLines(pack, 4000, head.length + 1 + NOT_FOR_GRAFT.length + 1);
+                await editText(head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️⏳", fKb0);
                 await tailDoc(pack, head, ".ged.txt",
-                    head + "\n" + NOT_FOR_GRAFT + "\n✂️");
+                    head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️");
                 return;
             }
             await editText(head + "\n" + pack, fKb0);
@@ -386,11 +383,7 @@ export default async function (cq, ctx) {
         if (full.length > 4000) {
             // список начинается с сегодня — что не влезает в сообщение,
             // просто отрезаем (целые строки)
-            let tail = "";
-            for (const l of body.split("\n")) {
-                if (head.length + 1 + tail.length + l.length > 4000) break;
-                tail += (tail ? "\n" : "") + l;
-            }
+            const tail = cutLines(body, 4000, head.length + 1, false);
             await editText(head + "\n" + tail, fKb);
             return;
         }

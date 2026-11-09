@@ -9,6 +9,10 @@ import path from 'node:path';
 import url from 'node:url';
 import os from 'node:os';
 import { createRequire } from 'node:module';
+import './a3-text-check.mjs';
+import './a3-flat-check.mjs';
+import './a3-ged-check.mjs';
+import './a3-list-check.mjs';
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -523,6 +527,18 @@ cmp('recordShownOf показ', normOf(VK.recordShownOf(OS_CH, osKey('Агафь
 cmp('recordShownOf `_`-шапка', normOf(VK.recordShownOf(OS_CH, osKey('Агафья 1663_07_24 1681_07_24'))), { n: 'Агафья', d: '1663-07-14', dd: '1681-07-14' });
 cmp('recordShownOf суффикс', normOf(VK.recordShownOf(OS_CH, osKey('Столетний 1234~'))), { n: 'Столетний', d: '1234-01-01', abt: 17 });
 cmp('recordShownOf мимо', VK.recordShownOf(OS_CH, osKey('Чужой 1663-07-24')), normOf(await TG.recordShownOf(OS_CH, osKey('Чужой 1663-07-24'))));
+for (const key of ['Агафья 1663-07-14', 'Агафья 1663_07_24', 'Столетний 1234~', 'Чужой 1663-07-24', 'Агафья 1663-07-24>'])
+    cmp('A3 recordShownOf адаптеры ' + key, normOf(VK.recordShownOf(OS_CH, key)), normOf(await TG.recordShownOf(OS_CH, key)));
+const SHOWN_CH = 149;
+for (const r of [{ n: 'Тёзка', d: '1900-01-01' }, { n: 'Тёзка', d: '1900-01-13' }]) {
+    VK.upsertPerson(SHOWN_CH, r);
+    await TG.upsertPerson(SHOWN_CH, r);
+}
+for (const [key, d] of [['Тёзка 1900-01-13', '1900-01-13'], ['Тёзка 1900_01_13', '1900-01-01']]) {
+    const expected = { n: 'Тёзка', d };
+    cmp('A3 recordShownOf ВК приоритет ' + key, normOf(VK.recordShownOf(SHOWN_CH, key)), expected);
+    cmp('A3 recordShownOf ТГ приоритет ' + key, normOf(await TG.recordShownOf(SHOWN_CH, key)), expected);
+}
 // скопипащенная шапка как триггер: `_`-даты конвертируются в хранимые —
 // та же запись (дубля нет), dd и свадьба — по тому же правилу
 {

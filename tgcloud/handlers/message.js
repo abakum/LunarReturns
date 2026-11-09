@@ -10,7 +10,7 @@ import {
     linkPairs, personRows, weddingRows, sendGedPdf, focusHead, focusMarkup,
     focusListKeys, focusSpousePairs, focusDepth, focusListText, mmddToday, upcomingText, upsertPerson, applyTree, cutAndGraft, treeReport,
     editTrigger, hasTree, NOT_FOR_GRAFT,
-    chatFlatText, flatSearch, sendFlatPack, flatHitKey,
+    chatFlatText, flatSearch, sendFlatPack, flatHitKey, searchHead, cutLines,
 } from '../lib/bot.js';
 
 // заголовок «Имя ГГГГ-ММ-ДД» (+ цифра радиуса у фокус-сообщений) в цитате;
@@ -302,11 +302,7 @@ export default async function (message, ctx) {
         // как у 🔔 чата: список «от сегодня» одним сообщением — что не
         // влезает, отрезаем (целые строки)
         const list = await upcomingText(chatId, false, mmddToday());
-        let shownList = "";
-        for (const l of (list || "").split("\n")) {
-            if (shownList.length + 1 + l.length > 4000) break;
-            shownList += (shownList ? "\n" : "") + l;
-        }
+        const shownList = cutLines(list || "", 4000);
         await api.sendMessage({ chat_id: chatId, text: shownList || "Событий нет" });
         console.log("bell chat:", (list ? list.split("\n").length : 0) + "->" + shownList.split("\n").length, "строк, chat", chatId);
         return;
@@ -403,25 +399,16 @@ export default async function (message, ctx) {
             // частые имена длиннее лимита — sendLong выложит файлом (как ВК);
             // имя файла — дословно как заголовок в ВК (lunarreturns.js)
             const q = text.trim();
-            const sub = /^\/\s/.test(q);
-            const mark = (q.slice(1).match(/^([-+=])\1*/) || [""])[0];
-            const needle = (sub ? q.slice(1) : q.slice(1 + mark.length)).trim();
-            const head = "Найдено " + hits.length + " строк "
-                + (needle ? (sub ? "с подстрокой " : "начинающихся с ") + needle
-                          : "с маркером «" + mark + "»");
+            const head = searchHead(q, hits.length);
             // не влезает: метка + ✂️⏳ первым сообщением, ВЕСЬ список —
             // файлом .txt асинхронно ответом на него (как панель выше, как ВК;
             // текст — только метка, без «Найдено…», имя файла — из head),
             // потом ⏳ снят (✂️ остаётся)
             const found = hits.join("\n");
-            if (found.length > 4000) {
+            if (found.length >= 4000) {
                 // целые строки до ~4000 знака — в текст (как у панели выше,
                 // как у 🧬), остальное — в файл; ✂️⏳ → после файла ✂️
-                let inner = "";
-                for (const l of found.split("\n")) {
-                    if (NOT_FOR_GRAFT.length + 1 + inner.length + 1 + l.length > 4000) break;
-                    inner += (inner ? "\n" : "") + l;
-                }
+                const inner = cutLines(found, 4000, NOT_FOR_GRAFT.length + 1);
                 const holdTxt = NOT_FOR_GRAFT + (inner ? "\n" + inner : "") + "\n✂️⏳";
                 const finalTxt = NOT_FOR_GRAFT + (inner ? "\n" + inner : "") + "\n✂️";
                 const first = await api.sendMessage({

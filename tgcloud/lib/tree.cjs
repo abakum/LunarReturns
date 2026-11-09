@@ -1,7 +1,12 @@
 // tree.cjs — общий канон фокус-родни (чистая логика) для ВК и ТГ (план
 // .kilo/plans/20261107-shared-modules-plan.md): ВК require-ит из lunarreturns.js, ТГ импортирует
 // tgcloud/lib/bot.js → './tree.cjs'; правки — только здесь, копий больше нет.
+// С A3 — ещё списки: focusListText (формат+сортировка фокуса) и eventListText
+// (формат/фильтр/круговой MM-DD порядок колокольчика); строки выборки БД
+// остаются в адаптерах ботов (план .kilo/plans/20261108-canon-pure-a3-plan.md).
 const { fynny, kinLabel } = require('./kinship.cjs');
+const { approxOut } = require('./text.cjs');
+const { newStyleDate } = require('./religion.cjs');
 
 function focusDepth(pairs, spousePairs, key) {
     let m = 0;
@@ -141,6 +146,51 @@ function focusListKeys(pairs, spousePairs, key, radius, sexOf, levels) {
         || (l => l && l.split(" ").length <= radius)(kinLabel(pairs, spousePairs, sexOf, key, s, radius)));
 }
 
+// список событий по множеству фокуса с ярлыками родства (kinLabel):
+// «Имя Д [Д(смерти)] [ЧЧ:ММ] родство»; items — записи {n, d, h, m, dd};
+// params — (items, keys, key, pairs, spousePairs, sexOf, byFullDate, mmddToday, depth);
+// byFullDate=false — круговой порядок «от сегодня» (как religiousYear),
+// true — все по полной дате ГГГГ-ММ-ДД (подтверждение удаления);
+// depth — бюджет браковых шагов kinLabel (= радиус списка, дефолт 2)
+function sortEvents(rows, byFullDate, mmddToday) {
+    const fullKey = r => newStyleDate(r.d) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
+    const cum = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    const dayIdx = d => cum[Number(d.slice(5, 7)) - 1] + Number(d.slice(8)) - 1;
+    const nowIdx = mmddToday ? cum[Number(mmddToday.slice(0, 2)) - 1] + Number(mmddToday.slice(3)) - 1 : 0;
+    const key = byFullDate ? fullKey : r => String((dayIdx(newStyleDate(r.d)) - nowIdx + 365) % 365).padStart(3, "0") + " " + fullKey(r);
+    return rows.sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+}
+
+function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "", depth = 2) {
+    const set = new Set(keys);
+    const map = rs => rs
+        .map(r => r.n + " " + approxOut(newStyleDate(r.d), r.abt || r.mabt || 0)
+            + (r.dd ? " " + approxOut(newStyleDate(r.dd), r.dabt || 0) : "")
+            + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "")
+            + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d, depth); return l ? " " + l : ""; })())
+        .join("\n");
+    return map(sortEvents(items.filter(r => set.has(r.n + " " + r.d)
+        || (r.n.includes("+") && focusHasPair(r.n, keys))), byFullDate, mmddToday));
+}
+
+// список колокольчика «Имя ГГГГ-ММ-ДД[ ГГГГ-ММ-ДД смерти][ ЧЧ:ММ]»;
+// "" — событий нет; rows — готовые записи персон и свадеб (выборка БД —
+// в адаптерах ботов). byFullDate=false — круговой порядок «от сегодня»
+// (как religiousYear): ММ-ДД сегодня первым, события прошлой части года —
+// в конце; примерные даты (abt/dabt/mabt) — мимо оповещений;
+// true — все события по полной дате ГГГГ-ММ-ДД (подтверждение удаления),
+// примерные остаются. Текущая дата — явно (mmddNow «ММ-ДД»), без
+// чтения времени внутри
+function eventListText(rows, byFullDate = false, mmddNow = "") {
+    const map = rs => rs
+        .map(r => r.n + " " + approxOut(newStyleDate(r.d), r.abt || r.mabt || 0)
+            + (r.dd !== undefined ? " " + approxOut(newStyleDate(r.dd), r.dabt || 0) : "")
+            + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : ""))
+        .join("\n");
+    if (!byFullDate) rows = rows.filter(r => !r.abt && !r.dabt && !r.mabt); // примерные — мимо оповещений
+    return map(sortEvents(rows, byFullDate, mmddNow));
+}
+
 // GEDCOM 5.5.1 по чату — выгрузка дерева: INDI из персон (плюс заглушки-
 // супруги без даты — без BIRT), FAM из семей (усекаются до выбранных
 // персон; группы с одинаковым набором родителей схлопываются — как прежде).
@@ -173,4 +223,4 @@ function famsByGenerations(fams, halvesOf, kidsOf) {
 }
 
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
-module.exports = { focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations };
+module.exports = { focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, eventListText, famsByGenerations };

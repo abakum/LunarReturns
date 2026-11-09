@@ -4,16 +4,21 @@ import { and, eq, or, inArray } from 'sdk/db';
 import { indi, fam, chil, edges, settings, focusView } from '../schema.js';
 import { mskToday } from './astro.cjs';
 import { kinLabel, fynny } from './kinship.cjs';
-import { REL_DEFS, religiousDigest, newStyleDate } from './religion.cjs';
+import { REL_DEFS, religiousDigest } from './religion.cjs';
 import { jubileeText, approxOut } from './text.js';
-import { packToCsv } from './parse.cjs';
-import { focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations } from './tree.cjs';
+import { findShownRecord } from './text.cjs';
+import { gedFictiveDates, packToCsv } from './parse.cjs';
+import { focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText } from './tree.cjs';
+// фокус-список (focusListText) — канон tree.cjs (с A3): реэкспорт — точки
+// импорта handlers не менялись
 // чистые функции плоского древа — общий канон tgcloud/lib/flat.cjs
 // (волна A2): handlers берут flatSearch/flatHitKey/treeReport реэкспортом
 // ниже; правки — только в .cjs
-import { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, datePlusYears, treeReport, rootOf } from './flat.cjs';
+import { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, treeReport, rootOf, cutLines } from './flat.cjs';
 // реэкспорт: точки импорта handlers не менялись с волны A
 export { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, treeReport, rootOf } from './flat.cjs';
+export { searchHead, cutLines } from './flat.cjs';
+export { focusListText } from './tree.cjs';
 
 export const HELP = "Отправьте «Имя ГГГГ-ММ-ДД [ЧЧ:ММ] [дата смерти]» — покажу лунно-солнечные юбилеи.\n"
     + "Можно с зоной: «… 12:30 (Пермь)» или «… 12:30 МСК+2», по одной строке на событие.\n"
@@ -203,14 +208,7 @@ export async function recordOf(chatId, key) {
 export async function recordShownOf(chatId, key) {
     const exact = await recordOf(chatId, key);
     if (exact) return exact;
-    const m = key.match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?)([?=<~]?)\s*$/);
-    if (!m) return null;
-    // точное равенство хранимой даты — для ключей из фокус-шапок и payload-ов
-    // (focusHead печатает хранимый ключ старого стиля, показанная форма —
-    // новый; реакции/кнопки приходят и на те, и на другие сообщения)
-    return [...await personRows(chatId), ...await weddingRows(chatId)]
-        .find(r => r.n === m[1] && (approxOut(newStyleDate(r.d), r.abt || r.mabt || 0) === m[2].replace(/_/g, "-") + m[3]
-            || r.d === m[2].replace(/_/g, "-") + m[3])) || null;
+    return findShownRecord([...await personRows(chatId), ...await weddingRows(chatId)], key);
 }
 
 // запись по xref (индивидуальный — даже без birt_d — либо fam-пара со свадьбой)
@@ -1020,25 +1018,11 @@ export async function todayText(chatId) {
 }
 
 // «Имя ГГГГ-ММ-ДД[ ГГГГ-ММ-ДД смерти][ ЧЧ:ММ]»; "" — событий нет.
-// byFullDate=false — круговой порядок «от сегодня» (как religiousYear):
-// ММ-ДД сегодня первым, события прошлой части года — в конце;
-// true — все события по полной дате ГГГГ-ММ-ДД (подтверждение удаления)
+// формат, фильтр примерных и порядок (круговой «от сегодня» / по полной
+// дате) — канон eventListText из './tree.cjs' (с A3, общий с ВК);
+// здесь только выборка БД
 export async function upcomingText(chatId, byFullDate = false, mmddNow = "") {
-    let rows = [...await personRows(chatId), ...await weddingRows(chatId)];
-    if (!byFullDate) rows = rows.filter(r => !r.abt && !r.dabt && !r.mabt); // примерные — мимо оповещений
-    const map = rs => rs
-        .map(r => r.n + " " + approxOut(newStyleDate(r.d), r.abt || r.mabt || 0)
-            + (r.dd !== undefined ? " " + approxOut(newStyleDate(r.dd), r.dabt || 0) : "")
-            + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : ""))
-        .join("\n");
-    const key = r => newStyleDate(r.d) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
-    if (byFullDate) return map(rows.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0)));
-    // круговой порядок по ММ-ДД от сегодняшнего MM-DD; ММ-ДД — по новому стилю
-    const cum = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]; // невисокосный год
-    const dayIdx = d => cum[Number(d.slice(5, 7)) - 1] + Number(d.slice(8)) - 1;
-    const nowIdx = mmddNow ? cum[Number(mmddNow.slice(0, 2)) - 1] + Number(mmddNow.slice(3)) - 1 : 0;
-    const sortKey = r => String((dayIdx(newStyleDate(r.d)) - nowIdx + 365) % 365).padStart(3, "0") + " " + key(r);
-    return map(rows.sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0)));
+    return eventListText([...await personRows(chatId), ...await weddingRows(chatId)], byFullDate, mmddNow);
 }
 
 // сегодняшний MM-DD по МСК — отсечка «от сегодня» для списков колокольчика
@@ -1111,32 +1095,9 @@ export const focusLabel = rangeLevel;
 export const focusHead = (key, radius, dd) =>
     String(radius) + " " + key + (dd ? " " + dd : "");
 
-// список событий по множеству фокуса с ярлыками родства: строки
-// «Имя Д [Д(смерти)] [ЧЧ:ММ] родство»; items — записи {n, d, h, m, dd};
-// params — (items, keys, key, pairs, spousePairs, sexOf, byFullDate, mmddToday);
-// byFullDate=false — «от сегодня»: ММ-ДД ≥ mmddToday, true — все по полной дате
-export function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "", depth = 2) {
-    const set = new Set(keys);
-    const map = rs => rs
-        .map(r => r.n + " " + approxOut(newStyleDate(r.d), r.abt || r.mabt || 0)
-            + (r.dd ? " " + approxOut(newStyleDate(r.dd), r.dabt || 0) : "")
-            + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "")
-            + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d, depth); return l ? " " + l : ""; })())
-        .join("\n");
-    const sortKey = r => newStyleDate(r.d) + " " + (r.h !== undefined ? String(r.h).padStart(2, "0") + String(r.m ?? 0).padStart(2, "0") : "");
-    if (byFullDate) return map(items
-        .filter(r => set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys)))
-        .sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0)));
-    // круговой порядок по ММ-ДД от сегодняшнего MM-DD (как religiousYear);
-    // ММ-ДД — по новому стилю (оповещения по новому стилю, хранение — старому)
-    const cum = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]; // невисокосный год
-    const dayIdx = d => cum[Number(d.slice(5, 7)) - 1] + Number(d.slice(8)) - 1;
-    const nowIdx = mmddToday ? cum[Number(mmddToday.slice(0, 2)) - 1] + Number(mmddToday.slice(3)) - 1 : 0;
-    const bellKey = r => String((dayIdx(newStyleDate(r.d)) - nowIdx + 365) % 365).padStart(3, "0") + " " + sortKey(r);
-    return map(items
-        .filter(r => set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys)))
-        .sort((a, b) => (bellKey(a) < bellKey(b) ? -1 : bellKey(a) > bellKey(b) ? 1 : 0)));
-}
+// список событий по множеству фокуса (focusListText) — канон tgcloud/lib/tree.cjs
+// (с A3): формат строки и сортировки общие с ВК; handlers берут его реэкспортом ниже,
+// копий больше нет.
 
 // клавиатура фокус-сообщения: как /start по роли, но без кнопок религий,
 // 🔔/🧬 действуют в радиусе, а в ряд с ❌ добавлены неактивные цифры радиуса
@@ -1664,6 +1625,14 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
         // (клавиатура сообщения сохраняется), прицепы .ged+.pdf — медиа-группой;
         // не влезает — все три прицепа (.ged+.pdf+.ged.txt) одной медиа-группой
         const packFits = !!pack && pack.length < 4000;
+        let overflowFinal = null;
+        if (pack && !packFits && heroKey && replyTo) {
+            const lines = pack.split("\n").filter((l, i) => !(i === 0 && l.trim().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase())));
+            const inner = cutLines(lines.join("\n"), 4000, head.length + 1 + NOT_FOR_GRAFT.length + 1);
+            overflowFinal = head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️";
+            await api.editMessageText({ chat_id: chatId, message_id: replyTo,
+                text: overflowFinal + "⏳", ...(markup !== undefined ? { reply_markup: markup } : {}) });
+        }
         if (packFits && replyTo) await api.editMessageText({
             chat_id: chatId, message_id: replyTo, text: pack,
             ...(markup !== undefined ? { reply_markup: markup } : {}),
@@ -1678,6 +1647,8 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
             chat_id: chatId, media, // прицепы — ответом (reply) на сообщение с кнопками/командой
             ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
         });
+        if (overflowFinal) await api.editMessageText({ chat_id: chatId, message_id: replyTo,
+            text: overflowFinal, ...(markup !== undefined ? { reply_markup: markup } : {}) });
         console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : "")
             + (pack ? (packFits ? " (пачка текстом в ответе)" : " + " + base + ".ged.txt") : ""), "chat", chatId);
         // бездатное древо — PDF нет по построению («chart: персоны пусты»),
@@ -1765,75 +1736,13 @@ export async function importGedcom(chatId, g) {
         byX.set(ind.__xref, ind.__xref);
         persons++;
     }
-    // единый каскад фиктивных дат до фиксированной точки — полная карта дат
-    // (xref → фиктивная полная дата): датированные в файле — послеколлизионные
-    // (resolved), бездатные поимённые в famRefs — вычисленные;
-    // два правила: у детей — прежний каскад якоря (датный сиблинг +1, свадьба
-    // +1, максимум +1 среди датных — в т.ч. фиктивных — детей других семей
-    // общего родителя, датный — в т.ч. уже фиктивный — родитель +20),
-    // у супругов — дата
-    // партнёра по цепочкам браков. Всё в одной карте, чтобы фиктивная ДР
-    // родителя/супруга (которой нет в файле) работала якорем дальше —
-    // раньше бездатные жёны такого родителя оставались заглушками
-    const fullOf = new Map(); // xref → фиктивная полная дата|null
-    for (const ind of g.indis) {
-        if (!ind.name) continue;
-        if (ind.birt && ind.birt.date) fullOf.set(ind.__xref, resolved.get(ind.__xref) || ind.birt.date);
-        else if (famRefs.has(ind.__xref)) fullOf.set(ind.__xref, null);
-    }
-    const kidDated = cx => fullOf.get(cx) || null;
-    for (let sweep = 0; sweep < fullOf.size; sweep++) {
-        let changed = false;
-        // дети fam'а: якорь первого бездатного (датный — в т.ч. фиктивный —
-        // сиблинг +1 год, иначе свадьба +1 год, иначе максимум +1 среди датных
-        // детей других семей общего родителя — первенцы разных жён одного
-        // родителя не «рождаются» в один год, иначе датный родитель +20 лет),
-        // каждый следующий бездатный — +1 год к предыдущей присвоенной дате
-        // (у детей с разными именами коллизии нет — без каскада все получили
-        // бы одну дату); повторный FAMC — первая fam (присвоенное — якорь)
-        for (const f of g.fams) {
-            const datedSibs = f.chil.map(kidDated).filter(Boolean).sort();
-            const pars = [f.husb, f.wife].map(kidDated).filter(Boolean).sort();
-            const fpars = [f.husb, f.wife].filter(Boolean);
-            let cousMax = null; // макс. датная (в т.ч. фиктивная) дата детей семей общих родителей
-            for (const f2 of g.fams) {
-                if (f2 === f) continue;
-                if (![f2.husb, f2.wife].some(px => px && fpars.includes(px))) continue;
-                for (const d of f2.chil.map(kidDated).filter(Boolean))
-                    if (cousMax === null || d > cousMax) cousMax = d;
-            }
-            let prev = null;
-            for (const cx of f.chil) {
-                if (kidDated(cx) !== null) continue; // датный сиблинг — только якорь
-                const p = g.indis.find(i => i.__xref === cx);
-                if (!p || !p.name || !fullOf.has(cx)) continue; // безымянные — мимо
-                if (prev === null) {
-                    if (datedSibs.length) prev = datePlusYears(datedSibs[datedSibs.length - 1], 1);
-                    else if (f.marr && f.marr.date) prev = datePlusYears(f.marr.date, 1);
-                    else if (cousMax !== null) prev = datePlusYears(cousMax, 1);
-                    else if (pars.length) prev = datePlusYears(pars[pars.length - 1], 20);
-                    else continue;
-                } else {
-                    prev = datePlusYears(prev, 1);
-                }
-                fullOf.set(cx, prev);
-                changed = true;
-            }
-        }
-        // супруги: дата партнёра (первая fam с датированной — в т.ч. фиктивной
-        // — половиной); раньше датированный в файле супруг имел приоритет —
-        // его послеколлизионная дата и так в fullOf, отдельный приоритет лишён
-        for (const ind of g.indis) {
-            if (!fullOf.has(ind.__xref) || fullOf.get(ind.__xref) !== null) continue;
-            for (const f of g.fams) {
-                if (f.husb !== ind.__xref && f.wife !== ind.__xref) continue;
-                const sx = f.husb === ind.__xref ? f.wife : f.husb;
-                const v = (sx && fullOf.get(sx)) || null;
-                if (v !== null) { fullOf.set(ind.__xref, v); changed = true; break; }
-            }
-        }
-        if (!changed) break;
-    }
+    // единый каскад фиктивных дат до фиксированной точки — канон
+    // gedFictiveDates (parse.cjs): карта xref → фиктивная полная дата|null,
+    // датированные в файле — послеколлизионные (resolved), бездатные
+    // поимённые в famRefs — вычисленные; правила якорей (сиблинг/свадьба/
+    // полусиблы/родитель, супруги) — в каноне. Вставки, коллизии фиктивных
+    // дат (uniqueKeyOf yearly) и счётчики — ниже, платформенные
+    const fullOf = gedFictiveDates(g, famRefs, resolved);
     // второй проход: бездатные супруги и дети — фиктивная полная дата,
     // birtAbt 15 (EST-день: в шкале PDF нет года и прожитых лет, печать —
     // «1234-05-06~»); полная точность сохраняет round-trip .ged.txt
