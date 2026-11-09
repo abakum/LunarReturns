@@ -10,6 +10,7 @@
 // Выход — Ctrl-C. Мок sdk: dev/sdk-mock → node_modules/sdk (см. план
 // .kilo/plans/20261012-tgdev-repl.md).
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import url from 'node:url';
 import readline from 'node:readline/promises';
@@ -43,6 +44,7 @@ if (fresh && fs.existsSync(dbAbs)) fs.unlinkSync(dbAbs);
 let counter = 0;   // номер сообщения [N]
 let updSeq = 0;    // update_id
 const messages = []; // { n, text, markup, flat }
+let docDir = '';   // каталог сохранённых документов — лениво, один на процесс
 
 function flatButtons(markup) {
     const out = [];
@@ -122,8 +124,8 @@ globalThis.__tgdev = {
                 updateMsg: { chat: { id: CHAT, type: CHAT_TYPE }, from: { id: 999, is_bot: true } } });
             console.log(`[${n}] sendDocument: ${doc.filename || '?'} (${doc.type || '—'}, ${size} байт)`);
             if (doc.bytes && doc.filename) {
-                const p = '/tmp/opencode/' + doc.filename.replace(/[\/\\:*?"<>|#]/g, '_');
-                fs.mkdirSync('/tmp/opencode', { recursive: true });
+                if (!docDir) docDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lr-tg-repl-'));
+                const p = path.join(docDir, doc.filename.replace(/[\/\\:*?"<>|#]/g, '_'));
                 fs.writeFileSync(p, doc.bytes);
                 console.log(`    → ${p}`);
             }

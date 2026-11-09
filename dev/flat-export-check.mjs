@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -8,7 +9,7 @@ import { fileBaseOf } from '../tgcloud/lib/chart.cjs';
 
 const require = createRequire(import.meta.url);
 const canon = require('../tgcloud/lib/parse.cjs');
-const tmp = fs.mkdtempSync('/tmp/opencode/lr-flat-');
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lr-flat-'));
 const pack = '-Отец 1950-01-01\n+1970-01-01\nМать 1952-01-01\n--Сын 1975-01-01';
 for (const input of [pack, NOT_FOR_GRAFT + '\n' + pack, '\uFEFF' + NOT_FOR_GRAFT + '\n' + pack]) {
     const files = chatFlatArtifacts(input);
