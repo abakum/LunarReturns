@@ -5,18 +5,6 @@ This file is auto-loaded by Claude Code, Cursor, and similar tools — keep it s
 and true. For the full SDK reference (db, Bot API, fetch), see
 [docs/tgcloud-sdk.md](docs/tgcloud-sdk.md).
 
-## Вызовы инструментов
-
-При каждом вызове `read` явно передавать обязательное поле `filePath`
-с абсолютным путём к файлу или каталогу, например:
-`{"filePath":"/home/koka/src/LunarReturns/AGENTS.md"}`.
-Не вызывать `read` с пустыми аргументами или с полем `path` вместо `filePath`.
-
-При каждом вызове `bash` явно передавать обязательное поле `command`
-с непустой строкой команды, например: `{"command":"git status --short"}`.
-Имя поля — строго `command`, не `cmd`, `commands` или `commsnd`.
-Не вызывать `bash` с пустыми аргументами или только с `description`/`workdir`.
-
 ## What this project is
 
 **LunarReturns** — лунно-солнечные юбилеи дней рождения. Один репозиторий,

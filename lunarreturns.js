@@ -48,7 +48,7 @@ const {
 // Канон — tgcloud/lib/parse.cjs (план .kilo/plans/20261107-shared-modules-plan.md): его же импортирует
 // ТГ-копия через ESM-шим; правки — только в .cjs, дословных копий больше нет.
 const {
-    parseTrigger, parseGedcom, gedStats, gedFictiveDates, parseTreeLine, NOT_FOR_GRAFT, withGraftMark, parseTree, packToCsv} = reqLib("parse");
+    parseTrigger, parseGedcom, gedStats, gedFictiveDates, parseTreeLine, NOT_FOR_GRAFT, withGraftMark, parseTree, packToCsv, chatFlatArtifacts} = reqLib("parse");
 
 
 // ============================== РЕЛИГИОЗНЫЕ ДНИ (общий модуль) ==============================
@@ -2537,6 +2537,32 @@ async function sendJubileeMsg(peerId, rec, note, msgId, convMsgId, fromId = 0) {
     console.log("jubilee:", key, "peer", peerId);
 }
 
+async function sendChatFlatArtifacts(peerId, pack, target, keyboard, log = "flat") {
+    const edit = { peer_id: peerId, ...target,
+        ...(keyboard ? { keyboard } : {}) };
+    try {
+        const artifacts = chatFlatArtifacts(pack);
+        const att = await vkUploadDoc(peerId, artifacts.txt.name, artifacts.txt.content);
+        let csv = "";
+        try {
+            const file = artifacts.csv();
+            csv = await vkUploadDoc(peerId, file.name, file.content);
+        } catch (e) { console.error(log + " csv upload:", e.message); }
+        const ready = { ...edit, attachment: csv ? att + "," + csv : att, message: "-+=" };
+        try {
+            await vkApi("messages.edit", ready);
+            console.log(log + " doc:", ready.attachment, "peer", peerId);
+        } catch (e) {
+            console.error(log + " edit:", e.message, "— повторяю");
+            try { await vkApi("messages.edit", ready); } catch {}
+        }
+    } catch (e) {
+        console.error(log + " doc upload:", e.message);
+        try { await vkApi("messages.edit", { ...edit,
+            message: "💥 Не удалось выложить файл «Древо чата.ged.txt»" }); } catch {}
+    }
+}
+
 // ответ на «/» или «Начать»: справка + клавиатура по чату/роли;
 // replyMsg — msg.reply_message (ответ триггером на триггер = связь)
 async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, payload = "", replyMsg = null) {
@@ -2646,34 +2672,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             // выкладки — текстовая правка «💥». Метка NOT_FOR_GRAFT —
             // первой строкой файла (пачка ромба прививке не подлежит)
             const sent = await messagesSend(peerId, "-+=⏳", msgId, convMsgId);
-            (async () => {
-                try {
-                    const att = await vkUploadDoc(peerId,
-                        fileBaseOf("Древо чата") + ".ged.txt", "\uFEFF" + withGraftMark(pack));
-                    // рядом «Древо чата.ged.csv» — пачка таблицей с табами
-                    // (Excel); провал — .ged.txt остаётся, CSV молча мимо
-                    let csv = "";
-                    try {
-                        csv = await vkUploadDoc(peerId,
-                            fileBaseOf("Древо чата") + ".ged.csv", "\uFEFF" + packToCsv(pack));
-                    } catch (e2) { console.error("links csv upload:", e2.message); }
-                    try {
-                        await vkApi("messages.edit", {
-                            peer_id: peerId, message_id: sent,
-                            attachment: csv ? att + "," + csv : att, message: "-+=" });
-                        console.log("links doc:", att + (csv ? "," + csv : ""), "peer", peerId);
-                    } catch (e) {
-                        console.error("links edit:", e.message, "— повторяю");
-                        try { await vkApi("messages.edit", {
-                            peer_id: peerId, message_id: sent,
-                            attachment: csv ? att + "," + csv : att, message: "-+=" }); } catch {}
-                    }
-                } catch (e) {
-                    console.error("links doc upload:", e.message);
-                    try { await vkApi("messages.edit", { peer_id: peerId, message_id: sent,
-                        message: "💥 Не удалось выложить файл «Древо чата.ged.txt»" }); } catch {}
-                }
-            })();
+            void sendChatFlatArtifacts(peerId, pack, { message_id: sent }, null, "links");
         } else if (pack.length >= 4000) {
             // голова + ✂️⏳ первым сообщением (полное — в файле); ВЕСЬ пачка —
             // файлом асинхронно: upload долгий, ответ — сразу; файл правкой
@@ -3230,7 +3229,7 @@ async function handleEvent(o) {
         const shownList = cutLines(list, 4000);
         await editOrigin(o, shownList || "Событий нет", await peerKeyboard(peerId, o.user_id));
     } else if (payload === "flat") {
-        // «-+=» — пачка древа чата: ВСЕГДА файлом .ged.txt (зеркало ТГ:
+        // «-+=» — пачка древа чата: файлами .ged.txt и .ged.csv (зеркало ТГ:
         // sendFlatPack key=null) — правка этого сообщения «-+=⏳», вложение
         // правкой в него же (editOrigin без attachment сбросил бы вложение),
         // потом держатель → «-+=» (видимая метка — цитата живёт); клавиатура
@@ -3245,21 +3244,8 @@ async function handleEvent(o) {
         const kb0 = await peerKeyboard(peerId, o.user_id);
         try {
             await editOrigin(o, "-+=⏳", kb0);
-            const att = await vkUploadDoc(peerId,
-                fileBaseOf("Древо чата") + ".ged.txt", "\uFEFF" + withGraftMark(flat));
-            try {
-                await vkApi("messages.edit", {
-                    peer_id: peerId, conversation_message_id: o.conversation_message_id,
-                    attachment: att, message: "-+=", keyboard: kb0 });
-                console.log("flat doc:", att, "peer", peerId);
-            } catch (e) {
-                console.error("flat edit:", e.message, " — отношу файлом");
-                try {
-                    await vkApi("messages.edit", {
-                        peer_id: peerId, conversation_message_id: o.conversation_message_id,
-                        attachment: att, message: "-+=", keyboard: kb0 });
-                } catch {}
-            }
+            await sendChatFlatArtifacts(peerId, flat,
+                { conversation_message_id: o.conversation_message_id }, kb0);
         } catch (e) {
             console.error("flat doc:", e.message);
             await editOrigin(o, "💥 Не удалось выложить файл «Древо чата.ged.txt»", kb0);

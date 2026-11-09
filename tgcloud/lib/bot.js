@@ -7,7 +7,7 @@ import { kinLabel, fynny } from './kinship.cjs';
 import { REL_DEFS, religiousDigest } from './religion.cjs';
 import { jubileeText, approxOut } from './text.js';
 import { findShownRecord } from './text.cjs';
-import { gedFictiveDates, packToCsv } from './parse.cjs';
+import { chatFlatArtifacts, gedFictiveDates } from './parse.cjs';
 import { focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText } from './tree.cjs';
 // фокус-список (focusListText) — канон tree.cjs (с A3): реэкспорт — точки
 // импорта handlers не менялись
@@ -1925,11 +1925,10 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin =
     if (!pack) return false;
     const reply = replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {};
     if (key === null) {
-        const base = fileBaseOf("Древо чата") + ".ged.txt";
+        const artifacts = chatFlatArtifacts(pack);
+        const base = artifacts.txt.name;
         // метка «не для прививки» первой строкой (как в tailDoc): пачка ромба
         // в ответе на триггер правок не делает (parseTree → noGraft)
-        const content0 = pack.trimStart().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase())
-            ? pack : NOT_FOR_GRAFT + "\n" + pack;
         try {
             // метка-держатель «-+=⏳»: правка сообщения с кнопками (клавиатура
             // остаётся) либо новое сообщение ответом на /links; файл ответом
@@ -1945,21 +1944,20 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin =
                 holdId = hold.message_id;
             }
             // BOM — чтобы Windows-редакторы открывали как UTF-8
-            const content = "\uFEFF" + content0;
             await api.sendDocument({
                 chat_id: chatId,
-                document: new InputFile(new TextEncoder().encode(content), base,
-                    { type: "text/plain" }),
+                document: new InputFile(new TextEncoder().encode(artifacts.txt.content), base,
+                    { type: artifacts.txt.type }),
                 reply_parameters: { message_id: holdId, allow_sending_without_reply: true },
             });
             // рядом «Древо чата.ged.csv» — пачка таблицей с табами (Excel);
             // провал — .ged.txt остаётся, CSV молча не выкладывается
             try {
+                const csv = artifacts.csv();
                 await api.sendDocument({
                     chat_id: chatId,
                     document: new InputFile(
-                        new TextEncoder().encode("\uFEFF" + packToCsv(content0)),
-                        fileBaseOf("Древо чата") + ".ged.csv", { type: "text/csv" }),
+                        new TextEncoder().encode(csv.content), csv.name, { type: csv.type }),
                     reply_parameters: { message_id: holdId, allow_sending_without_reply: true },
                 });
             } catch (e2) { console.error("flat pack csv:", e2.message); }

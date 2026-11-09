@@ -748,9 +748,18 @@ const withGraftMark = t =>
     t.replace(/^\uFEFF/, "").trimStart().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase())
         ? t : NOT_FOR_GRAFT + "\n" + t;
 
+// CSV is lazy so its preparation can fail independently of the TXT export.
+function chatFlatArtifacts(pack) {
+    const content = withGraftMark(pack.replace(/^\uFEFF/, ""));
+    return {
+        txt: { name: "Древо чата.ged.txt", type: "text/plain", content: "\uFEFF" + content },
+        csv: () => ({ name: "Древо чата.ged.csv", type: "text/csv",
+            content: "\uFEFF" + packToCsv(content) }),
+    };
+}
 
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
 // NOT_FOR_GRAFT экспортируется: пачку метит платформенный chatFlatText
 // (bot.js для ТГ, инлайн ВК), sendGedArtifacts ВК режет перелив по метке;
 // у bot.js своя идентичная копия как точка реэкспорта для ТГ-хендлеров
-module.exports = { NOT_FOR_GRAFT, gedFictiveDates, gedStats, packToCsv, parseGedcom, parseTree, parseTreeLine, parseTrigger, withGraftMark };
+module.exports = { NOT_FOR_GRAFT, chatFlatArtifacts, gedFictiveDates, gedStats, packToCsv, parseGedcom, parseTree, parseTreeLine, parseTrigger, withGraftMark };

@@ -99,6 +99,10 @@ const files = [""];            // маршруты /file/<n> — дропы !ged
 let fileN = 0;
 let snackN = 0;
 let uploadHits = 0; // LR_UPLOAD_FAIL1: самый первый /upload/ — HTML (проверка ретрая)
+let attachmentEdits = 0;
+const trace = entry => {
+    if (process.env.LR_VK_TRACE) fs.appendFileSync(process.env.LR_VK_TRACE, JSON.stringify(entry) + '\n');
+};
 
 const srv = http.createServer((req, res) => {
     // без keep-alive: undici переиспользует сокет после /file/-загрузки,
@@ -119,13 +123,25 @@ const srv = http.createServer((req, res) => {
             res.writeHead(502, { 'Content-Type': 'text/html' });
             return res.end('<!DOCTYPE html><html><body>bad gateway</body></html>');
         }
-        return json({ file: 'xyz' });
+        let body = '';
+        req.setEncoding('utf8');
+        req.on('data', chunk => body += chunk);
+        req.on('end', () => {
+            trace({ method: 'upload', body });
+            if (process.env.LR_CSV_FAIL && body.includes('.ged.csv"'))
+                return json({ error: 'injected CSV upload failure' });
+            if (process.env.LR_TXT_FAIL && body.includes('.ged.txt"'))
+                return json({ error: 'injected TXT upload failure' });
+            json({ file: 'xyz' });
+        });
+        return;
     }
     let body = '';
     req.on('data', c => body += c);
     req.on('end', () => {
         const p = Object.fromEntries(new URLSearchParams(body));
         const method = req.url.replace('/method/', '').split('?')[0];
+        trace({ method, params: p });
         if (RAW) console.log('>> vk', method, JSON.stringify(p).slice(0, 160));
         try {
             if (method === 'messages.sendMessageEventAnswer') {
@@ -146,6 +162,8 @@ const srv = http.createServer((req, res) => {
                 return json({ response: m.mid });
             }
             if (method === 'messages.edit') {
+                if (p.attachment && ++attachmentEdits === 1 && process.env.LR_EDIT_FAIL1)
+                    return json({ error: { error_code: 100, error_msg: 'injected edit failure' } });
                 const cmid = Number(p.conversation_message_id);
                 const mid = Number(p.message_id);
                 const m = msgs.find(x => (cmid && x.cmid === cmid) || (mid && x.mid === mid));
