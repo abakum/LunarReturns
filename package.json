@@ -3,12 +3,16 @@
   "version": "1.0.0",
   "description": "VK-бот лунно-солнечных юбилеев LunarReturns",
   "main": "lunarreturns.js",
+  "bin": {
+    "ged2txt": "bin/ged2txt.cjs",
+    "txt2ged": "bin/txt2ged.cjs"
+  },
   "scripts": {
     "start": "node lunarreturns.js",
     "deploy": "tgcloud push"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.5"
   },
   "license": "MIT"
 }

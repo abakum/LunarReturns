@@ -1,0 +1,10 @@
+﻿-Husband 1950
++1970 1980 ~F1
+Wife 1952
+--FirstChild 1972
++1982 1988
+OtherWife 1955
+==MiddleChild 1984
++1990 ~F2
+Wife
+--LastChild 1992

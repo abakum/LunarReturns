@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lr-a3-repl-'));
 const root = new URL('../', import.meta.url);
-const romanov = fs.readFileSync(new URL('../Romanov_family.ged.txt', import.meta.url), 'utf8').trim().replaceAll('\n', '\\n');
+const romanov = fs.readFileSync(new URL('./fixtures/Romanov_family.ged.txt', import.meta.url), 'utf8').trim().replaceAll('\n', '\\n');
 const kids = '-Родитель 1950-01-01\\n+1970-02-28\\nСупруга 1952-01-01\\n--Старший 1972-02-29\\n--Младший\\n==Младшая';
 const huge = Array.from({ length: 180 }, (_, i) => '-Тестовый' + String(i).padStart(3, '0') + ' Длинное Имя Для Переполнения 2000-01-01').join('\\n');
 for (const platform of ['tg', 'vk']) {
@@ -105,7 +105,7 @@ for (const platform of ['tg', 'vk']) {
     // тексты бота ТГ идут HTML-экранированными (`>` → `&gt;`) — сопоставляем в едином виде
     const plain = log.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
     assert.match(plain, /персон 2, семей 2/); // обе FAM одной пары в выборке, первая раньше
-    assert.match(plain, /персон 4/); // пачка AFT-персон влилась
+    assert.match(plain, /персон 4/); // роспись AFT-персон влилась
     assert.match(plain, /некорректное время/); // 💥-якоря ничего не добавили
     // суффикс AFT хранится и печатается (триггерные юбилеи; полная — как хранится)
     assert.match(plain, /Афтжених\+Афтневеста 1901-05>/);

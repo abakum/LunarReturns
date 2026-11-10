@@ -18,6 +18,24 @@
 
 const {FONT_B64} = require('./font-cyr.cjs');
 const {kinLabel} = require('./kinship.cjs');
+const {focusKeys} = require('./tree.cjs');
+
+// Called after adapter additions (including anchored dateless spouses).
+// The label cache belongs to this render and is reused by chartModel.
+function chartRows(rows, rel) {
+    if (!rel || !rel.hero || !rel.range) return rows;
+    const candidates = new Set(focusKeys(rel.pairs, rel.hero, rel.range, rel.spouses));
+    rel.labels = new Map();
+    return rows.filter(r => {
+        const key = r.k ?? r.name + " " + r.birth;
+        if (key === rel.hero) return true;
+        if (!candidates.has(key)) return false;
+        const label = kinLabel(rel.pairs, rel.spouses, k => rel.sex[k] ?? null,
+            rel.hero, key, rel.range);
+        rel.labels.set(key, label);
+        return !!label && label.trim().split(/\s+/).length <= rel.range;
+    });
+}
 
 const CHART_MAX = 1000;  // персон (PDF многостраничный, режется по высоте)
 
@@ -122,6 +140,21 @@ function parseTtf(b) {
     };
 }
 
+// Match PDF /W (integer thousandths of an em), including missing-glyph skips.
+function fontGlyphs(f) {
+    const cmap = new Map(f.cmap);
+    return s => {
+        let hexStr = "", units = 0;
+        for (const ch of String(s)) {
+            const g = cmap.get(ch.codePointAt(0));
+            if (!g) continue;
+            hexStr += g.toString(16).padStart(4, "0");
+            units += Math.round(f.adv[g] * 1000 / f.upem);
+        }
+        return { hexStr, w: units / 1000 };
+    };
+}
+
 // rows — [{ name, birth: "ГГГГ-ММ-…", death: "…"/null, sex: "M"/"F"/null }];
 // бездатный супруг — { name, birth: null, anchor: <год ДР супруга>, death,
 // sex }: левая колонка пустая, бар от якорного года; без якоря не рисуется.
@@ -142,7 +175,8 @@ function parseTtf(b) {
 // Вычисляет всю геометрию (без рендера) → модель с примитивами draws
 // (rect/rrect/line/dot/text) в порядке отрисовки — единая основа для
 // PDF-эммитера
-function chartModel(title, rows, links, rel = null, marriages = null) {
+function chartModel(title, rows, links, rel = null, marriages = null,
+    glyphs = fontGlyphs(parseTtf(chartFont()))) {
     if (!rows.length) throw new Error("chart: персоны пусты");
     const year = d => Number(String(d).slice(0, 4));
     // бездатные (birth null): год — якорь от ДР супруга (левая колонка пустая,
@@ -189,14 +223,8 @@ function chartModel(title, rows, links, rel = null, marriages = null) {
                 throw new Error("chart: родитель не старше ребёнка " + p);
         }
     }
-    // оценка ширины текста в px (DejaVu Sans 10px, см. фактические ширины
-    // сабсета): прописные ~7.7, строчные ~6.3, цифры ~6.4, пробел ~3.2 —
-    // для ширины колонки подписей
-    const textW = s => [...s].reduce((a, c) => a
-        + (c === " " ? 3.2
-            : c >= "0" && c <= "9" ? 6.4
-            : c === c.toUpperCase() && c !== c.toLowerCase() ? 7.7
-            : 6.3), 0);
+    // The same 10px glyph advances as PDF anchoring, for labels and names.
+    const textW = s => glyphs(s).w * 10;
     // порядок строк: (год рождения/якорь, имя) — ключи «Имя год»
     const people = [...rows].sort((a, b) => yrOf(a) - yrOf(b)
         || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
@@ -208,7 +236,9 @@ function chartModel(title, rows, links, rel = null, marriages = null) {
     // (abt >= 15: EST — от супруга или сдвинутый дубль) год тоже не печатается
     const kin = rel && rel.hero
         ? new Map(people.map(p =>
-            [p.key, kinLabel(rel.pairs || [], rel.spouses || [], k2 => (rel.sex || {})[k2] ?? null, rel.hero, p.key, rel.range || undefined)]))
+            [p.key, rel.labels?.has(p.key) ? rel.labels.get(p.key)
+                : p.key === rel.hero && rel.range ? ""
+                : kinLabel(rel.pairs || [], rel.spouses || [], k2 => (rel.sex || {})[k2] ?? null, rel.hero, p.key, rel.range || undefined)]))
         : null;
     if (kin && rel.range) kin.set(rel.hero, rangeLevel(rel.range));
     people.forEach((p, i) => {
@@ -463,20 +493,10 @@ function fileBaseOf(head) {
 // режут единое полотно чарта на горизонтальные полосы (Form XObject + клип)
 function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null) {
     const f = parseTtf(fontBytes);
-    const m = chartModel(title, rows, links, rel, marriages);
+    const glyphs = fontGlyphs(f);
+    const m = chartModel(title, rows, links, rel, marriages, glyphs);
     const n = v => String(Math.round(v * 1000) / 1000);
     const col = hex => [1, 3, 5].map(i => n(parseInt(hex.slice(i, i + 2), 16) / 255)).join(" ");
-    const cmap = new Map(f.cmap);
-    const glyphs = s => {
-        let hexStr = "", units = 0;
-        for (const ch of String(s)) {
-            const g = cmap.get(ch.codePointAt(0));
-            if (!g) continue;    // нет глифа (эмодзи и пр.) — пропустить
-            hexStr += g.toString(16).padStart(4, "0");
-            units += f.adv[g] || 0;
-        }
-        return { hexStr, w: units / f.upem };   // w — в em, ×size → px
-    };
     // операторы чарта (координаты y вниз; флип — cm XObject'а, для текста
     // двойной флип в Tm оставляет его прямым)
     const ops = [];
@@ -616,4 +636,4 @@ function chartFont() {
 
 
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
-module.exports = { CHART_MAX, b64ToBytes, chartFont, chartModel, chartPdf, fileBaseOf, parseTtf, rangeLevel };
+module.exports = { CHART_MAX, b64ToBytes, chartFont, chartModel, chartPdf, chartRows, fileBaseOf, parseTtf, rangeLevel };

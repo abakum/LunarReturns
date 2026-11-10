@@ -1,0 +1,58 @@
+﻿0 HEAD
+1 SOUR LunarReturns
+1 GEDC
+2 VERS 5.5.1
+2 FORM LINEAGE-LINKED
+1 CHAR UTF-8
+0 @P1@ INDI
+1 NAME Dated №Person
+1 SEX M
+1 BIRT
+2 DATE 1 JAN 1950
+2 PLAC Birth №7
+1 DEAT
+2 DATE 1 JAN 2020
+2 PLAC Death №8
+1 NOTE Dated №9
+1 FAMS @W1@
+0 @P2@ INDI
+1 NAME Dated №Spouse
+1 SEX F
+1 BIRT
+2 DATE 1 JAN 1952
+1 FAMS @W1@
+0 @P3@ INDI
+1 NAME Burial №Person
+1 SEX M
+1 BIRT
+2 DATE 1 JAN 1940
+1 DEAT
+2 DATE 1 JAN 2010
+2 PLAC Burial №13
+0 @S1@ INDI
+1 NAME Dateless №Father
+1 NOTE Father №1, continued №2
+2 CONT Next №3
+1 SEX M
+1 FAMS @W2@
+0 @S2@ INDI
+1 NAME Dateless №Mother
+1 NOTE Mother №4
+1 SEX F
+1 FAMS @W2@
+0 @W1@ FAM
+1 HUSB @P1@
+1 WIFE @P2@
+1 MARR
+2 DATE 1 JAN 1970
+2 PLAC Wedding №10
+1 DIV
+2 DATE 1 JAN 1980
+2 PLAC Divorce №11
+1 NOTE Marriage №12
+0 @W2@ FAM
+1 HUSB @S1@
+1 WIFE @S2@
+1 NOTE Family №5
+2 CONT Undated №6
+0 TRLR

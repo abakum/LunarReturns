@@ -105,7 +105,7 @@ async function gedDrop(chatId, doc, fromId) {
     console.log("ged drop:", name, "chat", chatId);
 }
 
-// дроп .txt-документа с пачкой «плоское древо» (см. txtDrop ниже в коде)
+// дроп .txt-документа с родословной росписью -+= (см. txtDrop ниже в коде)
 async function txtDrop(chatId, doc, fromId, replyTo) {
     const name = doc.file_name || "пачка.ged.txt";
     let content;
@@ -122,7 +122,7 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
         return;
     }
     // в ответе на триггер (сообщение пользователя) — ветвь цитируемого:
-    // срезана, пачка привита
+    // срезана, роспись привита
     const rh = replyHeadOf(replyTo);
     if (rh) {
         let anchor = null;
@@ -130,7 +130,7 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
         if (sh) anchor = sh.n + " " + sh.d;
         if (!anchor) {
             // цитата на триггера не нашлась — добавлять молча нельзя: так
-            // пачка применилась бы целиком (мимо героя)
+            // роспись применилась бы целиком (мимо героя)
             await api.sendMessage({ chat_id: chatId, text: "💥 В ответе — не триггер: пачка не применена. Герой ветви должен быть «Имя ГГГГ-ММ-ДД» из древа чата." });
             console.log("txt drop reply: триггера нет, мимо, чат", chatId);
             return;
@@ -224,8 +224,8 @@ export default async function (message, ctx) {
         await gedDrop(chatId, message.document, message.from?.id);
         return;
     }
-    // .ged.txt-документ (тексты бота) = пачка «плоское древо»: в ответе на
-    // триггер — сразу применяем (ветвь цитируемого срезана, пачка привита);
+    // .ged.txt-документ (тексты бота) = родословная роспись -+=: в ответе на
+    // триггер — сразу применяем (ветвь цитируемого срезана, роспись привита);
     // просто дроп — те же 3 кнопки «Да/Нет/Да, с резервом», что у .ged
     if (message.document && /\.ged\.txt$/i.test(message.document.file_name || "")) {
         await txtDrop(chatId, message.document, message.from?.id, message.reply_to_message);
@@ -345,8 +345,8 @@ export default async function (message, ctx) {
         return;
     }
 
-    // «/links» / «связи» (как в VK): пачка ВЕТВИ героя — как «-+=» на фокусе
-    // (>4000 — файлом .ged.txt); без reply (и не на триггер) — пачка древа
+    // «/links» / «связи» (как в VK): роспись ВЕТВИ героя — как «-+=» на фокусе
+    // (>4000 — файлом .ged.txt); без reply (и не на триггер) — роспись древа
     // чата. Листинг сообщений-связей не восстановлен (листинг был одноразовым)
     if (/^\/links(?:@\S+)?$/i.test(text) || text.toLowerCase() === "связи") {
         const replyTo = { message_id: message.message_id, allow_sending_without_reply: true };
@@ -356,7 +356,7 @@ export default async function (message, ctx) {
             const rk = keyOfHead(lrh);
             const rec = await recordShownOf(chatId, rk);
             if (rec) { key = rec.n + " " + rec.d; head = focusHead(key, 1, rec.dd); } // показанный ключ → хранимый
-            else key = null; // ответ не на триггер — вся пачка
+            else key = null; // ответ не на триггер — вся роспись
         }
         const ok = await sendFlatPack(chatId, key, head, message.message_id);
         if (!ok) await api.sendMessage({ chat_id: chatId, text: key ? "ветвь пуста" : "связей пока нет",
@@ -378,7 +378,7 @@ export default async function (message, ctx) {
         // гедком без персон с датами — дальше как триггеры
     }
 
-    // /Иван — префиксный поиск по пачке «плоское древо» (/-Пётр — только
+    // /Иван — префиксный поиск по родословной росписи -+= (/-Пётр — только
     // мужчины глубины 0, /--Иван — глубины 1, /=… — женщины); "/ текст" —
     // подстрока. Пусто — справка. (логика — flatSearch в lib/bot.js)
     if (text.startsWith("/")) {
@@ -430,10 +430,10 @@ export default async function (message, ctx) {
         return;
     }
 
-    // пачка «плоское древо»: строки с маркерами '-'/'=' (глубина), «+дата»/«+»
+    // родословная роспись -+=: строки с маркерами '-'/'=' (глубина), «+дата»/«+»
     // (свадьбы) и безмарковыми именами вторых половин — весь разбор одним
     // сообщением; в ответе сводка + ошибки построчно. В ответе на триггер —
-    // резка-прививка: ветвь цитируемого срезана, пачка (герой = цитируемый,
+    // резка-прививка: ветвь цитируемого срезана, роспись (герой = цитируемый,
     // ветвь целиком) привита; мимо цитаты — добавление merge'ем
     const lines0 = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
     if (lines0.some(l => /^[-+=]/.test(l))) {
@@ -456,8 +456,8 @@ export default async function (message, ctx) {
         }
     }
 
-    // поштучного ввода детей больше нет: ребёнок/ветвь добавляется пачкой
-    // «плоское древо» в ответе на героя (cutAndGraft выше)
+    // поштучного ввода детей больше нет: ребёнок/ветвь добавляется родословной
+    // росписью -+= в ответе на героя (cutAndGraft выше)
 
     const lines = text.split(/\s*\n+\s*/).filter(Boolean);
     // точечная правка: одна строка без маркера в ответе на триггер (сообщение

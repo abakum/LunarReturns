@@ -19,9 +19,17 @@ function focusDepth(pairs, spousePairs, key) {
 // есть путь от key с ≤ radius шагами «вверх» (к родителям) И ≤ radius шагами
 // «вниз» (к детям); пары родитель-ребёнок держатся вместе в пределах окна
 // (сиблинги — u1d1, племянники — u1d2 с радиуса 2, троюродные — с 4).
-// Супруги доклеиваются отдельно (focusWithSpouses). pairs — [[parent, child]]
-function focusKeys(pairs, key, radius) {
+// Супруги доклеиваются отдельно (focusWithSpouses). pairs — [[parent, child]].
+// Optional spousePairs enables PDF-only bounded marriage traversal; existing
+// export/bell callers keep their original three-argument behavior.
+function focusKeys(pairs, key, radius, spousePairs = []) {
     const kidsOf = new Map(), parentsOf = new Map();
+    const spousesOf = new Map();
+    for (const [a, b] of spousePairs) {
+        if (!spousesOf.has(a)) spousesOf.set(a, []);
+        if (!spousesOf.has(b)) spousesOf.set(b, []);
+        spousesOf.get(a).push(b); spousesOf.get(b).push(a);
+    }
     for (const [p, c] of pairs) {
         if (!kidsOf.has(p)) kidsOf.set(p, []);
         kidsOf.get(p).push(c);
@@ -29,29 +37,35 @@ function focusKeys(pairs, key, radius) {
         parentsOf.get(c).push(p);
     }
     // обход состояний (узел, вверх, вниз); на узле — недоминируемые вектора
-    const best = new Map([[key, [[0, 0]]]]);
-    const dominated = (arr, u, d) => arr.some(s => s[0] <= u && s[1] <= d);
-    const queue = [[key, 0, 0]];
+    const best = new Map([[key, [[0, 0, 0]]]]);
+    const dominated = (arr, u, d, s) => arr.some(v => v[0] <= u && v[1] <= d && v[2] <= s);
+    const queue = [[key, 0, 0, 0]];
     while (queue.length) {
-        const [k, u, d] = queue.pop();
-        const step = (adj, nu, nd) => {
+        const [k, u, d, s] = queue.pop();
+        const step = (adj, nu, nd, ns = s) => {
             if (nu > radius || nd > radius) return;
             // fynny-ромб: боковая родня (u,d ≥ 1) — по числу слов цепочки
             // (u+d−1 ≤ radius); 5-й радиус — обычный (слова ≤ 5),
             // «показать всех» снято (PDF был слишком велик и долог)
             if (fynny && nu && nd && nu + nd - 1 > radius) return;
+            // PDF-only optional marriage traversal. Keep the cheap blood
+            // lower bound; labels, not graph distances, decide membership.
+            if (ns && nu + nd - (fynny && nu && nd ? 1 : 0) + ns > radius) return;
             for (const x of (adj.get(k) || [])) {
                 let arr = best.get(x);
                 if (!arr) best.set(x, arr = []);
-                if (dominated(arr, nu, nd)) continue;
+                if (dominated(arr, nu, nd, ns)) continue;
                 for (let i = arr.length - 1; i >= 0; i--)
-                    if (nu <= arr[i][0] && nd <= arr[i][1]) arr.splice(i, 1);
-                arr.push([nu, nd]);
-                queue.push([x, nu, nd]);
+                    if (nu <= arr[i][0] && nd <= arr[i][1] && ns <= arr[i][2]) arr.splice(i, 1);
+                arr.push([nu, nd, ns]);
+                queue.push([x, nu, nd, ns]);
             }
         };
         step(parentsOf, u + 1, d);
         step(kidsOf, u, d + 1);
+        // Each marriage starts a new blood segment. Each segment retains
+        // u+d-1 (e.g. brother of a spouse of a brother costs 1+1+1).
+        step(spousesOf, 0, 0, s + u + d - (fynny && u && d ? 1 : 0) + 1);
     }
     return [...best.keys()];
 }
@@ -193,11 +207,11 @@ function eventListText(rows, byFullDate = false, mmddNow = "") {
 
 // GEDCOM 5.5.1 по чату — выгрузка дерева: INDI из персон (плюс заглушки-
 // супруги без даты — без BIRT), FAM из семей (усекаются до выбранных
-// персон; группы с одинаковым набором родителей схлопываются — как прежде).
+// персон; каждая запись семьи сохраняется отдельно).
 // keys — необязательный набор персон: фрагмент только по ним (для
 // сообщений-связей)
 // семьи в поколениях: семьи родителей раньше семей детей — канонический
-// порядок строк семей в пачке (.ged.txt) и нумерации FAM в .ged независимо
+// порядок строк семей в росписи (.ged.txt) и нумерации FAM в .ged независимо
 // от порядка вставки: номер семьи детей бывает меньше номера семьи родителей
 // (upload/GK.ged), и тогда визит-порядок корней в flatTreeText работает лишь
 // как страховка. Связь: семья g, где половина f — ребёнок, идёт перед f;
@@ -222,5 +236,23 @@ function famsByGenerations(fams, halvesOf, kidsOf) {
     return out;
 }
 
+// Resolve textual family aliases without ever claiming a different couple's row.
+// Collisions use deterministic database xrefs, so the same input can be reapplied.
+function familyXref(rows, mx, fx, alias, date, used) {
+    const same = f => (f.husb ?? null) === mx && (f.wife ?? null) === fx;
+    const safe = x => String(x).replace(/#/g, "№");
+    if (alias) {
+        const direct = rows.find(f => f.xref === alias) || rows.find(f => safe(f.xref) === alias);
+        if (direct && same(direct) && !used.has(direct.xref)) return direct.xref;
+        if (!direct) return alias;
+        for (let n = 2; ; n++) {
+            const x = alias + "_" + n, f = rows.find(f => safe(f.xref) === x);
+            if (!f || (same(f) && (f.marrD ?? null) === (date ?? null) && !used.has(f.xref))) return f ? f.xref : x;
+        }
+    }
+    const f = rows.find(f => same(f) && (f.marrD ?? null) === (date ?? null) && !used.has(f.xref));
+    return f ? f.xref : null;
+}
+
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
-module.exports = { focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, eventListText, famsByGenerations };
+module.exports = { familyXref, focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, eventListText, famsByGenerations };

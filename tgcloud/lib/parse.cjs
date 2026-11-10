@@ -1,5 +1,5 @@
 // parse.cjs — общий канон для ВК и ТГ (план .kilo/plans/20261107-shared-modules-plan.md):
-// города/часовые пояса, триггеры, гедком-импорт, плоское древо, packToCsv. ВК require-ит из lunarreturns.js, ТГ импортирует через
+// города/часовые пояса, триггеры, гедком-импорт, родословная роспись -+=, packToCsv. ВК require-ит из lunarreturns.js, ТГ импортирует через
 // ESM-шим tgcloud/lib/parse.js; правки — только здесь, дословных копий больше нет.
 const {oldStyleDate, NEW_STYLE_END} = require('./religion.cjs');
 const { datePlusYears } = require('./flat.cjs');
@@ -44,16 +44,13 @@ function explicitZoneMinutes(s) {
 // сепаратор даты может быть «_» — маркер показанного нового стиля (шапка
 // юбилея печатает даты ≤ 1918-02-13 с «_»; разбор конвертирует их в
 // хранимый старый стиль, см. parseDateGroups)
-const DATE_TAIL = "(\\d{4})([-./_](?:\\d{2}))?([-./_](?:\\d{2}))?([~<>])?(?:\\s+(\\d{1,2})(?:[:.\\u0433](\\d{2}))?)?\\s*(?:\\(\\s*([^)]+?)\\s*\\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\\s*[+-]\\s*\\d{1,2}))?";
+const DATE_TAIL = "(\\d{4})([-./_](?:\\d{2}))?([-./_](?:\\d{2}))?([?=~<>])?(?:\\s+(\\d{1,2})(?:[:.\\u0433](\\d{2}))?)?\\s*(?:\\(\\s*([^)]+?)\\s*\\)|((?:UTC|GMT|ГМТ|Гринвич|Гринуич|[Мм]оскв[а-яё]*|[Мм]ск)\\s*[+-]\\s*\\d{1,2}))?";
 const TRIGGER_RE = new RegExp("^(.+?)\\s+" + DATE_TAIL + "(?:\\s+" + DATE_TAIL + ")?(?:\\s+(.+))?\\s*$", "iu");
-// строка свадьбы плоского древа: «дата [дата развода] (место) [прим]» — без
-// времени/зоны (свадьбе оно не нужно); «~»/«<»/«>» за датой —
-// EST/BEF/AFT (как в TRIGGER_RE); abt — квалификатор×гранулярность (ниже);
-// пара в скобках — место, голый хвост — примечание (вывод — тем
-// же порядком: даты, место в скобках, примечание);
+// Семья: дата (место свадьбы) дата развода (место развода), без времени/зоны.
+// Каждое место относится к непосредственно предшествующей дате.
 // «^» — маркер примечания (как в TRIGGER_RE): после него — дословно
-const WDATE = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?([~<>])?";
-const WEDDING_RE = new RegExp("^" + WDATE + "(?:\\s+" + WDATE + ")?(?:\\s*\\(([^)]*)\\))?(?:\\s+(.+))?\\s*$", "iu");
+const WDATE = "(\\d{4})(?:[-./](\\d{2}))?(?:[-./](\\d{2}))?([?=~<>])?";
+const WEDDING_RE = new RegExp("^" + WDATE + "(?:\\s*\\(([^)]*)\\))?(?:\\s+" + WDATE + ")?(?:\\s*\\(([^)]*)\\))?(?:\\s+(.+))?\\s*$", "iu");
 
 // ГГГГММДД[ ЧЧ:ММ][ зона] → дата/время в МСК; без времени и зоны — только d
 function dateTimeToMsk(y, mo, dd, hh, mm, givenTime, diffMin, hasZone) {
@@ -83,9 +80,8 @@ function dateTimeToMsk(y, mo, dd, hh, mm, givenTime, diffMin, hasZone) {
 // 3–5, «CAL …» → 6–8, «BEF …» → 9–11, «AFT …» → 12–14, «EST …» → 15–17.
 // Точная дата — undefined (в БД 0); юбилеи по любому abt!=0 не оповещаются
 const ABT_Q = { abt: 1, cal: 2, bef: 3, aft: 4, est: 5 };
-// суффикс за текстовой датой → Q: «~» EST, «<» BEF, «>» AFT (ABT/CAL —
-// только префикс гедкома)
-const ABT_SUF = { "~": 5, "<": 3, ">": 4 };
+// Суффиксы текстового экспорта симметричны approxOut: ABT/CAL/EST/BEF/AFT.
+const ABT_SUF = { "?": 1, "=": 2, "~": 5, "<": 3, ">": 4 };
 const abtOf = (g, q) => { const a = (q || 0) * 3 + (g || 0); return a || undefined; };
 
 // разобрать одну группу «дата [~|<|>] [время] [зона]» из групп m[gi..gi+7];
@@ -219,10 +215,11 @@ function gdateToISO(s) {
 // BIRT/DEAT/BURI/SEX (DATE, TIME, PLAC) у INDI и HUSB/WIFE/CHIL/MARR/DIV
 // (DATE, PLAC) у FAM; BURI (похороны) — фолбэк смерти: дата/место заходят
 // в deat, когда своей смерти нет (или нет её места)
+const gedText = value => String(value).replace(/#/g, "№");
 function parseGedcom(text) {
     // строки не тримировать целиком: хвостовые пробелы строки принадлежат
     // значению (GEDCOM: «Иванов » + 2 CONC «Иван» → «Иванов Иван»), ведущий
-    // отступ срезается; табуляции — прочь (пачки из Excel-CSV не ломают
+    // отступ срезается; табуляции — прочь (росписи из Excel-CSV не ломают
     // грамматику)
     const lines = String(text).split(/\r?\n/).map(l => l.replace(/^[ \t]+/, "").replace(/\t/g, " "));
     if (!lines.some(l => /^0\s+HEAD\b/i.test(l))) return null;
@@ -233,7 +230,8 @@ function parseGedcom(text) {
         const m = l.match(/^(\d)\s+(?:@([^@]+)@\s+)?([A-Za-z]+)?(?:\s(.*))?$/);
         if (!m) continue;
         const lvl = Number(m[1]), xref = m[2], tag = (m[3] || "").toUpperCase(), val = (m[4] || "").trim();
-        const valN = m[4] ?? ""; // NOTE/TITL/CONC/CONT — значение дословно (пробелы значимы)
+        // Normalize text, never xrefs or pointer values (e.g. @I#1@).
+        const valN = gedText(m[4] ?? ""); // NOTE spaces remain significant
         if (lvl === 0) {
             curTag = null;
             cur = null;
@@ -244,7 +242,7 @@ function parseGedcom(text) {
         if (!cur) continue;
         if (lvl === 1) curTag = tag;
         if (lvl === 1) {
-            if (tag === "NAME") cur.name = val.replace(/\/(.*?)\//g, "$1").trim().replace(/\s+/g, " ");
+            if (tag === "NAME") cur.name = valN.replace(/\/(.*?)\//g, "$1").trim().replace(/\s+/g, " ");
             else if (tag === "SEX") cur.sex = /^F/i.test(val) ? "F" : /^M/i.test(val) ? "M" : null;
             else if (tag === "BIRT") cur.birt = cur.birt || {};
             else if (tag === "DEAT") cur.deat = cur.deat || {};
@@ -252,7 +250,7 @@ function parseGedcom(text) {
             else if (tag === "MARR") cur.marr = cur.marr || {};
             else if (tag === "DIV") cur.div = cur.div || {};
             else if (tag === "NOTE") cur.note = valN;
-            // TITL — тоже хвост персоны (хранится в note, выводится как хвост пачки)
+            // TITL — тоже хвост персоны (хранится в note, выводится как хвост росписи)
             else if (tag === "TITL" && cur.note == null) cur.note = valN;
             else if (tag === "HUSB" || tag === "WIFE" || tag === "CHIL") {
                 const r = val.match(/@([^@]+)@/);
@@ -278,14 +276,14 @@ function parseGedcom(text) {
             if (curTag === "BIRT" && cur.birt) cur.birt.time = val.slice(0, 5);
             else if (curTag === "DEAT" && cur.deat) cur.deat.time = val.slice(0, 5);
         } else if (lvl === 2 && tag === "PLAC") {
-            if (curTag === "BIRT" && cur.birt) cur.birt.plac = val;
-            else if (curTag === "DEAT" && cur.deat) cur.deat.plac = val;
-            else if (curTag === "BURI" && cur.buri) cur.buri.plac = val;
-            else if (curTag === "MARR" && cur.marr) cur.marr.plac = val;
-            else if (curTag === "DIV" && cur.div) cur.div.plac = val;
+            if (curTag === "BIRT" && cur.birt) cur.birt.plac = valN.trim();
+            else if (curTag === "DEAT" && cur.deat) cur.deat.plac = valN.trim();
+            else if (curTag === "BURI" && cur.buri) cur.buri.plac = valN.trim();
+            else if (curTag === "MARR" && cur.marr) cur.marr.plac = valN.trim();
+            else if (curTag === "DIV" && cur.div) cur.div.plac = valN.trim();
         } else if (lvl === 2 && (tag === "CONC" || tag === "CONT") && (curTag === "NOTE" || curTag === "TITL")) {
             // продолжение NOTE/TITL: CONC — склейка без пробела, CONT — новая
-            // строка («^» в note — маркер переноса, симметричен пачке/экспорту);
+            // строка («^» в note — маркер переноса, симметричен росписи/экспорту);
             // значение дословно — хвостовые пробелы строки и ведущие пробелы
             // продолжения принадлежат тексту (склейка слов через границу строк)
             if (cur.note) cur.note += (tag === "CONT" ? "^" : "") + valN;
@@ -411,11 +409,12 @@ function gedFictiveDates(g, famRefs, resolved) {
     return fullOf;
 }
 
-// ====================== ПЛОСКОЕ ДРЕВО (пакетный ввод) ======================
+// ====================== РОДОСЛОВНАЯ РОСПИСЬ -+= (пакетный ввод) ======================
 // Одна строка — одна сущность (грамматика 2026-10-23, v2):
 //   '-'×n «Имя дата [время] [зона] [дата смерти] прим» — свой мужчина
 //     глубины n-1; '='×n — своя женщина;
-//   «+»×n «дата [дата развода] (место) прим» — свадьба владельца глубины n−1;
+//   «+»×n «дата (место) [дата развода (место развода)] прим» — семья глубины n−1;
+//     пробел между серией + и датой означает развод без известной свадьбы;
 //     вторая половина (без маркера пола) идёт следующей строкой; «+» без даты —
 //     свадьба с неизвестной датой; без половины — свадьба односторонняя;
 // число плюсов = число маркеров владельца (та же формула «глубина+1»);
@@ -437,15 +436,19 @@ function gedFictiveDates(g, famRefs, resolved) {
 // (вторая половина последней «+»-свадьбы); строка дат без «+» — ошибка
 // (свадьба — «+»×n + даты)
 
-// метка пачки РОМБА (chatFlatText по keys — .ged.txt третьего прицепа 🧬):
+// метка росписи РАДИУСА (chatFlatText по keys — .ged.txt третьего прицепа 🧬):
 // герой посередине, радиус не несёт всех потомков героя — для резки-прививки
-// такая пачка не годится. parseTree читает метку первой непустой строкой в
-// tree.noGraft, cutAndGraft её отвергает; строки «#» парсер пачки пропускает
-// как комментарии — на состав и обратимость пачки метка не влияет
+// такая роспись не годится. parseTree читает метку первой непустой строкой в
+// tree.noGraft, cutAndGraft её отвергает; строки «#» парсер росписи пропускает
+// как комментарии — на состав и обратимость росписи метка не влияет
 const NOT_FOR_GRAFT = "#not for cut and graft";
 
 function parseTreeLine(line) {
-    const mm = line.match(/^([-+=]+)\s*(.*)$/);
+    line = line.split("#", 1)[0].replace(/\t/g, " ").trim();
+    const hi = line.indexOf("^");
+    const name = (hi < 0 ? line : line.slice(0, hi)).trim();
+    const note = hi < 0 ? "" : line.slice(hi + 1).trim();
+    const mm = line.match(/^([-+=]+)(.*)$/);
     if (mm) {
         const run = mm[1], rest = mm[2].trim();
         if ((/^-+$/.test(run) || /^=+$/.test(run)) && rest) {
@@ -453,15 +456,17 @@ function parseTreeLine(line) {
             const p = parseTrigger(rest);
             if (p && !p.error) return { k: "p", depth: run.length - 1, sex, rec: p.rec, note: p.tail || "" };
             if (p && p.error) return { k: "err", msg: p.error };
-            return { k: "p", depth: run.length - 1, sex, rec: { n: rest }, note: "", nameOnly: true };
+            const n = name.slice(run.length).trim();
+            if (!n) return { k: "err", msg: "не задано имя персоны" };
+            return { k: "p", depth: run.length - 1, sex, rec: { n }, note, nameOnly: true };
         }
         if (/^\++$/.test(run)) { // «+»×n — свадьба владельца глубины n−1;
             // пустая «+» (хвоста нет) — дата неизвестна
             if (!rest) return { k: "wp", depth: run.length - 1, rec: {}, note: "" };
-            if (/^\d/.test(rest)) {
-                const b = weddingRecOf(rest);
+            if (/^\d|^\^|^~/.test(rest)) {
+                const b = weddingRecOf(mm[2]);
                 if (b.err) return { k: "err", msg: b.err };
-                return { k: "wp", depth: run.length - 1, rec: b.rec, note: b.note };
+                return { k: "wp", depth: run.length - 1, rec: b.rec, note: b.note, xref: b.xref };
             }
             return { k: "err", msg: "свадьба — «+дата…» или «+»; вторая половина идёт следующей строкой без маркера" };
         }
@@ -473,14 +478,12 @@ function parseTreeLine(line) {
     const p = parseTrigger(line);
     if (p && p.error) return { k: "err", msg: p.error };
     if (p) return { k: "sp", rec: p.rec, note: p.tail || "" };
-    return { k: "sp", rec: { n: line }, note: "", nameOnly: true };
+    if (!name) return { k: "err", msg: "не задано имя персоны" };
+    return { k: "sp", rec: { n: name }, note, nameOnly: true };
 }
 
-// разбор дат свадьбы (WEDDING_RE) → {rec:{d,plac,dd,plac2},note} | {err}
-// группа 1: дата свадьбы 2: дата развода 3: место (пара в скобках)
-// 4: примечание; место принадлежит свадьбе; «~»/«<»/«>» за датой —
-// EST/BEF/AFT (abt в rec); «^» — маркер примечания (хвост после него —
-// дословно, дата в начале — не развод)
+// Группы 1–4: первая дата, 5: её место (включая пустое), 6–9: вторая дата,
+// 10: второе место, 11: примечание. ^ завершает разбор полей.
 const wdate = (m, gi, what) => {
     const y = Number(m[gi]), mo = Number(m[gi + 1] ?? "01"), dd = Number(m[gi + 2] ?? "01");
     if (y < 1000 || y > 9999) return { error: "некорректный год" + what + ": " + m[gi] };
@@ -491,86 +494,76 @@ const wdate = (m, gi, what) => {
     return { d: y + "-" + pad(mo) + "-" + pad(dd), abt };
 };
 function weddingRecOf(s) {
+    const divorceOnly = /^\s+\d/.test(s);
     // «^» — маркер примечания: разбор до первого «^», после него — дословно
     let hat = "";
     let t = s;
     const hi = t.indexOf("^");
-    if (hi >= 0) { hat = t.slice(hi + 1).trim(); t = t.slice(0, hi).trim(); }
-    const wm = compactDates(t).match(WEDDING_RE);
+    if (hi >= 0) { hat = t.slice(hi + 1).trim(); t = t.slice(0, hi); }
+    const xm = t.match(/(?:^|\s)~([^\s]+)\s*$/);
+    const xref = xm ? xm[1] : undefined;
+    if (xm) t = t.slice(0, xm.index);
+    if (!t.trim()) return { rec: {}, note: hat, xref };
+    const wm = compactDates(t.trim()).match(WEDDING_RE);
     if (!wm) return { err: "не распознаны даты свадьбы" };
     const b = wdate(wm, 1, " свадьбы");
     if (b.error) return { err: b.error };
     const rec = { d: b.d };
     if (b.abt) rec.abt = b.abt;
-    if (wm[9] !== undefined) rec.plac = wm[9].trim();
-    if (wm[5] !== undefined) {
-        const b2 = wdate(wm, 5, " развода");
+    if (wm[5] !== undefined) rec.plac = wm[5].trim();
+    if (wm[6] !== undefined) {
+        const b2 = wdate(wm, 6, " развода");
         if (b2.error) return { err: b2.error };
         rec.dd = b2.d;
         if (b2.abt) rec.dabt = b2.abt;
     }
-    const note = wm[10] ? wm[10].trim() : "";
-    return { rec, note: note && hat ? note + " " + hat : (note || hat) };
+    if (wm[10] !== undefined) rec[rec.dd ? "plac2" : "plac"] = wm[10].trim();
+    if (divorceOnly) {
+        if (rec.dd) return { err: "при неизвестной свадьбе задаётся только дата развода" };
+        rec.dd = rec.d; delete rec.d;
+        if (rec.abt) { rec.dabt = rec.abt; delete rec.abt; }
+        if (rec.plac !== undefined) { rec.plac2 = rec.plac; delete rec.plac; }
+    }
+    const note = wm[11] ? wm[11].trim() : "";
+    return { rec, note: note && hat ? note + " " + hat : (note || hat), xref };
 }
 
 // строки → семантика: { persons, weddings, children, errors }
 // persons[i]: {sex:'M'|'F'|null, rec:{n,d,...}|{n}, note, nameOnly, spouseLine}
 // weddings[i]: {m: idx|null, f: idx|null, rec:{d,plac,dd,plac2}, note}
-// children[i]: {c: idx, m: idx|null, f: idx|null}
+// children[i]: {c: idx, m: idx|null, f: idx|null, w: wedding index|null, o: owner index}
 //
 // Семантика пар: «+»×n (дата или пустой хвост) открывает свадьбу владельца
 // глубины n−1 и ждёт вторую половину — строкой ниже без маркера. Привязка —
 // строго к семье этой глубины на стеке (глубины на стеке строго растут, семья
-// одна — без подбора и проверок возраста/живости). Половина занимает
-// свободный слот; при повторном браке (обе заняты, копия наверх) — замена
-// стороны spouseLine копии. Половины нет — свадьба одностороняя (в т.ч.
+// одна — без подбора и проверок возраста/живости). Каждая свадьба открывает
+// новую семью только с владельцем. Половины нет — свадьба односторонняя (в т.ч.
 // бездатная «+»: после полной пары открывает новый брак с неизвестной
 // половиной — дети ниже принадлежат ему).
 function parseTree(text) {
     const errors = [], persons = [], weddings = [], children = [];
     // метка NOT_FOR_GRAFT первой непустой строкой (BOM перед ней — мимо):
-    // пачка ромба, резке-прививке не подлежит (см. cutAndGraft)
+    // роспись радиуса, резке-прививке не подлежит (см. cutAndGraft)
     const ng0 = String(text).replace(/^\uFEFF/, "").split(/\r?\n/).find(l => l.trim());
     const noGraft = !!ng0 && ng0.trim().toLowerCase() === NOT_FOR_GRAFT;
     const stack = []; // открытые семьи: {depth, m, f, o} — глубины строго растут; o — владелец
     let pw = null;    // открытое «+»: {wIdx, depth, spi|null, line}
     let ln = 0;
-    // привязка свадьбы к семье владельца глубины depth. Слот половины S:
-    // свободная половина семьи, а при повторном браке (обе заняты, копия
-    // наверх) — замена стороны, помеченной spouseLine; пол S —
-    // противоположный другой половине. Безымянная дата (S=null) при полной
-    // семье — новый брак с неизвестной половиной: копия держит только
-    // сторону владельца. false — семьи глубины depth нет.
-    const bindW = (wIdx, S, depth, line) => {
+    // Каждая + начинает новую семью владельца; S=null оставляет её односторонней.
+    const bindW = (wIdx, S, depth) => {
         const wr = weddings[wIdx];
         let j = -1; // глубины на стеке строго растут — семья depth единственная
         for (let i = stack.length - 1; i >= 0; i--)
             if (stack[i].depth === depth) { j = i; break; }
         if (j < 0) return false;
         stack.length = j + 1; // глубже — законченные поддеревья
-        let fam = stack[j];
-        if (fam.m !== null && fam.f !== null) { // повторный брак владельца: копия наверх
-            const ownM = fam.o !== null && persons[fam.o].sex === "M";
-            stack.push(S === null // безымянная дата — брак с неизвестной половиной
-                ? { depth: fam.depth, o: fam.o, m: ownM ? fam.m : null, f: ownM ? null : fam.f }
-                : { depth: fam.depth, o: fam.o, m: fam.m, f: fam.f });
-            fam = stack[stack.length - 1];
-        }
+        const owner = stack[j].o;
+        const ownM = persons[owner].sex === "M";
+        const fam = { depth, o: owner, m: ownM ? owner : null, f: ownM ? null : owner, w: wIdx };
+        stack[j] = fam;
         if (S !== null) {
-            let slot = null;
-            if (fam.m === null) slot = "m"; else if (fam.f === null) slot = "f";
-            else {
-                const ms = persons[fam.m].spouseLine, fs = persons[fam.f].spouseLine;
-                if (ms && !fs) slot = "m"; else if (fs && !ms) slot = "f";
-            }
-            if (slot === null)
-                errors.push({ line, msg: "пол второй половины не выводится (оба супруга свои?)" });
-            else {
-                const other = slot === "m" ? fam.f : fam.m;
-                persons[S].sex = other !== null && persons[other].sex
-                    ? (persons[other].sex === "M" ? "F" : "M") : null;
-                fam[slot] = S;
-            }
+            persons[S].sex = ownM ? "F" : "M";
+            fam[ownM ? "f" : "m"] = S;
         }
         wr.m = fam.m ?? null;
         wr.f = fam.f ?? null;
@@ -586,40 +579,20 @@ function parseTree(text) {
     };
     for (const raw of String(text).split(/\r?\n/)) {
         ln++;
-        const line = raw.replace(/\t/g, " ").trim(); // табуляции — прочь
+        const line = raw.split("#", 1)[0].replace(/\t/g, " ").trim(); // # wins over ^
         if (!line || /^\s*#/.test(line)) continue; // пустые и комментарии — мимо
         const it = parseTreeLine(line);
         if (it.k === "err") { errors.push({ line: ln, msg: it.msg }); continue; }
         if (it.k === "p") {
-            // маркерная половина той же глубины сразу за «+»: «=ЕЯ 1936…»,
-            // «-Иван 1954…» — вторая половина открытой свадьбы (пол —
-            // противоположный владельцу), как bare-строка; иначе — новая
-            // персона уровня этого маркера
-            let asHalf = false;
-            if (pw !== null) {
-                const ow = stack.find(s => s.depth === pw.depth);
-                if (ow && ((persons[ow.o].sex === "M" && it.sex === "F")
-                    || (persons[ow.o].sex === "F" && it.sex === "M"))) {
-                    asHalf = true;
-                    const S = persons.push({ sex: it.sex, rec: it.rec, note: it.note,
-                        nameOnly: !!it.nameOnly, spouseLine: true }) - 1;
-                    if (!bindW(pw.wIdx, S, pw.depth, ln)) {
-                        // не привязалась — обычная персона уровня маркера
-                        persons.pop();
-                        asHalf = false;
-                    }
-                    pw = null; // привязка состоялась — свадьба закрыта
-                }
-                flushPw();
-            }
-            if (asHalf) continue;
+            // Маркированная персона никогда не занимает слот супруга.
+            flushPw();
             const idx = persons.push({ sex: it.sex, rec: it.rec, note: it.note, nameOnly: !!it.nameOnly,
                 spouseLine: false }) - 1;
             const d = it.depth;
             while (stack.length && stack[stack.length - 1].depth >= d) stack.pop();
             const top = stack[stack.length - 1];
             if (top && top.depth === d - 1)
-                children.push({ c: idx, m: top.m ?? null, f: top.f ?? null });
+                children.push({ c: idx, m: top.m ?? null, f: top.f ?? null, w: top.w ?? null, o: top.o });
             else if (d > 0)
                 errors.push({ line: ln, msg: "нет родителей на глубине " + (d - 1) });
             stack.push({ depth: d, m: it.sex === "M" ? idx : null, f: it.sex === "F" ? idx : null, o: idx });
@@ -644,20 +617,20 @@ function parseTree(text) {
         // «+»×n-свадьба (дата известна или пустая): половина — строкой ниже,
         // датная без половины остаётся одностороней
         if (pw !== null) flushPw();
-        const wIdx = weddings.push({ m: null, f: null, rec: it.rec, note: it.note }) - 1;
+        const wIdx = weddings.push({ m: null, f: null, rec: it.rec, note: it.note, ...(it.xref ? { xref: it.xref } : {}) }) - 1;
         pw = { wIdx, depth: it.depth, spi: null, line: ln };
     }
     flushPw();
     return { persons, weddings, children, errors, noGraft };
 }
 
-// ===================== ПАЧКА → CSV (Excel) =====================
-// «Древо чата.ged.csv» — преобразование текста пачки в таблицу с табами
+// ===================== РОСПИСЬ → CSV (Excel) =====================
+// «Древо чата.ged.csv» — преобразование текста росписи в таблицу с табами
 // (ВК-копия дословно — lunarreturns.js, packToCsv):
 //   - строки, начинающиеся с «#» (метка NOT_FOR_GRAFT, комментарии), — мимо;
 //     «#» внутри строки — обрезка от «#» до конца строки;
 //   - маркер пола не клеится к имени («=Имя» Excel считает формулой):
-//     сначала считается максимальная глубина префиксов пачки (maxDepth);
+//     сначала считается максимальная глубина префиксов росписи (maxDepth);
 //     строка глубины n — maxDepth−n пустых ячеек, затем символы префикса
 //     по одному в каждой колонке («--» → «-\t-»), затем Имя — у всех строк
 //     в колонке maxDepth+1 (выровнено слева), глубина видна по дефисам
@@ -682,7 +655,7 @@ function packToCsv(pack) {
         const hi = raw.indexOf("#");
         const line = hi >= 0 ? raw.slice(0, hi).trimEnd() : raw;
         if (!line.trim()) continue;
-        const mm = line.match(/^([-+=]+)\s*(.*)$/);
+        const mm = line.match(/^([-+=]+)(.*)$/);
         if (mm && mm[1].length > maxDepth) maxDepth = mm[1].length;
         rows.push([mm, mm ? mm[2] : line]);
     }
@@ -698,7 +671,7 @@ function packToCsv(pack) {
         // примечание: первый «^» — граница ячейки, дальше дословно
         const nIdx = rest.indexOf("^");
         let body = rest, note = "";
-        if (nIdx >= 0) { body = rest.slice(0, nIdx).trim(); note = rest.slice(nIdx + 1); }
+        if (nIdx >= 0) { body = rest.slice(0, nIdx).trimEnd(); note = rest.slice(nIdx + 1); }
         if (!mm || mm[1][0] !== "+") {
             // персона/половина: маркеры глубины, имя, ДР [+ время], (место), ДС, (место)
             let name = body.trim(), bd = "", bp = "", dd = "", dp = "";
@@ -723,19 +696,13 @@ function packToCsv(pack) {
             }
             out.push(pad + lead + sep + name + "\t" + bd + "\t" + bp + "\t" + dd + "\t" + dp + "\t" + note);
         } else {
-            // свадьба: ячейка имени пуста, дата, (место), развод — колонки
-            // те же, что у персоны; места развода в пачке нет — пустая ячейка
-            let wd = "", dv = "", wp = "", dp = "", i = 0;
-            while (body[i] === " ") i++;
-            const dm = DATE.exec(body.slice(i));
-            if (dm) { wd = dm[0]; i += wd.length; }
-            while (body[i] === " ") i++;
-            const dm2 = DATE.exec(body.slice(i));
-            if (dm2) { dv = dm2[0]; i += dv.length; }
-            while (body[i] === " ") i++;
-            const pm = PAREN.exec(body.slice(i));
-            if (pm) wp = pm[0].slice(1, -1);
-            out.push(pad + lead + sep + "\t" + wd + "\t" + wp + "\t" + dv + "\t" + dp + "\t" + note);
+            const parsed = body.trim() ? weddingRecOf(body) : { rec: {} };
+            const r = parsed.rec || {};
+            const { approxOut } = require('./text.cjs');
+            const wd = r.d ? approxOut(r.d, r.abt) : "", dv = r.dd ? approxOut(r.dd, r.dabt) : "";
+            const wp = r.plac || "", dp = r.plac2 || "";
+            out.push(pad + lead + sep + "\t" + wd + "\t" + wp + "\t" + dv + "\t" + dp + "\t" + note
+                + (parsed.xref ? "\t~" + parsed.xref : ""));
         }
     }
     return out.join("\n");
@@ -743,7 +710,7 @@ function packToCsv(pack) {
 
 
 
-// контент файла для перелива: BOM + метка «не для прививки», если пачка её ещё не несёт
+// контент файла для перелива: BOM + метка «не для прививки», если роспись её ещё не несёт
 const withGraftMark = t =>
     t.replace(/^\uFEFF/, "").trimStart().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase())
         ? t : NOT_FOR_GRAFT + "\n" + t;
@@ -759,7 +726,7 @@ function chatFlatArtifacts(pack) {
 }
 
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
-// NOT_FOR_GRAFT экспортируется: пачку метит платформенный chatFlatText
+// NOT_FOR_GRAFT экспортируется: роспись метит платформенный chatFlatText
 // (bot.js для ТГ, инлайн ВК), sendGedArtifacts ВК режет перелив по метке;
 // у bot.js своя идентичная копия как точка реэкспорта для ТГ-хендлеров
-module.exports = { NOT_FOR_GRAFT, chatFlatArtifacts, gedFictiveDates, gedStats, packToCsv, parseGedcom, parseTree, parseTreeLine, parseTrigger, withGraftMark };
+module.exports = { NOT_FOR_GRAFT, chatFlatArtifacts, gedText, gedFictiveDates, gedStats, packToCsv, parseGedcom, parseTree, parseTreeLine, parseTrigger, withGraftMark };

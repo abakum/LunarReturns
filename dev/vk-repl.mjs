@@ -2,7 +2,7 @@
 // dev/vk-repl.mjs — консольная отладка lunarreturns.js (ВК-бот) без API ВК:
 //   node dev/vk-repl.mjs [--fresh] [--chat 2000000001] [--admin] [--user 1001]
 //   [--db dev/vk-db.db] [--chat <peerId>] [--user 1001] [--raw]
-// Ввод: текст сообщения (триггер/пачка/команды), `/N M [uID]` — нажать кнопку
+// Ввод: текст сообщения (триггер/роспись/команды), `/N M [uID]` — нажать кнопку
 // M ответа N (можно от участника uID), `>N текст` — ответ (reply) на сообщение
 // N (бота или своё), `!ged путь` / `!txt путь [>N]` — дроп документа,
 // `!dump` — таблицы базы. Ctrl-C — выход.
@@ -124,10 +124,12 @@ const srv = http.createServer((req, res) => {
             return res.end('<!DOCTYPE html><html><body>bad gateway</body></html>');
         }
         let body = '';
-        req.setEncoding('utf8');
-        req.on('data', chunk => body += chunk);
+        const chunks = [];
+        req.on('data', chunk => chunks.push(chunk));
         req.on('end', () => {
-            trace({ method: 'upload', body });
+            const bytes = Buffer.concat(chunks);
+            body = bytes.toString('utf8');
+            trace({ method: 'upload', body, base64: bytes.toString('base64') });
             if (process.env.LR_CSV_FAIL && body.includes('.ged.csv"'))
                 return json({ error: 'injected CSV upload failure' });
             if (process.env.LR_TXT_FAIL && body.includes('.ged.txt"'))
@@ -259,7 +261,7 @@ async function dropFile(kind, file, replyNum) {
     try { data = fs.readFileSync(path.resolve(file)); } catch (e) { return fail('файл: ' + e.message); }
     files[fileN] = path.resolve(file);
     const doc = {
-        // как у реального документа ВК: пачка всегда *.ГЕД.txt, гедком *.ГЕД
+        // как у реального документа ВК: роспись всегда *.ГЕД.txt, гедком *.ГЕД
         title: (() => {
             const b = path.basename(files[fileN]);
             return kind === 'ged' ? (b.endsWith('.ged') ? b : b + '.ged')

@@ -1,0 +1,7 @@
+﻿-Dated №Person 1950-01-01 (Birth №7) 2020-01-01 (Death №8) ^Dated №9
++1970-01-01 (Wedding №10) 1980-01-01 (Divorce №11) ^Marriage №12
+Dated №Spouse 1952-01-01
+-Dateless №Father ~I№1 ^Father №1, continued №2^Next №3
++ ^Family №5^Undated №6
+Dateless №Mother ~I№2 ^Mother №4
+-Burial №Person 1940-01-01 2010-01-01 (Burial №13)

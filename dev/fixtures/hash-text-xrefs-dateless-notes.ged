@@ -1,0 +1,52 @@
+0 HEAD
+1 GEDC
+2 VERS 5.5.1
+1 CHAR UTF-8
+0 @I#1@ INDI
+1 NAME Dateless /#Father/
+1 SEX M
+1 NOTE Father #1
+2 CONC , continued #2
+2 CONT Next #3
+0 @I#2@ INDI
+1 NAME Dateless /#Mother/
+1 SEX F
+1 TITL Mother #4
+0 @F#1@ FAM
+1 HUSB @I#1@
+1 WIFE @I#2@
+1 NOTE Family #5
+2 CONT Undated #6
+0 @I#3@ INDI
+1 NAME Dated /#Person/
+1 SEX M
+1 BIRT
+2 DATE 1 JAN 1950
+2 PLAC Birth #7
+1 DEAT
+2 DATE 1 JAN 2020
+2 PLAC Death #8
+1 NOTE Dated #9
+0 @I#4@ INDI
+1 NAME Dated /#Spouse/
+1 SEX F
+1 BIRT
+2 DATE 1 JAN 1952
+0 @F#2@ FAM
+1 HUSB @I#3@
+1 WIFE @I#4@
+1 MARR
+2 DATE 1 JAN 1970
+2 PLAC Wedding #10
+1 DIV
+2 DATE 1 JAN 1980
+2 PLAC Divorce #11
+1 NOTE Marriage #12
+0 @I#5@ INDI
+1 NAME Burial /#Person/
+1 BIRT
+2 DATE 1 JAN 1940
+1 BURI
+2 DATE 1 JAN 2010
+2 PLAC Burial #13
+0 TRLR

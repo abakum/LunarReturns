@@ -34,14 +34,14 @@ export default async function (cq, ctx) {
                 return api.sendMessage({ chat_id: chatId, text, reply_markup: markup }).catch(() => {});
             });
 
-    // большой текст — ВЕСЬ текст одним файлом: «.ged.txt» (пачка древа) либо
+    // большой текст — ВЕСЬ текст одним файлом: «.ged.txt» (роспись древа) либо
     // «.txt» (список событий); не выложился — ошибка. Файл — ответом на то же
     // сообщение (к которому кнопки), а не отдельным; после выкладки — правка:
     // ⏳ снимается, ✂️ остаётся (признак «не влезло — полное в файле»);
     // finalText — сообщение с ✂️
     const tailDoc = async (text, nameBase, ext = ".ged.txt", finalText = null) => {
         const base = fileBaseOf(nameBase || "Продолжение") + ext;
-        // BOM и метка «не для прививки»; если пачка уже несёт метку — не двоим
+        // BOM и метка «не для прививки»; если роспись уже несёт метку — не двоим
         const content = "\uFEFF" + (text.trimStart().toLowerCase()
             .startsWith(NOT_FOR_GRAFT.toLowerCase())
             ? text : NOT_FOR_GRAFT + "\n" + text);
@@ -115,7 +115,7 @@ export default async function (cq, ctx) {
     }
 
     if (data === "flat") {
-        // «-+=» — плоская пачка древа чата: ВСЕГДА файлом .ged.txt — правка
+        // «-+=» — родословная роспись -+= древа чата: ВСЕГДА файлом .ged.txt — правка
         // этого сообщения «⏳», файл ответом на него, потом ⏳ → невидимый
         // символ (sendFlatPack с key=null; клавиатура остаётся на сообщении)
         const markup = await startMarkup(cq.message.chat, await chatAdmin(cq.message.chat, cq.from?.id),
@@ -344,22 +344,22 @@ export default async function (cq, ctx) {
             : (data === "foctree" ? "древо " + focusLabel(radius)
                 : (data === "focflat" ? "пачка ветви " : "") + focusLabel(radius)));
         // 🧬 в радиусе: <имя>.ged + <имя>.pdf (родство к герою); клавиатура
-        // передаётся в правку (пачка <4000 правит текст сообщения)
+        // передаётся в правку (роспись <4000 правит текст сообщения)
         if (data === "foctree") {
             await sendGedPdf(chatId, keys, focusHead(row.pkey, radius, rec.dd), row.pkey, cq.message.message_id,
                 focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth, fxref));
             return;
         }
         const head = focusHead(row.pkey, radius, rec.dd);
-        // «-+=» на фокусе: пачка ВЕТВИ героя (.ged.txt) — вся глубина, герой
-        // первой строкой; реплай правленной пачкой на цитату заменяет ветвь
+        // «-+=» на фокусе: роспись ВЕТВИ героя (.ged.txt) — вся глубина, герой
+        // первой строкой; реплай правленной росписью на цитату заменяет ветвь
         if (data === "focflat") {
             const pack = await branchFlatText(chatId, row.pkey);
             if (!pack) { await answer("ветвь пуста"); return; }
             const fKb0 = focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth, fxref);
             if ((head + "\n" + pack).length >= 4000) {
                 // перелив: порядок строк — герой, метка (правило — коммент
-                // у NOT_FOR_GRAFT в lib/bot.js); ВЕСЬ пачка — файлом ответом
+                // у NOT_FOR_GRAFT в lib/bot.js); ВСЯ роспись — файлом ответом
                 // на это сообщение, потом ⏳ снят
                 const inner = cutLines(pack, 4000, head.length + 1 + NOT_FOR_GRAFT.length + 1);
                 await editText(head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️⏳", fKb0);
@@ -412,7 +412,7 @@ export default async function (cq, ctx) {
             await editText("Файл не добавлен: " + row.fileName, undefined);
             return;
         }
-        // .ged.txt-пачка: ЗАМЕНА дерева чата (с резервом сначала файлом)
+        // роспись .ged.txt: ЗАМЕНА дерева чата (с резервом сначала файлом)
         if (/\.ged\.txt$/i.test(row.fileName)) {
             if (data === "ged:bak" && !(await sendTreeBackup(chatId))) {
                 await editText("💥 Не удалось выложить резерв — замена отменена, прежнее дерево цело", undefined);

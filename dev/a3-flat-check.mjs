@@ -76,7 +76,7 @@ assert.equal(cutLines("x".repeat(3976), 4000, NOT_FOR_GRAFT.length + 1),
     "x".repeat(3976));                                                   // 22+0+1+3976 = 4000 ≤ 4000
 assert.equal(cutLines("x".repeat(3977), 4000, NOT_FOR_GRAFT.length + 1),
     "");                                                                 // 22+0+1+3977 > 4000
-// Перелив пачки с головой (reserved = head+1+метка+1):
+// Перелив росписи с головой (reserved = head+1+метка+1):
 const markHead = "Иван 1954-05-10 1️⃣"; // длина с зоной-эмодзи не важна, reserved считается
 const reserved = markHead.length + 1 + NOT_FOR_GRAFT.length + 1;
 assert.equal(cutLines("abcd\n" + "y".repeat(4000), 4000, reserved),
@@ -112,7 +112,7 @@ const searchVK = found => { // перелив поиска (lunarreturns.js:2842
     }
     return inner;
 };
-const gedVK = (head, pack) => { // перелив пачки 🧬 (lunarreturns.js:1768-1778)
+const gedVK = (head, pack) => { // перелив росписи радиуса 🧬 (lunarreturns.js:1768-1778)
     const lines = pack.split("\n")
         .filter((l, i) => !(i === 0 && l.trim().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase())));
     let inner = "";
@@ -157,5 +157,5 @@ const nfgPack = NOT_FOR_GRAFT + "\n" + "a".repeat(3990) + "\nb";
 assert.equal(cutLines(nfgPack.split("\n")
     .filter((l, i) => !(i === 0 && l.trim().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase())))
     .join("\n"), 4000, "Иван 1954".length + 1 + NOT_FOR_GRAFT.length + 1),
-    gedVK("Иван 1954", nfgPack)); // первая строка пачки — метка, её не двоим
+    gedVK("Иван 1954", nfgPack)); // первая строка росписи — метка, её не двоим
 console.log("A3 flat expectations: OK");

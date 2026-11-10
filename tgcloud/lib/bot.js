@@ -7,11 +7,11 @@ import { kinLabel, fynny } from './kinship.cjs';
 import { REL_DEFS, religiousDigest } from './religion.cjs';
 import { jubileeText, approxOut } from './text.js';
 import { findShownRecord } from './text.cjs';
-import { chatFlatArtifacts, gedFictiveDates } from './parse.cjs';
-import { focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText } from './tree.cjs';
+import { chatFlatArtifacts, gedText, gedFictiveDates } from './parse.cjs';
+import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText } from './tree.cjs';
 // фокус-список (focusListText) — канон tree.cjs (с A3): реэкспорт — точки
 // импорта handlers не менялись
-// чистые функции плоского древа — общий канон tgcloud/lib/flat.cjs
+// чистые функции родословной росписи -+= — общий канон tgcloud/lib/flat.cjs
 // (волна A2): handlers берут flatSearch/flatHitKey/treeReport реэкспортом
 // ниже; правки — только в .cjs
 import { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, treeReport, rootOf, cutLines } from './flat.cjs';
@@ -20,27 +20,7 @@ export { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, tree
 export { searchHead, cutLines } from './flat.cjs';
 export { focusListText } from './tree.cjs';
 
-export const HELP = "Отправьте «Имя ГГГГ-ММ-ДД [ЧЧ:ММ] [дата смерти]» — покажу лунно-солнечные юбилеи.\n"
-    + "Можно с зоной: «… 12:30 (Пермь)» или «… 12:30 МСК+2», по одной строке на событие.\n"
-    + "Пачкой древа в ответе на героя — ЗАМЕНА его ветви (срезана и привита);\n"
-    + ".ged-файл чатом — замена древа; /today — события сегодня (МСК), /gedcom — древо,\n"
-    + "/bellN (в ответ на триггер) — список родни в радиусе N (как 🔔 фокуса),\n"
-    + "/links (в ответ на триггер) — пачка ВЕТВИ героя (как «-+=» на фокусе),\n"
-    + "без ответа — пачка древа чата; /Иван — поиск по древу\n"
-    + "(/-Пётр — мужчины 0-го уровня, /--Иван — 1-го, /=… — женщины; «/ текст» — подстрока;\n"
-    + "/-, /--, /+…, /=… — все мужчины/свадьбы/женщины уровня)\n"
-    + "Кнопки под ответом: [цифры радиуса] 👎 удалить, 👀/🌙 подробно/сжато,\n"
-    + "🔔 🧬 -+= — список/древо/пачка ветви в радиусе 1.\n"
-    + "Кнопки чата: 🔔 — список событий (по ММ-ДД), 🧬 — древо (.ged+.pdf+.ged.txt — пачка радиуса: вверх и вниз),\n"
-    + "«-+=» — пачка ветви (герой первой строкой, потомки — вся глубина).\n"
-    + "Пачкой в ответе на цитату — ЗАМЕНА ветви цитируемого: срезана и привита;\n"
-    + "одной строкой без маркера в ответе на триггер — ПРАВКА записи целиком (пол и ветвь не трогаются).\n"
-    + "Пачкой просто сообщением — добавление к древу; файлом .ged.txt — "
-    + "заменой древа (Нет / Да / Да, с резервом).\n"
-    + "Пачка одним сообщением/файлом .ged.txt: «-»/«=»×n Имя … — свой мужчина/женщина\n"
-    + "глубины n−1, «+»×n дата или «+» без даты (n−1 — глубина владельца) — свадьба,\n"
-    + "вторая половина строкой ниже без маркера; строки дат без «+» — ошибка;\n"
-    + "дети — глубина пары+1; персона без даты тоже допустима.";
+export { HELP } from './text.cjs';
 
 // сколько живёт «Да/Нет»-вопрос на дроп .ged-файла (час)
 export const GED_TTL = 3600000;
@@ -371,33 +351,28 @@ async function upsertWedding(chatId, rec) {
     return weddingByFx(chatId, xref);
 }
 
-// ============================== ПЛОСКОЕ ДРЕВО ==============================
+// ============================== РОДОСЛОВНАЯ РОСПИСЬ -+= ==============================
 // применить разбор parseTree: персоны (пол по маркеру, note), пары-свадьбы,
 // дети; повтор по имя+дата переиспользует персону; родитель должен быть старше
 // ребёнка как минимум на 12 лет (иначе связь не пишется, в отчёте ошибка).
-// Пачка самодостаточна: корень (герой ветви) — первая персона, не ребёнок
-// внутри пачки и не половина пары; его дети привязываются его семьями.
+// Роспись самодостаточна: корень (герой ветви) — первая персона, не ребёнок
+// внутри росписи и не половина пары; его дети привязываются его семьями.
 // → { persons, fams, links, errors }
 export async function applyTree(chatId, tree) {
     const rep = { persons: 0, fams: 0, links: 0, errors: tree.errors.map(e => ({ ...e })) };
     const sexN = i => (i !== null && i !== undefined && tree.persons[i] ? tree.persons[i].sex : null);
     const nameN = i => (i !== null && i !== undefined && tree.persons[i] ? tree.persons[i].rec.n : "");
-    // xref половины пары: связь fam по паре или новая «W»-семья
-    const famForPair = async (mx, fx, md) => {
+    const usedSolo = new Set(), weddingXrefs = [], implicitXrefs = new Map();
+    // Every wedding consumes a distinct family; aliases are checked against spouses.
+    const famForPair = async (mx, fx, md, alias) => {
         const rows = (await famRowsOf(chatId)).sort((a, b) => a.id - b.id);
-        for (const f of rows)
-            if (f.husb && f.wife && ((f.husb === mx && f.wife === fx) || (f.husb === fx && f.wife === mx)))
-                return f.xref;
-        // односторонняя семья переиспользуется: та же половина, вторая пуста,
-        // дата свадьбы совпадает (повторный импорт того же текста не плодит пар)
-        if (mx === null || fx === null)
-            for (const f of rows)
-                if ((f.husb === mx && f.wife === fx && (f.husb !== null || f.wife !== null))
-                    && f.marrD === (md ?? null))
-                    return f.xref;
-        const x = await nextFamXref(chatId, "W");
+        const match = familyXref(rows, mx, fx, alias, md, usedSolo);
+        const x = match || await nextFamXref(chatId, "W");
+        usedSolo.add(x);
+        if (rows.some(f => f.xref === x)) return x;
         await db.insert(fam).values({ chatId, xref: x, adhoc: true, husb: mx || null, wife: fx || null }).run();
         rep.fams++;
+        if (mx === null || fx === null) usedSolo.add(x);
         return x;
     };
     const xr = []; // индекс persons → xref
@@ -407,8 +382,9 @@ export async function applyTree(chatId, tree) {
         const p = tree.persons[i], rec = p.rec;
         let x;
         if (rec.d === undefined && !rec.n.includes("+")) {
-            x = await stubOf(chatId, rec.n); // персона без события — заглушка
-            await db.update(indi).set({ sex: p.sex || null, note: p.note || null })
+            const named = p.spouseLine ? (await indiRows(chatId)).filter(r => r.name === rec.n) : [];
+            x = named.length === 1 ? named[0].xref : await stubOf(chatId, rec.n);
+            await db.update(indi).set({ sex: p.sex || null, ...(p.note ? { note: p.note } : {}) })
                 .where(and(eq(indi.chatId, chatId), eq(indi.xref, x))).run();
         } else {
             const r = await upsertPerson(chatId, Object.assign({ sex: p.sex, note: p.note }, rec));
@@ -417,12 +393,19 @@ export async function applyTree(chatId, tree) {
         xr.push(x);
         if (x != null && !seen.has(x)) { seen.add(x); rep.persons++; }
     }
-    for (const w of tree.weddings) {
+    for (const ch of tree.children) {
+        if (ch.w != null || implicitXrefs.has(ch.o)) continue;
+        const parent = tree.persons[ch.m ?? ch.f]?.rec, child = tree.persons[ch.c].rec;
+        if (parent?.d && child.d && Number(child.d.slice(0, 4)) - Number(parent.d.slice(0, 4)) < 12) continue;
+        implicitXrefs.set(ch.o, await famForPair(ch.m != null ? xr[ch.m] : null, ch.f != null ? xr[ch.f] : null));
+    }
+    for (const [wi, w] of tree.weddings.entries()) {
         const mx = w.m !== null ? xr[w.m] : null, fx = w.f !== null ? xr[w.f] : null;
         if (!mx && !fx) continue;
-    const fxx = await famForPair(mx, fx, w.rec.d);
+        const fxx = await famForPair(mx, fx, w.rec.d, w.xref);
+        weddingXrefs[wi] = fxx;
         await db.update(fam).set({
-            marrD: w.rec.d, marrAbt: w.rec.abt ?? 0, marrPlac: w.rec.plac ?? null, note: w.note || null,
+            marrD: w.rec.d ?? null, marrAbt: w.rec.abt ?? 0, marrPlac: w.rec.plac ?? null, note: w.note || null,
             divD: w.rec.dd ?? null, divAbt: w.rec.dabt ?? 0, divPlac: w.rec.plac2 ?? null,
         }).where(and(eq(fam.chatId, chatId), eq(fam.xref, fxx))).run();
     }
@@ -445,15 +428,14 @@ export async function applyTree(chatId, tree) {
         // муж — первым: famForPair хранит пару {husb, wife} по xref'ам
         ps.sort((a, b) => (a.sex === "M" ? -1 : 1) - (b.sex === "M" ? -1 : 1));
         let fxx;
-        if (ps.length === 2) fxx = await famForPair(ps[0].x, ps[1].x);
+        if (ch.w != null && ps.length === [ch.m, ch.f].filter(p => p != null).length)
+            fxx = weddingXrefs[ch.w];
+        else if (ps.length === 2) fxx = await famForPair(ps[0].x, ps[1].x);
         else {
-            // один родитель — своя adhoc-семья («L»), пол стороны по маркеру
-            const x = await nextFamXref(chatId, "L");
-            await db.insert(fam).values({ chatId, xref: x, adhoc: true,
-                husb: ps[0].sex === "M" ? ps[0].x : null,
-                wife: ps[0].sex !== "M" ? ps[0].x : null }).run();
-            fxx = x;
-            rep.fams++;
+            const key = ch.o ?? ps[0].x;
+            if (!implicitXrefs.has(key)) implicitXrefs.set(key,
+                await famForPair(ps[0].sex === "M" ? ps[0].x : null, ps[0].sex !== "M" ? ps[0].x : null));
+            fxx = implicitXrefs.get(key);
         }
         const has = await db.select().from(chil)
             .where(and(eq(chil.chatId, chatId), eq(chil.fam, fxx), eq(chil.indi, cx))).all();
@@ -462,8 +444,8 @@ export async function applyTree(chatId, tree) {
             rep.links++;
         }
     }
-    // голая пачка тоже восстанавливает интерактивные связи (edges) — иначе
-    // /gedcom после импорта .txt-пачки не видит связей
+    // роспись без гедкома тоже восстанавливает интерактивные связи (edges) — иначе
+    // /gedcom после импорта росписи .txt не видит связей
     await restoreEdges(chatId);
     return rep;
 }
@@ -624,7 +606,7 @@ async function cutBranch(chatId, px, extraNames = []) {
     const names = new Set([...victimKeys].map(k => k.slice(0, -11)));
     const heroRow = rows.find(t => t.xref === px);
     if (heroRow) names.add(heroRow.name);
-    // персонажи прививаемой пачки: их свадьбы-заглушки (пары по именам) — тоже
+    // персонажи прививаемой росписи: их свадьбы-заглушки (пары по именам) — тоже
     for (const n of extraNames) names.add(n);
     let stubDel = 0;
     for (const f of famRows) {
@@ -664,18 +646,18 @@ async function cutBranch(chatId, px, extraNames = []) {
     return { cut: victims.size, fams: fams.length + stubDel };
 }
 
-// правка ветви: цитируемый anchorKey — герой пачки tree. Молча: старая ветвь
-// срезается (cutBranch), поля героя обновляются по строке героя пачки (имя и
+// правка ветви: цитируемый anchorKey — герой росписи tree. Молча: старая ветвь
+// срезается (cutBranch), поля героя обновляются по строке героя росписи (имя и
 // дата рождения правимы), новая ветвь прививается applyTree'ом. Цитируемый
-// не найден — пачка применяется как есть (добавление merge'ем).
-// Пачка РОМБА (chatFlatText по keys — .ged.txt третьего прицепа 🧬) несёт
+// не найден — роспись применяется как есть (добавление merge'ем).
+// Роспись РАДИУСА (chatFlatText по keys — .ged.txt третьего прицепа 🧬) несёт
 // героя ВНУТРИ дерева (первым корнем идёт старший предок) и открывается
 // меткой NOT_FOR_GRAFT: радиус не несёт всех потомков героя, прививка
-// обновила бы связи лишь частично. Такая пачка отвергается — правки нет,
-// ответ-ошибка предлагает плоское древо тапа «-+=». Мимо якоря метка резке
-// мешает, а добавлению нет: merge пачки ромба в чистый чат работает как прежде
+// обновила бы связи лишь частично. Такая роспись отвергается — правки нет,
+// ответ-ошибка предлагает родословную роспись -+= тапа «-+=». Мимо якоря метка резке
+// мешает, а добавлению нет: merge росписи радиуса в чистый чат работает как прежде
 export async function cutAndGraft(chatId, anchorKey, tree) {
-    if (tree.noGraft) // метка NOT_FOR_GRAFT первой строкой (пачка ромба)
+    if (tree.noGraft) // метка NOT_FOR_GRAFT первой строкой (роспись радиуса)
         return { persons: 0, fams: 0, links: 0, errors: [], noGraft: true };
     const px = await xrefOfKey(chatId, anchorKey);
     if (!px) return { ...(await applyTree(chatId, tree)), cut: 0, famsCut: 0 };
@@ -683,12 +665,12 @@ export async function cutAndGraft(chatId, anchorKey, tree) {
         && p.rec.n + " " + p.rec.d === anchorKey);
     const root = rootOf(tree);
     if (heroIdx >= 0 && root && tree.persons.indexOf(root) !== heroIdx) {
-        const rep = await applyTree(chatId, tree); // герой внутри пачки — merge без резки
+        const rep = await applyTree(chatId, tree); // герой внутри росписи — merge без резки
         rep.cut = 0; rep.famsCut = 0;
         return rep;
     }
     const cut = await cutBranch(chatId, px,
-        tree.persons.map(p => p.rec.n)); // свадьбы-заглушки пар пачки тоже срезаются
+        tree.persons.map(p => p.rec.n)); // свадьбы-заглушки пар росписи тоже срезаются
     if (!root) { await deleteEventCascade(chatId, anchorKey); }
     else if (root.rec.d !== undefined) // герой без даты — заглушка не замещает запись
         await setPersonByXref(chatId, px, Object.assign({ sex: root.sex, note: root.note }, root.rec));
@@ -922,7 +904,7 @@ export async function deleteEventCascade(chatId, key) {
         await db.update(fam).set({ husb: null }).where(and(eq(fam.chatId, chatId), eq(fam.husb, x))).run();
         await db.update(fam).set({ wife: null }).where(and(eq(fam.chatId, chatId), eq(fam.wife, x))).run();
         // сама запись удаляется: «Событие удалено» — персона целиком (раньше
-        // строка оставалась и персон показывали поиск/списки/пачка/гедком)
+        // строка оставалась и персон показывали поиск/списки/роспись/гедком)
         await db.delete(indi).where(and(eq(indi.chatId, chatId), eq(indi.xref, x))).run();
         for (const fx of fams) await normalizeFam(chatId, fx);
     } else if (name.includes("+")) {
@@ -1153,7 +1135,7 @@ export async function gedcomText(chatId, keys) {
     const MON = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
     const gdate = d => { const [y, mo, dd] = d.split("-").map(Number); return dd + " " + MON[mo - 1] + " " + y; };
     // хвост-метка заглушки «Имя ~xref» живёт в БД для уникальности ключей
-    // печатей (пачки/древо), но в гедкоме избыточен — xref и так в
+    // печатей (росписи/древо), но в гедкоме избыточен — xref и так в
     // идентикаторе INDI @…@; в NAME метку снимаем (реимпорт восстановит её
     // из файлового xref — круглый trip остаётся идемпотентным)
     const cleanName = n => n.replace(/ ~\S+$/, "");
@@ -1187,7 +1169,7 @@ export async function gedcomText(chatId, keys) {
             const i = await getIndi(chatId, x);
             if (!i || !i.name) return null;
             return { xref: x, name: i.name, sex: i.sex || null, deat: i.deatD || null, dp: i.deatPlac || null,
-                dabt: i.deatD ? i.deatAbt || 0 : 0 };
+                dabt: i.deatD ? i.deatAbt || 0 : 0, note: i.note || null };
         };
         for (const x of [f.husb, f.wife]) {
             if (!x) continue;
@@ -1211,12 +1193,12 @@ export async function gedcomText(chatId, keys) {
         const fnote = f.note || null;
         if (hasKeys) {
             // фрагмент: семья остаётся при ХОТЬ ОДНОЙ датированной половине
-            // в keys (как в пачке chatFlatText — famBody печатает свадьбы
+            // в keys (как в росписи chatFlatText — famBody печатает свадьбы
             // половин из keys): бездетные свадьбы и семьи с детьми за
-            // пределами keys тоже идут, иначе пачка .ged.txt и гедком .ged
-            // одной пачки расходились бы (round-trip терял свадьбы и ломал
+            // пределами keys тоже идут, иначе роспись .ged.txt и гедком .ged
+            // одной росписи расходились бы (round-trip терял свадьбы и ломал
             // глубины). famc за радиусом (в keys лишь ребёнок) — мимо:
-            // в пачке таких строк нет, глубины он не меняет
+            // в росписи таких строк нет, глубины он не меняет
             const ps = par.filter(p => keys.includes(p.k));
             if (!ps.length) continue;
             par.length = 0; par.push(...ps);
@@ -1275,6 +1257,7 @@ export async function gedcomText(chatId, keys) {
     for (const [x, st] of stubInfo) {
         out.push("0 @" + stubId.get(x) + "@ INDI");
         out.push("1 NAME " + cleanName(st.name));
+        if (st.note) st.note.split("^").forEach((s, i) => out.push((i ? "2 CONT " : "1 NOTE ") + s));
         if (st.sex) out.push("1 SEX " + st.sex);
         if (st.deat) {
             out.push("1 DEAT", "2 DATE " + gdateAbt(st.deat, st.dabt));
@@ -1318,8 +1301,8 @@ export async function gedcomText(chatId, keys) {
     return out.join("\n");
 }
 
-// ============================== ПЛОСКОЕ ДРЕВО: вывод ==============================
-// Список чата в формате пачки (ввод/вывод симметричны, как Romanov_family.txt):
+// ============================== РОДОСЛОВНАЯ РОСПИСЬ -+=: вывод ==============================
+// Родословная роспись -+= чата (ввод/вывод симметричны, как Romanov_family.txt):
 // '-'×n — свой мужчина глубины n−1; '='×n — своя женщина; «+»×n (n−1 —
 // глубина владельца) — свадьба, вторая половина — строкой ниже без маркера
 // (пол выводится); одностороняя семья — «+»×n сама по себе; дети — глубина пары+1; заглушки
@@ -1343,7 +1326,7 @@ async function flatRows(chatId) {
     }));
     const fams = [];
     for (const f of (await famRowsOf(chatId)).sort((a, b) => a.id - b.id)) {
-        const F = { hKey: null, hName: null, wKey: null, wName: null, children: [], marr: null, div: null, note: f.note || null };
+        const F = { xref: f.xref, hKey: null, hName: null, wKey: null, wName: null, children: [], marr: null, div: null, note: f.note || null };
         for (const x of [f.husb, f.wife]) {
             if (!x) continue;
             const r = await getIndi(chatId, x);
@@ -1359,20 +1342,9 @@ async function flatRows(chatId) {
         }
         F.marr = f.marrD ? { d: f.marrD, ...(f.marrAbt ? { abt: f.marrAbt } : {}), ...(f.marrPlac ? { plac: f.marrPlac } : {}) } : null;
         F.div = f.divD ? { d: f.divD, ...(f.divAbt ? { abt: f.divAbt } : {}), ...(f.divPlac ? { plac: f.divPlac } : {}) } : null;
-        const s = [F.hKey, F.wKey].filter(k => k != null).sort();
-        // обе половины мимо indi (s=[]) — не мержим: иначе такие семьи
-        // склеиваются в одну и собирают чужих детей
-        const m = s.length ? fams.find(x => x.s.length === s.length && x.s.every((k, i) => k === s[i])) : null;
-        if (m) {
-            for (const c of F.children) if (!m.children.includes(c)) m.children.push(c);
-            if (m.hKey == null && F.hKey != null) m.hKey = F.hKey;
-            if (m.wKey == null && F.wKey != null) m.wKey = F.wKey;
-            if (!m.marr) m.marr = F.marr;
-            if (!m.div) m.div = F.div;
-            if (!m.note) m.note = F.note;
-        } else fams.push({ s, ...F });
+        fams.push(F);
     }
-    // поколения до построения пачки: семьи родителей раньше семей детей
+    // поколения до построения росписи: семьи родителей раньше семей детей
     // (см. famsByGenerations) — familyOf (первая семья ребёнка), «mine»
     // (порядок браков) и famsDone не зависят от порядка вставки семей
     const famsOrd = famsByGenerations(fams,
@@ -1381,15 +1353,15 @@ async function flatRows(chatId) {
     return [persons, fams];
 }
 
-// метка пачки РОМБА (chatFlatText по keys — .ged.txt третьего прицепа 🧬):
+// метка росписи РАДИУСА (chatFlatText по keys — .ged.txt третьего прицепа 🧬):
 // герой посередине, радиус не несёт всех потомков героя — для резки-прививки
-// такая пачка не годится. parseTree (tgcloud/lib/parse.cjs) читает метку
+// такая роспись не годится. parseTree (tgcloud/lib/parse.cjs) читает метку
 // первой непустой строкой в tree.noGraft, cutAndGraft её отвергает;
-// строки «#» парсер пачки пропускает как комментарии — состав не меняется
+// строки «#» парсер росписи пропускает как комментарии — состав не меняется
 export const NOT_FOR_GRAFT = "#not for cut and graft";
 
 export async function chatFlatText(chatId, keys = null) {
-    // keys (опционально) — фокус-радиус: пачка только этого подмножества
+    // keys (опционально) — фокус-радиус: роспись только этого подмножества
     // (сродни gedcomText); семьи фильтруются по касанию персон/детей
     const hasKeys = Array.isArray(keys) && keys.length > 0;
     const [allPersons, allFams] = await flatRows(chatId);
@@ -1397,17 +1369,17 @@ export async function chatFlatText(chatId, keys = null) {
         || keys.includes(p.name + " " + (p.d ?? "")));
     if (!hasKeys) return flatTreeText(persons, allFams, true); // canonical — рецепт порядка
     const kOf = new Map(allPersons.map(p => [p.key, p.name + " " + (p.d ?? "")]));
-    // пачка ромба — тот же канонический рецепт, что и у целого древа:
+    // роспись радиуса — тот же канонический рецепт, что и у целого древа:
     // порядок больше не «героевоцентричный» (герой посередине), семьи —
     // по дате свадьбы/старшему супругу. Для резки-прививки не годится всё
     // равно: первой строкой метка NOT_FOR_GRAFT, parseTree читает её в
-    // tree.noGraft, cutAndGraft такую пачку отвергает
+    // tree.noGraft, cutAndGraft такую роспись отвергает
     return NOT_FOR_GRAFT + "\n" + flatTreeText(persons, allFams.filter(f =>
         [f.hKey, f.wKey, ...f.children].some(k => k != null
             && keys.includes(kOf.get(k) || ""))), true);
 }
 
-// чистые подмножества пачки «ветвь героя»: fams, где герой/потомок является
+// чистые подмножества росписи ветви героя: fams, где герой/потомок является
 // половиной (его браки, рекурсивно до листьев); вторые половины включаются в
 // печать, но ветвь НЕ продолжают — другие семьи супруга в ветвь не годятся;
 // extraKids — интерактивные связи (edges, «родитель→ребёнок»): потомки
@@ -1429,7 +1401,7 @@ export async function edgeKids(chatId) {
     return kids;
 }
 
-// пачка ветви персоны key («Имя ГГГГ-ММ-ДД»): поддерево потомков на всю
+// роспись ветви персоны key («Имя ГГГГ-ММ-ДД»): поддерево потомков на всю
 // глубину (семьи + интерактивные связи), герой — корневой строкой
 // «-»×1/«=»×1; ввод/вывод симметричны
 export async function branchFlatText(chatId, key) {
@@ -1437,7 +1409,7 @@ export async function branchFlatText(chatId, key) {
     const x = (allPersons.find(p => p.name + " " + (p.d ?? "") === key) || {}).key;
     if (x == null) return "";
     const [picked, fams] = subsetBranch(allPersons, allFams, x, await edgeKids(chatId));
-    // герой — первой строкой пачки ветви (корень разбора): переставляем
+    // герой — первой строкой росписи ветви (корень разбора): переставляем
     // его вперёд массива персон — корни flatTreeText визитуются
     // в порядке массива
     const hi = picked.findIndex(p => p.key === x);
@@ -1447,13 +1419,13 @@ export async function branchFlatText(chatId, key) {
 
 // fam в виде полу: hName/wName — имена заглушек ...
 // fams of slot; чистая логика — дословно в обеих копиях.
-// canonical (рецепт порядка, только полная пачка): семьи — по дате свадьбы,
+// canonical (рецепт порядка, только полная роспись): семьи — по дате свадьбы,
 // без даты — по дате рождения старшего супруга; дети в семье — по возрасту;
 // браки одной персоны — по тому же ключу; корни-владельцы семей — в порядке
-// их семей; плавающие и остаток — по возрасту. Радиусные пачки и ветвь героя
+// их семей; плавающие и остаток — по возрасту. Росписи радиуса и ветви героя
 //
 
-// поиск по пачке «плоское древо» (chatFlatText): "/Иван" — префикс от начала
+// поиск по родословной росписи -+= (chatFlatText): "/Иван" — префикс от начала
 // строки (ведущие маркеры '-'/'='/'+' строк сняты); "/-Пётр" — только мужчины
 // глубины 0, "/--Иван" — глубины 1, "/=…" — женщины (серия маркеров запроса
 // должна совпасть с серией строки); "/ текст" — подстрока в строке без
@@ -1477,7 +1449,7 @@ export async function branchFlatText(chatId, key) {
 // Чистая логика дословно продублирована в lunarreturns.js (dev/sync-check.mjs)
 
 import { InputFile } from 'sdk';
-import { CHART_MAX, chartPdf, chartFont, fileBaseOf, rangeLevel } from './chart.cjs';
+import { CHART_MAX, chartPdf, chartRows, chartFont, fileBaseOf, rangeLevel } from './chart.cjs';
 
 // диаграммные данные чата/фрагмента (как у gedcomText: те же INDI, свадьбы
 // «Имя+Имя» вне; семьи усекаются до персон фрагмента). heroKey — pkey героя
@@ -1489,7 +1461,8 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
     const hasKeys = Array.isArray(keys) && keys.length > 0;
     const persons = (await personRows(chatId)).filter(r => !hasKeys || keys.includes(pkey(r)));
     const keySet = new Set(persons.map(r => pkey(r)));
-    const rows = persons.map(r => ({ name: r.n, birth: r.d, death: r.dd || null, sex: r.sex || null, abt: r.abt ?? 0 }));
+    let rows = persons.map(r => ({ name: r.n, birth: r.d, death: r.dd || null, sex: r.sex || null, abt: r.abt ?? 0 }));
+    const stubSpouses = [];
     // якоря бездатных: год ДР датированного супруга (первой семьи по порядку)
     const stubs = (await indiRows(chatId)).filter(r => r.birtD == null && r.name !== "");
     const stubOf = new Map(stubs.map(r => [r.xref, r]));
@@ -1514,6 +1487,7 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
         let k = s.name + " " + an.yr;
         while (taken.has(k)) k += " ";
         taken.add(k);
+        stubSpouses.push([an.spKey, k]);
         if (!famStubKey.has(an.fam)) famStubKey.set(an.fam, k);
         rows.push({ name: s.name, k, birth: null, anchor: an.yr, death: s.deatD || null, sex: s.sex || null });
     }
@@ -1534,7 +1508,7 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
     // ключи датированных — pkey как есть («Имя ГГГГ-ММ-ДД»); бездатный
     // супруг под ckey не проходит (свой «Имя якорь»)
     const ckey = k => k;
-    const links = [...parentsOf].filter(([, ps]) => ps.ds.length || ps.sk)
+    let links = [...parentsOf].filter(([, ps]) => ps.ds.length || ps.sk)
         .map(([c, ps]) => ({ child: ckey(c), parents: [...ps.ds.map(ckey), ...(ps.sk ? [ps.sk] : [])] }));
     // ярлыки родства — как в 🔔-списке (focusListText): linkPairs +
     // супруги fam-семей + пол; подписи в чарте всё равно «Связь год»;
@@ -1544,9 +1518,16 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
         hero,
         range,
         pairs: (await linkPairs(chatId)).map(([p, c]) => [ckey(p), ckey(c)]),
-        spouses: (await focusSpousePairs(chatId)).map(sp => sp.map(ckey)),
-        sex: Object.fromEntries(persons.map(r => [ckey(pkey(r)), r.sex || null])),
+        spouses: [...(await focusSpousePairs(chatId)).map(sp => sp.map(ckey)), ...stubSpouses],
+        sex: Object.fromEntries([...(await personRows(chatId)).map(r => [pkey(r), r.sex || null]),
+            ...rows.filter(r => r.k).map(r => [r.k, r.sex])]),
     } : null;
+    rows = chartRows(rows, rel);
+    const visible = new Set(rows.map(r => r.k ?? r.name + " " + r.birth));
+    for (const k of keySet) if (!visible.has(k)) keySet.delete(k);
+    for (const [f, k] of famStubKey) if (!visible.has(k)) famStubKey.delete(f);
+    links = links.filter(l => visible.has(l.child)).map(l => ({ ...l,
+        parents: l.parents.filter(p => visible.has(p)) })).filter(l => l.parents.length);
     // дети супругов вне фрагмента/радиуса: годы их рождения — вертикалью
     // между супругами (дата рождения берётся из всех персон чата;
     // заглушки без даты — пропускаются). Пара: обе датированные — как
@@ -1578,10 +1559,10 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
 // имя из заголовка fileBaseOf); heroKey — pkey героя для колонки «Связь год»;
 // неудача выкладки — только сообщение об ошибке, гедком текстом не дублируем
 // Радиусный вызов (keys — ромб родни: тап 🧬 на фокусе и /gedcomN в ответ
-// на триггер): третий файл <имя>.ged.txt — пачка того же ромба
+// на триггер): третий файл <имя>.ged.txt — роспись того же радиуса
 // (chatFlatText по keys): форма «-+=», но не только вниз — и вверх, и вниз,
-// в пределах радиуса; всему древу чата пачки нет (его «-+=» и так весь).
-// markup — клавиатура, которую надо сохранить при правке текста пачкой
+// в пределах радиуса; всему древу чата росписи нет (его «-+=» и так весь).
+// markup — клавиатура, которую надо сохранить при правке текста росписью
 // (editMessageText без reply_markup в TG клавиатуру снимает)
 export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0, markup = undefined) {
     const g = await gedcomText(chatId, keys);
@@ -1591,25 +1572,14 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
     const chartHead = head0.replace(/^\d\s+/, "");
     const rm = /^(\d)\s/.exec(head0);
     const base = fileBaseOf(head0);
-    // третий файл (радиусные 🧬 и /gedcomN): пачка ромба — chatFlatText по keys;
-    // она идёт только файлом (пачка <4000 — текстом правки сообщения)
+    // третий файл (радиусные 🧬 и /gedcomN): роспись радиуса — chatFlatText по keys;
+    // она идёт только файлом (роспись <4000 — текстом правки сообщения)
     const pack = Array.isArray(keys) && keys.length ? await chatFlatText(chatId, keys) : "";
-    // персон чарта — список 🔔 (уровневый focusListKeys): полнокровные
-    // сиблинги на 1, полукровные и цепочки длиннее радиуса («сын сына отца»
-    // при 2️⃣) — не барами, их годы рождения — точки/зарубки на баре общего
-    // родителя (chartModel рисует phantom с fam из одного родителя). ПЛЮС
-    // персоны с примерной ДР (abt != 0 — ABT/CAL/BEF/AFT и выдуманные EST
-    // импорта: даты бездатных изобретались как раз ради шкалы PDF) из
-    // keys-ромба — из-за уровневого радиуса их не теряем (полукровка с EST
-    // на 1️⃣ — снова бар, как до уровневого радиуса); .ged и пачка —
-    // по-прежнему keys-ромб (полные данные); без героя/радиуса — keys
+    // PDF candidates use the cheap blood prefix plus bounded marriages.
+    // chartFor filters every final row by label words; GED/TXT keep keys.
     let chartKeys = keys;
     if (heroKey && rm) {
-        const sexMap = new Map((await personRows(chatId)).map(r => [pkey(r), r.sex ?? null]));
-        const lv = focusListKeys(await linkPairs(chatId), await focusSpousePairs(chatId),
-            heroKey, Number(rm[1]), k => sexMap.get(k) ?? null, true);
-        const approx = new Set((await personRows(chatId)).filter(r => r.abt).map(r => pkey(r)));
-        chartKeys = [...new Set([...lv, ...(Array.isArray(keys) ? keys.filter(k => approx.has(k)) : [])])];
+        chartKeys = focusKeys(await linkPairs(chatId), heroKey, Number(rm[1]), await focusSpousePairs(chatId));
     }
     let pdf = null, persons = 0, chartErr = null;
     try {
@@ -1620,8 +1590,8 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
     } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
     try {
         const enc = new TextEncoder();
-        // BOM — чтобы Windows-редакторы открывали пачку как UTF-8;
-        // пачка <4000: правим сообщение с 🔗/🧬-кнопками — текст = пачка
+        // BOM — чтобы Windows-редакторы открывали роспись как UTF-8;
+        // роспись <4000: правим сообщение с 🔗/🧬-кнопками — текст = роспись
         // (клавиатура сообщения сохраняется), прицепы .ged+.pdf — медиа-группой;
         // не влезает — все три прицепа (.ged+.pdf+.ged.txt) одной медиа-группой
         const packFits = !!pack && pack.length < 4000;
@@ -1681,7 +1651,7 @@ export async function uniqueKeyOf(chatId, name, birtD, approx, yearly, xref) {
             const dt = new Date(birtD + "T00:00:00Z");
             dt.setUTCFullYear(dt.getUTCFullYear() + 1);
             birtD = dt.toISOString().slice(0, 10);
-        } else name = name.replace(/ ~\S+$/, "") + " ~" + xref;
+        } else name = name.replace(/ ~\S+$/, "") + " ~" + gedText(xref);
         // суффикс всегда свободен: xref персоны уникален в чате (в импорте —
         // файловый, дубль xref парсер схлопывает Map'ом; в правке — её же)
     }
@@ -1755,11 +1725,11 @@ export async function importGedcom(chatId, g) {
         if (full === null) {
             // имя заглушки — всегда «Имя ~xref»: уникальный ключ «Имя ~xref»
             // + null у всех заглушек, тёзки различимы, метка единообразна
-            // в гедкоме и пачках. Метка снимается, если уже есть (round-trip:
+            // в гедкоме и росписях. Метка снимается, если уже есть (round-trip:
             // повторный .ged-импорт не должен удваивать суффикс); xref —
             // стабильная идентичность round-trip'а
             const base = ind.name.replace(/ ~\S+$/, "");
-            const sname = base + " ~" + ind.__xref;
+            const sname = base + " ~" + gedText(ind.__xref);
             await db.insert(indi).values({
                 chatId, xref: ind.__xref, name: sname, birtD: null,
                 birtH: null, birtM: null, srcH: null, srcM: null,
@@ -1910,13 +1880,13 @@ export async function sendLong(chatId, text, replyMarkup, name, replyTo = 0) {
     }
 }
 
-// «/links» и тап 🔗: пачка ВЕТВИ героя (key) — как «-+=» на фокусе, или
-// пачка всего древа чата (key=null). Ветвь: короткая — текстом, длинная
-// (>4000) — файлом «.ged.txt» (как tailDoc). Пачка ромба — ВСЕГДА файлом:
+// «/links» и тап 🔗: роспись ВЕТВИ героя (key) — как «-+=» на фокусе, или
+// роспись всего древа чата (key=null). Ветвь: короткая — текстом, длинная
+// (>4000) — файлом «.ged.txt» (как tailDoc). Роспись радиуса — ВСЕГДА файлом:
 // ⏳ (origin.edit — правка сообщения с кнопками, клавиатура на ней же),
 // файл ответом на него, потом ⏳ заменён невидимым символом (\u2063);
 // провал — «💥». origin={edit:{message_id,markup}} — для тапа кнопки.
-// false — пачки нет (древо/ветвь пусты). Листинг сообщений-связей
+// false — росписи нет (древо/ветвь пусты). Листинг сообщений-связей
 // больше не восстанавливается.
 // sendFlatPack key=null: метки-держатели «-+=⏳» / «🧬⏳», по готовности
 // файлов остаётся видимая метка («-+=», «🧬») — цитата на /links живёт
@@ -1927,7 +1897,7 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin =
     if (key === null) {
         const artifacts = chatFlatArtifacts(pack);
         const base = artifacts.txt.name;
-        // метка «не для прививки» первой строкой (как в tailDoc): пачка ромба
+        // метка «не для прививки» первой строкой (как в tailDoc): роспись радиуса
         // в ответе на триггер правок не делает (parseTree → noGraft)
         try {
             // метка-держатель «-+=⏳»: правка сообщения с кнопками (клавиатура
@@ -1950,7 +1920,7 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin =
                     { type: artifacts.txt.type }),
                 reply_parameters: { message_id: holdId, allow_sending_without_reply: true },
             });
-            // рядом «Древо чата.ged.csv» — пачка таблицей с табами (Excel);
+            // рядом «Древо чата.ged.csv» — роспись таблицей с табами (Excel);
             // провал — .ged.txt остаётся, CSV молча не выкладывается
             try {
                 const csv = artifacts.csv();
@@ -1970,10 +1940,10 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin =
         }
         return true;
     }
-    // метка «не для прививки»: у пачки ромба (древо чата) она уже есть —
-    // первой строкой пачки; влезающая ветвь — как ответ на «-+=», БЕЗ метки
+    // метка «не для прививки»: у росписи радиуса (древо чата) она уже есть —
+    // первой строкой росписи; влезающая ветвь — как ответ на «-+=», БЕЗ метки
     // (прививка ей дозволена); в переливе метка есть всегда (текст усечён).
-    // Порядок строк: голова/герой, метка, пачка (правило — коммент у
+    // Порядок строк: голова/герой, метка, роспись (правило — коммент у
     // NOT_FOR_GRAFT выше)
     const marked = pack.trimStart().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase());
     const mark = marked ? "" : NOT_FOR_GRAFT + "\n";
@@ -1986,7 +1956,7 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin =
     try {
         // не влезает: голова + метка + ✂️⏳ первым сообщением (порядок строк —
         // герой/голова, метка; полное — в файле; у ромба метка и так первая
-        // строка пачки в файле), файл — ответом на него же, потом ⏳ снят
+        // строка росписи в файле), файл — ответом на него же, потом ⏳ снят
         // (✂️ остаётся)
         const hold = await api.sendMessage({
             chat_id: chatId, text: (head ? head + "\n" : "") + mark + "✂️⏳", ...reply });

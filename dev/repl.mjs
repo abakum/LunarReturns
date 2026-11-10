@@ -131,6 +131,18 @@ globalThis.__tgdev = {
             }
             if (params.caption) console.log('    caption: ' + params.caption);
             return { message_id: n, chat: { id: CHAT, type: CHAT_TYPE } };
+        } else if (method === 'sendMediaGroup') {
+            const result = [];
+            for (const item of params.media || []) {
+                const doc = item.media;
+                if (!doc?.bytes || !doc.filename) continue;
+                if (!docDir) docDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lr-tg-repl-'));
+                const p = path.join(docDir, doc.filename.replace(/[\/\\:*?"<>|#]/g, '_'));
+                fs.writeFileSync(p, doc.bytes);
+                console.log(`    → ${p}`);
+                result.push({ message_id: ++counter, chat: { id: CHAT, type: CHAT_TYPE } });
+            }
+            return result;
         } else if (method === 'getChatMember') {
             return { status: ADMIN ? 'administrator' : 'member' };
         } else {
@@ -209,7 +221,7 @@ const handle = async raw => {
     }
     const tm = input.match(/^!txt\s+(\S+)(?:\s+>(\d+))?$/);
     if (tm) {
-        // дроп .txt-пачки; `!txt путь >N` — дроп ответом на сообщение N
+        // дроп .txt с росписью; `!txt путь >N` — дроп ответом на сообщение N
         // (триггер из цитаты → умная связка)
         let content;
         try { content = fs.readFileSync(path.resolve(tm[1]), 'utf8'); }

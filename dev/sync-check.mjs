@@ -7,8 +7,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import url from 'node:url';
-import os from 'node:os';
 import { createRequire } from 'node:module';
+import assert from 'node:assert/strict';
 import './a3-text-check.mjs';
 import './a3-flat-check.mjs';
 import './a3-ged-check.mjs';
@@ -16,7 +16,7 @@ import './a3-list-check.mjs';
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'lr-sync-'));
+const TMP = fs.mkdtempSync(path.join('/tmp/kilo', 'lr-sync-'));
 
 let failed = 0;
 function cmp(what, vk, tg) {
@@ -49,12 +49,69 @@ const VKX = require(vkFile).__extra; // низкоуровневые qa/q1/qr д
 process.env.LR_DEV_DB = path.join(TMP, 'tg-db.json');
 fs.cpSync(path.join(ROOT, 'dev', 'sdk-mock'), path.join(ROOT, 'node_modules', 'sdk'), { recursive: true });
 const TG = await import(path.join(ROOT, 'tgcloud', 'lib', 'bot.js'));
+assert.equal(typeof VK.HELP, 'string');
+assert.equal(VK.HELP, TG.HELP, 'VK and TG HELP must match');
 const TGP = await import(path.join(ROOT, 'tgcloud', 'lib', 'parse.cjs'));
 const TGOS = await import(path.join(ROOT, 'tgcloud', 'lib', 'religion.cjs'));
 // chart нужен уже в блоке 3в (бездатные в связях) — грузим сразу;
 // шрифт — единственный источник tgcloud/lib/font-cyr.cjs (ВК читает его же)
 const TGC = await import(path.join(ROOT, 'tgcloud', 'lib', 'chart.cjs'));
 const FONT = TGC.chartFont();
+
+// Repeated complete marriages retain database family identities and children.
+for (const api of [VK, TG]) {
+    const id = 898989;
+    const source = TGP.parseGedcom(fs.readFileSync(path.join(ROOT, 'dev/fixtures/repeated-full-couple-marriages.ged'), 'utf8'));
+    await api.importGedcom(id, source);
+    const txt = await api.chatFlatText(id);
+    assert.match(txt, /\+1970 1980 ~F1/);
+    assert.match(txt, /\+1990 ~F2/);
+    for (let i = 0; i < 2; i++) await api.applyTree(id, TGP.parseTree(txt));
+    let ged = TGP.parseGedcom(await api.gedcomText(id));
+    assert.equal(ged.fams.length, 3);
+    assert.equal(ged.indis.length, 6);
+    for (const [date, child] of [['1970-01-01', 'FirstChild'], ['1982-01-01', 'MiddleChild'], ['1990-01-01', 'LastChild']]) {
+        assert.deepEqual(ged.fams.find(f => f.marr.date === date).chil.map(x => ged.indis.find(p => p.__xref === x).name), [child]);
+    }
+    const collision = '-Stranger 1940\n+1965 ~F1\nDifferent 1942\n--TheirChild 1967';
+    for (let i = 0; i < 2; i++) await api.applyTree(id, TGP.parseTree(collision));
+    ged = TGP.parseGedcom(await api.gedcomText(id));
+    assert.equal(ged.fams.length, 4);
+    assert.equal(ged.fams.find(f => f.__xref === 'F1').marr.date, '1970-01-01');
+    assert.equal(ged.fams.find(f => f.__xref === 'F1_2').marr.date, '1965-01-01');
+    const hashSource = TGP.parseGedcom(fs.readFileSync(path.join(ROOT, 'dev/fixtures/repeated-full-couple-marriages.ged'), 'utf8').replaceAll('@F1@', '@F#1@'));
+    await api.importGedcom(id, hashSource);
+    const hashTxt = await api.chatFlatText(id);
+    assert.match(hashTxt, /~F№1/);
+    for (let i = 0; i < 2; i++) await api.applyTree(id, TGP.parseTree(hashTxt));
+    ged = TGP.parseGedcom(await api.gedcomText(id));
+    assert.equal(ged.fams.length, 3);
+    assert.ok(ged.fams.some(f => f.__xref === 'F#1'));
+    const noSuffix = '-Repeat 1940\n+1970\nPartner 1942\n+1970\nPartner';
+    await api.clearChatTree(id);
+    for (let i = 0; i < 2; i++) await api.applyTree(id, TGP.parseTree(noSuffix));
+    ged = TGP.parseGedcom(await api.gedcomText(id));
+    assert.equal(ged.fams.length, 2);
+    assert.equal(ged.indis.length, 2);
+    for (const row of ['+ ~F2', '+1970 (Town) 1980 (Away) ~F2 ^note', '+ 1980 (Away) ~F2 ^note']) {
+        const parsed = TGP.parseTree('-Owner 1940\n' + row);
+        assert.deepEqual(parsed.errors, []);
+        assert.equal(parsed.weddings[0].xref, 'F2');
+        assert.equal(parsed.weddings[0].note, row.includes('^note') ? 'note' : '');
+        if (row.startsWith('+ ' ) && row.includes('1980')) {
+            assert.equal(parsed.weddings[0].rec.d, undefined);
+            assert.equal(parsed.weddings[0].rec.dd, '1980-01-01');
+        }
+        assert.ok(TGP.packToCsv('-Owner 1940\n' + row).endsWith('\t~F2'));
+    }
+    const solo = '-Single 1940\n+ ~Solo\n--Kid 1960\n+ 1980 (Away) ~Div ^note';
+    await api.clearChatTree(id);
+    for (let i = 0; i < 2; i++) await api.applyTree(id, TGP.parseTree(solo));
+    ged = TGP.parseGedcom(await api.gedcomText(id));
+    assert.equal(ged.fams.length, 2);
+    assert.equal(ged.fams.find(f => f.__xref === 'Solo').chil.length, 1);
+    assert.equal(ged.fams.find(f => f.__xref === 'Div').div.plac, 'Away');
+}
 
 // ============================== 1. parseTrigger ==============================
 const TRIGGERS = [
@@ -156,7 +213,7 @@ const TREE_TRIGGERS = [
 ];
 for (const t of TREE_TRIGGERS) cmp('parseTrigger(tree) ' + JSON.stringify(t), VK.parseTrigger(t), TGP.parseTrigger(t));
 
-// ========================= 1б. плоское древо =========================
+// ========================= 1б. родословная роспись -+= =========================
 // мини-древо: пара, свадьба, дети с семьями (грамматика 2026-10-23 v2:
 // «+»×n — свадьба владельца глубины n−1; вторая половина — строкой ниже)
 const TREE1 = `\
@@ -218,12 +275,12 @@ const vkRep2 = VK.applyTree(TREE_CH, VK.parseTree(TREE1));
 const tgRep2 = await TG.applyTree(TREE_CH, TGP.parseTree(TREE1));
 cmp('applyTree повтор «мини-древо»', vkRep2, tgRep2);
 cmp('applyTree повтор gedcomText', VK.gedcomText(TREE_CH), await TG.gedcomText(TREE_CH));
-// плоское древо чата (формат пачки — тап на колокольчик): вывод идентичен
+// родословная роспись -+= чата (тап на «-+=»): вывод идентичен
 cmp('applyTree chatFlatText', VK.chatFlatText(TREE_CH), await TG.chatFlatText(TREE_CH));
 cmp('applyTree повтор chatFlatText', VK.chatFlatText(TREE_CH), await TG.chatFlatText(TREE_CH));
 
 // примечания с маркером «^» (дата в начале — не смерть/развод; внутренние
-// «^» — переносы строк NOTE гедкома): вывод пачки всегда с «^», реимпорт
+// «^» — переносы строк NOTE гедкома): вывод росписи всегда с «^», реимпорт
 // идемпотентен
 const NOTE_CH = 78;
 const TREE_NOTE = `\
@@ -247,7 +304,7 @@ const NOTE_FLAT_EXPECT = '-Николай II 1868-05-18 ^1917 отрёкся^в�
     + '--Ольга 1895-11-15 1918-07-17 ^старшая дочь';
 if (noteFlat !== NOTE_FLAT_EXPECT)
     { failed++; console.log('✗ пачка с «^»-примечаниями:\n  ' + noteFlat); }
-// round-trip: реимпорт выведенной пачки идемпотентен (примечание и смерти
+// round-trip: реимпорт выведенной росписи идемпотентен (примечание и смерти
 // на месте), гедком раскладывает переносы в 2 CONT
 VK.applyTree(NOTE_CH, VK.parseTree(noteFlat));
 await TG.applyTree(NOTE_CH, TGP.parseTree(noteFlat));
@@ -259,8 +316,8 @@ const noteGed = VK.gedcomText(NOTE_CH);
 if (!noteGed.includes('1 NOTE 1917 отрёкся') || !noteGed.includes('2 CONT вторая строка примечания')
     || !noteGed.includes('1 NOTE венчание в Зимнем'))
     { failed++; console.log('✗ гедком с NOTE/CONT:\n  ' + noteGed); }
-// пачка → CSV (Excel): маркер пола не клеится к имени («=Имя» — формула
-// для Excel); maxDepth — максимум глубины префиксов пачки; строка глубины
+// роспись → CSV (Excel): маркер пола не клеится к имени («=Имя» — формула
+// для Excel); maxDepth — максимум глубины префиксов росписи; строка глубины
 // n — maxDepth−n пустых ячеек, затем символы префикса по одному в каждой
 // колонке («--Сын» → «-\t-\tСын» при maxDepth=2), затем Имя — имена у
 // всех строк в колонке maxDepth+1, глубина видна по дефисам у правого
@@ -280,7 +337,7 @@ const CSV_SRC = [
 ].join('\n');
 const CSV_EXPECT = [
     '\t-\tИван\t1980-01-01 12:30\tПермь\t2010-01-02\tКазань\tзаметка^строка два',
-    '\t+\t\t1985-05-10\tМосква\t1995-01-02\t\t',
+    '\t+\t\t1985-05-10\t\t1995-01-02\tМосква\t',
     '\t\tМария\t1962-03-01\t\t\t\t',
     '+\t+\t\t\t\t\t\t',
     '\t\tЕва\t\t\t\t\t',
@@ -294,7 +351,130 @@ if (VK.packToCsv(CSV_SRC) !== CSV_EXPECT)
     { failed++; console.log('✗ packToCsv:\n' + VK.packToCsv(CSV_SRC).split('\n').map(l => '  ' + JSON.stringify(l)).join('\n')); }
 
 // ===================== 4б. ветвь героя: резка-прививка =====================
-// «-+=» на фокусе — пачка ветви: поддерево потомков на всю глубину, герой
+// Независимые ожидания: границы односторонних семей и поля всех событий.
+const ROUND_CH = 790;
+const datelessNotes = '-Отец ^1980 заметка^ещё\n+ ^семья^строка\nМать ^супруга\n--Сын ^ребёнок\n-Якорь\n+^односторонняя';
+for (const parser of [VK, TGP]) {
+    const parsed = parser.parseTree('\uFEFF\n#not for cut and graft\n' + datelessNotes + ' # cut ^ignored');
+    assert.equal(parsed.noGraft, true);
+    assert.deepEqual(parsed.errors, []);
+    assert.deepEqual(parsed.persons.map(p => [p.rec, p.note, p.nameOnly]), [
+        [{ n: 'Отец' }, '1980 заметка^ещё', true],
+        [{ n: 'Мать' }, 'супруга', true], [{ n: 'Сын' }, 'ребёнок', true],
+        [{ n: 'Якорь' }, '', true],
+    ]);
+    assert.deepEqual(parsed.weddings.map(w => [w.rec, w.note]), [[{}, 'семья^строка'], [{}, 'односторонняя']]);
+    assert.equal(parser.parseTree('#comment\n#not for cut and graft\n-Имя# cut ^note').noGraft, false);
+    assert.deepEqual(parser.parseTree('-Имя# cut ^note').persons[0].rec, { n: 'Имя' });
+    assert.equal(parser.parseTree('-Имя ^keep# cut^lost').persons[0].note, 'keep');
+}
+for (const api of [VK, TG]) {
+    await api.clearChatTree(ROUND_CH);
+    await api.applyTree(ROUND_CH, TGP.parseTree(datelessNotes));
+    const expected = '=Мать ^супруга\n+ ^семья^строка\nОтец ^1980 заметка^ещё\n--Сын ^ребёнок\n-Якорь\n+ ^односторонняя';
+    assert.equal(await api.chatFlatText(ROUND_CH), expected);
+    await api.applyTree(ROUND_CH, TGP.parseTree(expected));
+    assert.equal(await api.chatFlatText(ROUND_CH), expected);
+    const ged = TGP.parseGedcom(await api.gedcomText(ROUND_CH));
+    assert.ok(ged.indis.every(i => i.birt === null));
+    assert.equal(ged.indis.find(i => i.name === 'Мать').note, 'супруга');
+    assert.ok(ged.fams.every(f => f.marr === null));
+    assert.ok(ged.fams.some(f => f.note === 'семья^строка'));
+    // A repeated bare spouse is a reference, not a request to erase its note.
+    await api.applyTree(ROUND_CH, TGP.parseTree('-Другой\n+\nМать'));
+    assert.equal(TGP.parseGedcom(await api.gedcomText(ROUND_CH)).indis.find(i => i.name === 'Мать').note, 'супруга');
+}
+const ROUND_TXT = '-Иван 1950? (Родина) 2020-02= (Покой)\n+\n+\n==Мария 1980-03-04?\n--Пётр 1982=\n+1970-01? (Венчание) 1990= (Развод) ^семья\n==Анна 1992-04?\n+2000= 2005? (Разъезд)\n==Ева 2001-01-02=';
+for (const api of [VK, TG]) {
+    const parsed = VK.parseTree(ROUND_TXT);
+    assert.deepEqual(parsed.errors, []);
+    assert.equal(parsed.weddings.length, 4);
+    assert.equal(parsed.persons[1].spouseLine, false);
+    assert.equal(parsed.children[0].w, 1);
+    assert.equal(parsed.persons[1].sex, 'F');
+    await api.clearChatTree(ROUND_CH);
+    await api.applyTree(ROUND_CH, parsed);
+    const flat = await api.chatFlatText(ROUND_CH);
+    assert.equal(flat, ROUND_TXT);
+    await api.applyTree(ROUND_CH, VK.parseTree(flat));
+    assert.equal(await api.chatFlatText(ROUND_CH), flat, 'повтор не плодит и не сливает семьи');
+    const ged = await api.gedcomText(ROUND_CH);
+    assert.equal((ged.match(/0 @[^@]+@ FAM/g) || []).length, 4);
+    assert.match(ged, /1 DIV\n2 DATE CAL 1990\n2 PLAC Развод/);
+    assert.match(ged, /1 DIV\n2 DATE ABT 2005\n2 PLAC Разъезд/);
+    const csv = VK.packToCsv(flat);
+    assert.match(csv, /1970-01\?\tВенчание\t1990=\tРазвод\tсемья/);
+    assert.match(csv, /2000=\t\t2005\?\tРазъезд/);
+    await api.clearChatTree(ROUND_CH);
+    await api.applyTree(ROUND_CH, VK.parseTree(flat));
+    assert.equal(await api.chatFlatText(ROUND_CH), flat, 'чистый round-trip');
+    // Неявная семья перед явной не должна переехать в первый +.
+    const implicit = '-Отец\n--Первый\n+\n==Вторая';
+    await api.clearChatTree(ROUND_CH);
+    await api.applyTree(ROUND_CH, VK.parseTree(implicit));
+    assert.equal(await api.chatFlatText(ROUND_CH), '-Отец\n+\n--Первый\n+\n==Вторая');
+    const mixed = '-Отец 1950-01-01\n+1970 (Свадьба) 1990 (Развод)\nМать 1952-01-01\n==Дочь 1975-01-01\n+1995\n==Другая 1996-01-01\n+1995\n--Сын 1998-01-01';
+    await api.clearChatTree(ROUND_CH);
+    await api.applyTree(ROUND_CH, VK.parseTree(mixed));
+    assert.equal(await api.chatFlatText(ROUND_CH), mixed, 'дети не переезжают в первый полный брак');
+    await api.applyTree(ROUND_CH, VK.parseTree(mixed));
+    assert.equal(await api.chatFlatText(ROUND_CH), mixed, 'две односторонние свадьбы одной даты');
+}
+for (const suffix of ['?', '=']) for (const date of ['1950', '1950-02', '1950-02-03']) {
+    const token = date + suffix;
+    const p = VK.parseTree('-Тест ' + token + ' ' + token + '\n+' + token + ' (Брак) ' + token + ' (Развод)');
+    const abt = (suffix === '?' ? 3 : 6) + (date.length === 4 ? 2 : date.length === 7 ? 1 : 0);
+    assert.equal(p.persons[0].rec.abt, abt);
+    assert.equal(p.persons[0].rec.dabt, abt);
+    assert.equal(p.weddings[0].rec.abt, abt);
+    assert.equal(p.weddings[0].rec.dabt, abt);
+    assert.equal(p.weddings[0].rec.plac2, 'Развод');
+}
+assert.equal(VK.parseTree('-Иван\n+\n+\n--Мария').persons[1].sex, 'M');
+for (const parser of [VK, TGP]) {
+    const closed = parser.parseTree('-Иван\n+\n--Ребёнок\nПоздний супруг');
+    assert.equal(closed.errors.length, 1);
+    assert.equal(closed.errors[0].line, 4);
+    assert.equal(closed.persons.length, 2);
+    assert.equal(closed.weddings[0].f, null);
+    assert.equal(closed.children[0].w, 0);
+    const expected = { d: '1973-01-01', abt: 2, dd: '1980-01-01', dabt: 2, plac2: 'Казань' };
+    assert.deepEqual(parser.parseTreeLine('+1973 1980 (Казань)').rec, expected);
+    const emptyPlace = parser.parseTreeLine('+1973 () 1980 (Казань)').rec;
+    delete emptyPlace.plac;
+    assert.deepEqual(emptyPlace, expected);
+    assert.equal(parser.parseTreeLine('+1980').rec.d, '1980-01-01');
+    assert.equal(parser.parseTreeLine('+ ^семья без дат').note, 'семья без дат');
+    for (const depth of [1, 2, 4]) for (const suffix of ['', '?', '=', '~', '<', '>'])
+        for (const date of ['1980', '1980-02', '1980-02-03']) {
+            const prefix = '+'.repeat(depth), token = date + suffix;
+            const parsed = parser.parseTreeLine(prefix + ' ' + token + ' (Казань) ^семья^строка');
+            const dated = parser.parseTreeLine(prefix + token).rec;
+            assert.equal(parsed.depth, depth - 1);
+            assert.deepEqual(parsed.rec, { dd: dated.d, ...(dated.abt ? { dabt: dated.abt } : {}), plac2: 'Казань' });
+            assert.equal(parsed.note, 'семья^строка');
+            const csv = parser.packToCsv(prefix + ' ' + token + ' (Казань) ^семья^строка');
+            assert.equal(csv, prefix.split('').join('\t') + '\t\t\t\t' + token + '\tКазань\tсемья^строка');
+        }
+}
+for (const api of [VK, TG]) {
+    const txt = '-Отец 1940\n+ 1980 (Казань) ^развод без свадьбы\n--Сын 1960\n++ 2001-02? (Пермь) ^семья сына\nЖена 1962\n===Дочь 1985\n+1973 1980 (Казань)';
+    await api.clearChatTree(ROUND_CH);
+    const parsed = VK.parseTree(txt);
+    assert.deepEqual(parsed.errors, []);
+    await api.applyTree(ROUND_CH, parsed);
+    assert.equal(await api.chatFlatText(ROUND_CH), txt);
+    await api.applyTree(ROUND_CH, parsed);
+    assert.equal(await api.chatFlatText(ROUND_CH), txt);
+    const ged = await api.gedcomText(ROUND_CH);
+    assert.match(ged, /1 DIV\n2 DATE 1980\n2 PLAC Казань\n/);
+    assert.match(ged, /1 NOTE развод без свадьбы/);
+    await api.clearChatTree(ROUND_CH);
+    await api.applyTree(ROUND_CH, VK.parseTree(txt));
+    assert.equal(await api.chatFlatText(ROUND_CH), txt);
+}
+
+// «-+=» на фокусе — роспись ветви: поддерево потомков на всю глубину, герой
 // корневой строкой; вывод обеих копий — дословно (чистая subsetBranch)
 const vkBranch = VK.branchFlatText(TREE_CH, 'Фёдор III 1661-06-09');
 const tgBranch = await TG.branchFlatText(TREE_CH, 'Фёдор III 1661-06-09');
@@ -303,8 +483,8 @@ if (!vkBranch || !vkBranch.startsWith('-Фёдор III 1661-06-09 1682-04-27')) 
     failed++;
     console.log('✗ пачка ветви не начинается с корневой строки героя\n  ' + vkBranch);
 }
-// пачка в ответе на цитату = резка-прививка (cutAndGraft): ветвь цитируемого
-// срезана молча, поля героя (в т.ч. имя) обновлены первой строкой пачки,
+// роспись в ответе на цитату = резка-прививка (cutAndGraft): ветвь цитируемого
+// срезана молча, поля героя (в т.ч. имя) обновлены первой строкой росписи,
 // новая ветвь прививается; у героя — свои браки с половинами, потомки глубже
 const BRANCH_EDIT = `\
 -Пётр Фёдорович 1661-06-09 1682-04-27
@@ -328,7 +508,7 @@ cmp('cutAndGraft gedcomText', VK.gedcomText(TREE_CH), await TG.gedcomText(TREE_C
 cmp('cutAndGraft chatFlatText', VK.chatFlatText(TREE_CH), await TG.chatFlatText(TREE_CH));
 // гедком-резерв живёт: срезанные записи доступны старым файлом (сам резерв
 // выкладывается транспортом, не логикой)
-// якорь не найден — пачка применяется без среза (добавление merge'ем)
+// якорь не найден — роспись применяется без среза (добавление merge'ем)
 const vkRepM = VK.cutAndGraft(TREE_CH, 'Нет-Такого-Человека 1690-01-01', VK.parseTree(TREE1));
 const tgRepM = await TG.cutAndGraft(TREE_CH, 'Нет-Такого-Человека 1690-01-01', TGP.parseTree(TREE1));
 cmp('cutAndGraft без якоря', vkRepM, tgRepM);
@@ -375,13 +555,13 @@ cmp('editTrigger мимо якоря',
     VK.editTrigger(TREE_CH, 'Нет-Такого 1690-01-01', { n: 'Имя', d: '1690-01-01' }),
     await TG.editTrigger(TREE_CH, 'Нет-Такого 1690-01-01', { n: 'Имя', d: '1690-01-01' }));
 
-// сводка пачки — общий формат ответа (обе копии)
+// сводка росписи — общий формат ответа (обе копии)
 cmp('treeReport пачка', VK.treeReport(Object.assign(vkRep3, { errors: [{ line: 2, msg: 'свадьба без подходящей пары' }] })),
     TG.treeReport(Object.assign({}, tgRep3, { errors: [{ line: 2, msg: 'свадьба без подходящей пары' }] })));
 // stripHtml — снятие разметки для .txt-хвоста (только ТГ; ВК присылает без HTML)
 cmp('stripHtml', TG.stripHtml('<b>Иван</b> &lt;гр&gt; 20&nbsp;июня'), 'Иван <гр> 20 июня');
 
-// ==================== 5а. flatSearch: поиск по пачке ====================
+// ==================== 5а. flatSearch: поиск по росписи ====================
 const FLAT = [
     '-Антон Ульрих 1714-08-17 герцог',
     '-----Иван VI Антонович 1740-08-12 Император',
@@ -1031,7 +1211,7 @@ if (!VK.gedcomText(1).includes('1 NOTE 1960 год уточняется')
 // ==================== 3б. бездатные супруги, места, похороны ====================
 // бездатная персона импортируется при упоминании в семье (супруг/ребёнок);
 // места рождения/смерти читаются из PLAC, похороны (BURI) — фолбэк смерти;
-// пачка выводит места в скобках за своей датой, .ged пишет PLAC и заглушкам
+// роспись выводит места в скобках за своей датой, .ged пишет PLAC и заглушкам
 const GED_STUB = ['0 HEAD',
     '0 @I1@ INDI', '1 NAME Иван /Г/', '1 SEX M', '1 BIRT', '2 DATE 10 MAY 1960', '2 PLAC Пермь',
     '1 BURI', '2 DATE 5 MAY 2020', '2 PLAC Пермь',
@@ -1072,13 +1252,13 @@ if (!VK.gedcomText(GS_CH).includes('2 DATE 5 MAY 2020') || !VK.gedcomText(GS_CH)
 // заглушка-супруга с датой смерти и местом; бездатный ребёнок — CHIL/FAMC
 if (!VK.gedcomText(GS_CH).includes('1 NAME Мария С') || !VK.gedcomText(GS_CH).includes('1 NAME Сын Бездатный'))
     { failed++; console.log('✗ бездатные заглушки в экспорте:\n  ' + VK.gedcomText(GS_CH)); }
-// round-trip: реимпорт выведенной пачки идемпотентен (места на месте)
+// round-trip: реимпорт выведенной росписи идемпотентен (места на месте)
 VK.applyTree(GS_CH, VK.parseTree(stubFlat));
 await TG.applyTree(GS_CH, TGP.parseTree(stubFlat));
 cmp('round-trip пачка бездатные/места', VK.chatFlatText(GS_CH), await TG.chatFlatText(GS_CH));
 if (VK.chatFlatText(GS_CH) !== STUB_FLAT_EXPECT)
     { failed++; console.log('✗ round-trip пачка бездатные/места:\n  ' + VK.chatFlatText(GS_CH)); }
-// round-trip: экспорт .ged → импорт → та же пачка (заглушки с датами смерти
+// round-trip: экспорт .ged → импорт → та же роспись (заглушки с датами смерти
 // возвращаются: BURI/DEAT у бездатных переживают цикл)
 VK.importGedcom(GS_CH, VK.parseGedcom(VK.gedcomText(GS_CH)));
 await TG.importGedcom(GS_CH, TGP.parseGedcom(await TG.gedcomText(GS_CH)));
@@ -1146,7 +1326,7 @@ const kidsFlat = VK.chatFlatText(GK_CH);
 cmp('importGedcom бездатные дети пачка', kidsFlat, await TG.chatFlatText(GK_CH));
 cmp('importGedcom бездатные дети гедком', VK.gedcomText(GK_CH), await TG.gedcomText(GK_CH));
 cmp('importGedcom бездатные дети свадьбы', VK.weddingRows(GK_CH), await TG.weddingRows(GK_CH));
-// round-trip: экспорт → импорт → та же пачка
+// round-trip: экспорт → импорт → та же роспись
 VK.importGedcom(GK_CH, VK.parseGedcom(VK.gedcomText(GK_CH)));
 await TG.importGedcom(GK_CH, TGP.parseGedcom(await TG.gedcomText(GK_CH)));
 cmp('round-trip .ged бездатные дети', VK.chatFlatText(GK_CH), await TG.chatFlatText(GK_CH));
@@ -1196,7 +1376,7 @@ cmp('importGedcom жёны одного отца отчёт', vkImpW, tgImpW);
 const wivesFlat = VK.chatFlatText(GW_CH);
 cmp('importGedcom жёны одного отца пачка', wivesFlat, await TG.chatFlatText(GW_CH));
 cmp('importGedcom жёны одного отца гедком', VK.gedcomText(GW_CH), await TG.gedcomText(GW_CH));
-// round-trip: экспорт → импорт → та же пачка
+// round-trip: экспорт → импорт → та же роспись
 VK.importGedcom(GW_CH, VK.parseGedcom(VK.gedcomText(GW_CH)));
 await TG.importGedcom(GW_CH, TGP.parseGedcom(await TG.gedcomText(GW_CH)));
 cmp('round-trip .ged жёны одного отца', VK.chatFlatText(GW_CH), await TG.chatFlatText(GW_CH));
@@ -1345,7 +1525,7 @@ cmp('linkText: pairCand после удаления пары', VK.linkText(CH, v
 cmp('gedcomText: MARR после удаления пары', VK.gedcomText(CH), await TG.gedcomText(CH));
 
 // каскад: удалить персону «Мать» — связи падают, семья остаётся с «Отцом»;
-// сама запись удаляется: персон больше нет ни в записи, ни в пачке/поиске
+// сама запись удаляется: персон больше нет ни в записи, ни в росписи/поиске
 VK.deleteEventCascade(CH, mk);
 await TG.deleteEventCascade(CH, mk);
 cmp('gedcomText после удаления персоны', VK.gedcomText(CH), await TG.gedcomText(CH));
@@ -1647,7 +1827,7 @@ cmp('chartModel бездатный тёзка-якорь',
 
 // ==================== 10. дубли «Имя Д» и примерные даты ====================
 // импорт .ged без склейки xref: коллизия ключа «Имя Д» — суффикс «~xref»
-// (дата и abt дубля сохраняются, первая запись без суффикса); отчёт пачки —
+// (дата и abt дубля сохраняются, первая запись без суффикса); отчёт росписи —
 // «♻️ дубль: … → …»
 const GED_DUP = ['0 HEAD',
     '0 @I1@ INDI', '1 NAME Тёзка', '1 BIRT', '2 DATE 1 JAN 1960',
@@ -1789,7 +1969,7 @@ const ABT_CH = 143;
     }
 }
 
-// гранулярность примерных дат в пачке/вводе: месяц — «ГГГГ-ММ» (а не
+// гранулярность примерных дат в росписи/вводе: месяц — «ГГГГ-ММ» (а не
 // «ГГГГ-ММ-01~»), компактная «198706» разбирается, «JAN 1987» == «1987-01»
 {
     const GR_CH = 144;
@@ -1818,7 +1998,7 @@ const ABT_CH = 143;
     const jabs = VK.personRows(GR_CH + 2).map(r => r.n + ":" + r.abt + ":" + r.d).join(",");
     if (jabs !== 'Январка:1:1987-01-01,Квалифик:3:1987-06-15')
         { failed++; console.log('✗ JAN/ABT Гранулярность: ' + jabs); }
-    // реальный цикл «пачка → древо → пачка»: месяц печатается без «-01» и «~»
+    // реальный цикл «роспись → древо → роспись»: месяц печатается без «-01» и «~»
     const TREE = ["- Имя 1970-01-01", "+ 1987-06", "Тёзка 1987-06", "-", "Пол 1990"].join('\n');
     cmp('applyTree месяцы отчёт', VK.applyTree(GR_CH, VK.parseTree(TREE)),
         await TG.applyTree(GR_CH, TGP.parseTree(TREE)));
