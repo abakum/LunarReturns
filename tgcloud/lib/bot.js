@@ -1565,7 +1565,6 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
 // markup — клавиатура, которую надо сохранить при правке текста росписью
 // (editMessageText без reply_markup в TG клавиатуру снимает)
 export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0, markup = undefined) {
-    const g = await gedcomText(chatId, keys);
     // заголовок чарта без цифры радиуса;
     // цифра → range героя для chartFor
     const head0 = head || "Гедком-древо";
@@ -1574,59 +1573,79 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
     const base = fileBaseOf(head0);
     // третий файл (радиусные 🧬 и /gedcomN): роспись радиуса — chatFlatText по keys;
     // она идёт только файлом (роспись <4000 — текстом правки сообщения)
-    const pack = Array.isArray(keys) && keys.length ? await chatFlatText(chatId, keys) : "";
-    // PDF candidates use the cheap blood prefix plus bounded marriages.
-    // chartFor filters every final row by label words; GED/TXT keep keys.
-    let chartKeys = keys;
-    if (heroKey && rm) {
-        chartKeys = focusKeys(await linkPairs(chatId), heroKey, Number(rm[1]), await focusSpousePairs(chatId));
-    }
-    let pdf = null, persons = 0, chartErr = null;
+    let packFinal = null;
     try {
-        const res = await chartFor(chatId, chartKeys, chartHead, heroKey, rm ? Number(rm[1]) : null);
-        // chartPdf сам отсекает до CHART_MAX младших — файл всегда строится
-        persons = res.persons;
-        pdf = res.pdf;
-    } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
-    try {
+        const g = await gedcomText(chatId, keys);
+        const pack = Array.isArray(keys) && keys.length ? await chatFlatText(chatId, keys) : "";
         const enc = new TextEncoder();
         // BOM — чтобы Windows-редакторы открывали роспись как UTF-8;
         // роспись <4000: правим сообщение с 🔗/🧬-кнопками — текст = роспись
-        // (клавиатура сообщения сохраняется), прицепы .ged+.pdf — медиа-группой;
-        // не влезает — все три прицепа (.ged+.pdf+.ged.txt) одной медиа-группой
-        const packFits = !!pack && pack.length < 4000;
-        let overflowFinal = null;
+        // (клавиатура сообщения сохраняется), документы отправляем по готовности
+        const packFits = !!pack && (heroKey ? head.length + 1 : 0) + pack.length + "\n⏳".length < 4000;
         if (pack && !packFits && heroKey && replyTo) {
             const lines = pack.split("\n").filter((l, i) => !(i === 0 && l.trim().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase())));
             const inner = cutLines(lines.join("\n"), 4000, head.length + 1 + NOT_FOR_GRAFT.length + 1);
-            overflowFinal = head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️";
+            packFinal = head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️";
             await api.editMessageText({ chat_id: chatId, message_id: replyTo,
-                text: overflowFinal + "⏳", ...(markup !== undefined ? { reply_markup: markup } : {}) });
+                text: packFinal + "⏳", ...(markup !== undefined ? { reply_markup: markup } : {}) });
         }
-        if (packFits && replyTo) await api.editMessageText({
-            chat_id: chatId, message_id: replyTo, text: pack,
-            ...(markup !== undefined ? { reply_markup: markup } : {}),
-        });
-        const media = [{ type: "document", media: new InputFile(enc.encode(g), base + ".ged", { type: "text/plain" }),
-            caption: head }];
-        if (pdf) media.push({ type: "document",
-            media: new InputFile(Uint8Array.from(pdf, c => c.charCodeAt(0)), base + ".pdf", { type: "application/pdf" }) });
-        if (pack && !packFits) media.push({ type: "document",
-            media: new InputFile(enc.encode("\uFEFF" + pack), base + ".ged.txt", { type: "text/plain" }) });
-        await api.sendMediaGroup({
-            chat_id: chatId, media, // прицепы — ответом (reply) на сообщение с кнопками/командой
-            ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
-        });
-        if (overflowFinal) await api.editMessageText({ chat_id: chatId, message_id: replyTo,
-            text: overflowFinal, ...(markup !== undefined ? { reply_markup: markup } : {}) });
+        if (packFits && replyTo) {
+            packFinal = heroKey ? head + "\n" + pack : pack;
+            await api.editMessageText({
+                chat_id: chatId, message_id: replyTo, text: packFinal + "\n⏳",
+                ...(markup !== undefined ? { reply_markup: markup } : {}),
+            });
+        }
+        const errors = [];
+        const sendFile = async (bytes, ext, type) => {
+            try {
+                await api.sendDocument({ chat_id: chatId,
+                    document: new InputFile(bytes, base + ext, { type }),
+                    caption: head,
+                    ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
+                });
+            } catch (e) {
+                console.error("sendDocument:", base + ext, e.message);
+                errors.push(base + ext + ": " + e.message);
+            }
+        };
+        await sendFile(enc.encode(g), ".ged", "text/plain");
+        if (pack && !packFits) await sendFile(enc.encode("\uFEFF" + pack), ".ged.txt", "text/plain");
+        // Готовые текстовые файлы уже доступны; часы остаются до завершения PDF.
+        let chartKeys = keys;
+        if (heroKey && rm) {
+            chartKeys = focusKeys(await linkPairs(chatId), heroKey, Number(rm[1]), await focusSpousePairs(chatId));
+        }
+        let pdf = null, persons = 0, chartErr = null;
+        try {
+            const res = await chartFor(chatId, chartKeys, chartHead, heroKey, rm ? Number(rm[1]) : null);
+            persons = res.persons;
+            pdf = res.pdf;
+        } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
+        if (pdf) await sendFile(Uint8Array.from(pdf, c => c.charCodeAt(0)), ".pdf", "application/pdf");
+        if (chartErr && !chartErr.includes("персоны пусты")) errors.push("Диаграмма не построена: " + chartErr);
+        const errorText = errors.length ? "\n💥 Не удалось выложить файлы:\n" + errors.join("\n") : "";
+        if (replyTo) await api.editMessageText({ chat_id: chatId, message_id: replyTo,
+            text: (packFinal || (heroKey ? head : "🧬")) + errorText, ...(markup !== undefined ? { reply_markup: markup } : {}) });
+        else if (errors.length) await api.sendMessage({ chat_id: chatId, text: errorText.trim() });
         console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : "")
             + (pack ? (packFits ? " (пачка текстом в ответе)" : " + " + base + ".ged.txt") : ""), "chat", chatId);
         // бездатное древо — PDF нет по построению («chart: персоны пусты»),
         // это не ошибка, алерта не шлём
-        if (chartErr && !chartErr.includes("персоны пусты")) await api.sendMessage({ chat_id: chatId, text: "💥 Диаграмма не построена: " + chartErr });
         return;
     } catch (e) {
         console.error("sendDocument:", e.message);
+        if (replyTo) {
+            try {
+                await api.editMessageText({ chat_id: chatId, message_id: replyTo,
+                    text: (packFinal || head) + "\n💥 Не удалось выложить файлы: " + e.message,
+                    ...(markup !== undefined ? { reply_markup: markup } : {}) });
+                return;
+            } catch (editError) {
+                if (/not modified/i.test(editError.description || editError.message || "")) return;
+                console.error("ged error edit:", editError.message);
+            }
+        }
         await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось выложить файлы: " + e.message });
     }
 }
@@ -1891,9 +1910,17 @@ export async function sendLong(chatId, text, replyMarkup, name, replyTo = 0) {
 // sendFlatPack key=null: метки-держатели «-+=⏳» / «🧬⏳», по готовности
 // файлов остаётся видимая метка («-+=», «🧬») — цитата на /links живёт
 export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin = null) {
-    const pack = key === null ? await chatFlatText(chatId) : await branchFlatText(chatId, key);
-    if (!pack) return false;
     const reply = replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {};
+    const prefix = head ? head + "\n" : "";
+    const markup = origin?.edit?.markup;
+    const holdId = origin?.edit?.message_id || (await api.sendMessage({ chat_id: chatId,
+        text: prefix + "-+=⏳", ...reply })).message_id;
+    const edit = text => api.editMessageText({ chat_id: chatId, message_id: holdId, text,
+        ...(markup !== undefined ? { reply_markup: markup } : {}) });
+    if (origin?.edit) await edit(prefix + "-+=⏳");
+    try {
+    const pack = key === null ? await chatFlatText(chatId) : await branchFlatText(chatId, key);
+    if (!pack) { await edit(prefix + (key === null ? "связей пока нет" : "ветвь пуста")); return true; }
     if (key === null) {
         const artifacts = chatFlatArtifacts(pack);
         const base = artifacts.txt.name;
@@ -1903,16 +1930,6 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin =
             // метка-держатель «-+=⏳»: правка сообщения с кнопками (клавиатура
             // остаётся) либо новое сообщение ответом на /links; файл ответом
             // на него; по готовности — «-+=» (видимая цитата на /links живёт)
-            let holdId = 0;
-            if (origin?.edit) {
-                await api.editMessageText({ chat_id: chatId,
-                    message_id: origin.edit.message_id, text: "-+=⏳",
-                    reply_markup: origin.edit.markup });
-                holdId = origin.edit.message_id;
-            } else {
-                const hold = await api.sendMessage({ chat_id: chatId, text: "-+=⏳", ...reply });
-                holdId = hold.message_id;
-            }
             // BOM — чтобы Windows-редакторы открывали как UTF-8
             await api.sendDocument({
                 chat_id: chatId,
@@ -1930,13 +1947,16 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin =
                         new TextEncoder().encode(csv.content), csv.name, { type: csv.type }),
                     reply_parameters: { message_id: holdId, allow_sending_without_reply: true },
                 });
-            } catch (e2) { console.error("flat pack csv:", e2.message); }
+            } catch (e2) {
+                console.error("flat pack csv:", e2.message);
+                await edit("-+=\n💥 Не удалось выложить CSV: " + e2.message);
+                return true;
+            }
             await api.editMessageText({ chat_id: chatId, message_id: holdId, text: "-+=",
                 ...(origin?.edit ? { reply_markup: origin.edit.markup } : {}) });
         } catch (e) {
             console.error("flat pack doc:", e.message);
-            await api.sendMessage({ chat_id: chatId,
-                text: "💥 Не удалось выложить файл " + base, ...reply }).catch(() => {});
+            await edit("-+=\n💥 Не удалось выложить файл " + base);
         }
         return true;
     }
@@ -1947,9 +1967,8 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin =
     // NOT_FOR_GRAFT выше)
     const marked = pack.trimStart().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase());
     const mark = marked ? "" : NOT_FOR_GRAFT + "\n";
-    if (pack.length <= 4000) {
-        await api.sendMessage({ chat_id: chatId,
-            text: (head ? head + "\n" : "") + pack, ...reply });
+    if (prefix.length + pack.length <= 4000) {
+        await edit(prefix + pack);
         return true;
     }
     const base = fileBaseOf(head || "Древо чата") + ".ged.txt";
@@ -1958,26 +1977,27 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin =
         // герой/голова, метка; полное — в файле; у ромба метка и так первая
         // строка росписи в файле), файл — ответом на него же, потом ⏳ снят
         // (✂️ остаётся)
-        const hold = await api.sendMessage({
-            chat_id: chatId, text: (head ? head + "\n" : "") + mark + "✂️⏳", ...reply });
+        const inner = cutLines(pack, 3900, prefix.length + mark.length);
+        const finalText = prefix + mark + inner + "\n✂️";
+        await edit(finalText + "⏳");
         // BOM — чтобы Windows-редакторы открывали как UTF-8
         const content = "\uFEFF" + pack;
         await api.sendDocument({
             chat_id: chatId,
             document: new InputFile(new TextEncoder().encode(content), base, { type: "text/plain" }),
-            ...(hold && hold.message_id
-                ? { reply_parameters: { message_id: hold.message_id,
-                    allow_sending_without_reply: true } } : reply),
+            reply_parameters: { message_id: holdId, allow_sending_without_reply: true },
         });
-        if (hold && hold.message_id)
-            await api.editMessageText({ chat_id: chatId,
-                message_id: hold.message_id,
-                text: (head ? head + "\n" : "") + mark + "✂️" });
+        await edit(finalText);
     } catch (e) {
         console.error("tail document:", e.message);
-        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось выложить файл " + base, ...reply });
+        await edit(prefix + "💥 Не удалось выложить файл " + base);
     }
     return true;
+    } catch (e) {
+        console.error("flat pack:", e);
+        await edit(prefix + "💥 Не удалось подготовить роспись: " + e.message);
+        return true;
+    }
 }
 
 // снять разметку HTML/ТГ для .txt-файла (теги — прочь, сущности — в символы,

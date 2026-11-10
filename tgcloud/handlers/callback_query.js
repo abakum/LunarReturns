@@ -39,7 +39,7 @@ export default async function (cq, ctx) {
     // сообщение (к которому кнопки), а не отдельным; после выкладки — правка:
     // ⏳ снимается, ✂️ остаётся (признак «не влезло — полное в файле»);
     // finalText — сообщение с ✂️
-    const tailDoc = async (text, nameBase, ext = ".ged.txt", finalText = null) => {
+    const tailDoc = async (text, nameBase, ext = ".ged.txt", finalText = null, markup = undefined) => {
         const base = fileBaseOf(nameBase || "Продолжение") + ext;
         // BOM и метка «не для прививки»; если роспись уже несёт метку — не двоим
         const content = "\uFEFF" + (text.trimStart().toLowerCase()
@@ -54,10 +54,14 @@ export default async function (cq, ctx) {
             });
             if (finalText !== null)
                 await api.editMessageText({ chat_id: chatId,
-                    message_id: cq.message.message_id, text: finalText });
+                    message_id: cq.message.message_id, text: finalText, reply_markup: markup });
             return;
         } catch (e) {
             console.error("tail document:", e.message);
+            if (finalText !== null) {
+                await editText(finalText + "\n💥 Не удалось выложить файл.", markup);
+                return;
+            }
             await api.sendMessage({ chat_id: chatId,
                 text: "💥 Не удалось выложить файл " + base });
         }
@@ -148,17 +152,13 @@ export default async function (cq, ctx) {
     // пол по ключу «Имя Д» (ярлыки родства)
     const sexOf = async () => (rows => k => (rows.find(r => r.n + " " + r.d === k) || {}).sex ?? null)
         (await personRows(chatId));
-    // радиус не глубже имеющихся связей; [radius, ключи родни]
-    // levels=true — уровневый BFS («жизненный» радиус, список 🔔 и цифры),
-    // иначе кровный ромб без браков (экспорт 🧬/PDF);
-    // (супруги — по лимиту слов ярлыка, fynny)
-    const radiusOf = async (key, fvRadius, levels) => {
+    // Метаданные радиуса без построения списка: часы показываем до обхода родни.
+    const radiusOf = async (key, fvRadius) => {
         const pairs = await linkPairs(chatId);
         const spPairs = await focusSpousePairs(chatId);
         const depth = Math.max(1, focusDepth(pairs, spPairs, key));
         const r = Math.min(fvRadius, depth);
-        const keys = focusListKeys(pairs, spPairs, key, r, await sexOf(), levels);
-        return [r, keys, depth];
+        return [r, pairs, spPairs, depth];
     };
 
     if (data === "del") {
@@ -268,8 +268,7 @@ export default async function (cq, ctx) {
         await answer("гедком-древо чата");
         const kb = cq.message.reply_markup;
         await editText("🧬⏳", kb);
-        await sendGedPdf(chatId, undefined, "🧬 Гедком-древо чата", null, cq.message.message_id);
-        await editText("🧬", kb);
+        await sendGedPdf(chatId, undefined, "🧬 Гедком-древо чата", null, cq.message.message_id, kb);
         return;
     }
 
@@ -331,9 +330,9 @@ export default async function (cq, ctx) {
         // обновляем focus_view и пересчитываем ключи под НОВЫЙ радиус
         const wantR = /^foc[1-5]$/.test(data) ? Number(data.slice(3)) : row.radius;
         // список/цифры — уровневый радиус (bell), 🧬 — кровный ромб (экспорт);
-        // «-+=» ключи не использует — levels=false безвредно
+        // «-+=» ключи родни не использует
         const bell = data === "focbell" || /^foc[1-5]$/.test(data);
-        const [radius, keys, depth] = await radiusOf(row.pkey, wantR, bell);
+        const [radius, pairs, spPairs, depth] = await radiusOf(row.pkey, wantR);
         // xref для единых кнопок 👎/👀 (персона — xref, свадьба — fx fam-пары)
         const fxref = rec.xref ?? rec.fx ?? null;
         // список всегда по ММ-ДД (сортировка подписки касается только дампа)
@@ -343,19 +342,54 @@ export default async function (cq, ctx) {
         await answer(data === "focbell" ? "список " + focusLabel(radius)
             : (data === "foctree" ? "древо " + focusLabel(radius)
                 : (data === "focflat" ? "пачка ветви " : "") + focusLabel(radius)));
+        const head = focusHead(row.pkey, radius, rec.dd);
+        const loading = "🔔⏳";
+        if (bell) {
+            let kb = cq.message.reply_markup;
+            // Не создаём отдельное сообщение с вечными часами, если правка недоступна.
+            await api.editMessageText({ chat_id: chatId, message_id: cq.message.message_id,
+                text: head + "\n" + loading, reply_markup: kb }).catch(e => console.error("focus loading:", e.message));
+            let text;
+            try {
+                const sex = await sexOf();
+                const keys = focusListKeys(pairs, spPairs, row.pkey, radius, sex, true);
+                const body = focusListText(await bellItems(), keys, row.pkey, pairs, spPairs, sex, byFull, mmddToday(), radius)
+                    || "(в радиусе нет событий)";
+                kb = focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth, fxref);
+                text = head + "\n" + (head.length + 1 + body.length > 4000
+                    ? cutLines(body, 4000, head.length + 1, false) : body);
+            } catch (e) {
+                console.error("focus list:", e);
+                text = head + "\nНе удалось подготовить список. Попробуйте ещё раз.";
+            }
+            await editText(text, kb);
+            return;
+        }
         // 🧬 в радиусе: <имя>.ged + <имя>.pdf (родство к герою); клавиатура
         // передаётся в правку (роспись <4000 правит текст сообщения)
         if (data === "foctree") {
-            await sendGedPdf(chatId, keys, focusHead(row.pkey, radius, rec.dd), row.pkey, cq.message.message_id,
-                focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth, fxref));
+            const kb = cq.message.reply_markup;
+            await api.editMessageText({ chat_id: chatId, message_id: cq.message.message_id,
+                text: head + "\n🧬⏳", reply_markup: kb }).catch(e => console.error("DNA loading:", e.message));
+            try {
+                const keys = focusListKeys(pairs, spPairs, row.pkey, radius, await sexOf(), false);
+                await sendGedPdf(chatId, keys, head, row.pkey, cq.message.message_id,
+                    focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth, fxref));
+            } catch (e) {
+                console.error("DNA export:", e);
+                await editText(head + "\n💥 Не удалось подготовить древо. Попробуйте ещё раз.", kb);
+            }
             return;
         }
-        const head = focusHead(row.pkey, radius, rec.dd);
         // «-+=» на фокусе: роспись ВЕТВИ героя (.ged.txt) — вся глубина, герой
         // первой строкой; реплай правленной росписью на цитату заменяет ветвь
         if (data === "focflat") {
+            const kb = cq.message.reply_markup;
+            await api.editMessageText({ chat_id: chatId, message_id: cq.message.message_id,
+                text: head + "\n-+=⏳", reply_markup: kb }).catch(e => console.error("flat loading:", e.message));
+            try {
             const pack = await branchFlatText(chatId, row.pkey);
-            if (!pack) { await answer("ветвь пуста"); return; }
+            if (!pack) { await editText(head + "\n(ветвь пуста)", kb); return; }
             const fKb0 = focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth, fxref);
             if ((head + "\n" + pack).length >= 4000) {
                 // перелив: порядок строк — герой, метка (правило — коммент
@@ -364,31 +398,16 @@ export default async function (cq, ctx) {
                 const inner = cutLines(pack, 4000, head.length + 1 + NOT_FOR_GRAFT.length + 1);
                 await editText(head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️⏳", fKb0);
                 await tailDoc(pack, head, ".ged.txt",
-                    head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️");
+                    head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️", fKb0);
                 return;
             }
             await editText(head + "\n" + pack, fKb0);
+            } catch (e) {
+                console.error("flat export:", e);
+                await editText(head + "\n💥 Не удалось подготовить ветвь. Попробуйте ещё раз.", kb);
+            }
             return;
         }
-        // цифра меняет радиус и сразу показывает список (как 🔔)
-        let body = null;
-        if (bell) {
-            const pairs = await linkPairs(chatId);
-            const spPairs = await focusSpousePairs(chatId);
-            body = focusListText(await bellItems(), keys, row.pkey, pairs, spPairs, await sexOf(), byFull, mmddToday(), radius)
-                || "(в радиусе нет событий)";
-        }
-        const full = head + (body ? "\n" + body : "");
-        const fKb = focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth, fxref);
-        if (full.length > 4000) {
-            // список начинается с сегодня — что не влезает в сообщение,
-            // просто отрезаем (целые строки)
-            const tail = cutLines(body, 4000, head.length + 1, false);
-            await editText(head + "\n" + tail, fKb);
-            return;
-        }
-        await editText(full, fKb);
-        return;
     }
 
     // «Нет / Да / Да, с резервом» на дроп .ged: ЗАМЕНА дерева или отказ

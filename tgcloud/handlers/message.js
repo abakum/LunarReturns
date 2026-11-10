@@ -164,17 +164,17 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
 // сообщение прививкой не идёт); xref — для единых кнопок 👎/👀 (focusMarkup)
 async function sendFocus(chat, chatId, key, radius, dd, replyTo = 0, body = "", ng = false, xref = null) {
     // тело (список/гедком) — после тапа по кнопке; цифры радиуса — по глубине предков
-    const markup = focusMarkup(chat, chatId, await getSettings(chatId), radius,
-        focusDepth(await linkPairs(chatId), await focusSpousePairs(chatId), key), xref);
     const head = focusHead(key, radius, dd);
     const first = await api.sendMessage({
         chat_id: chatId,
         // перелив с героем: порядок строк — герой, метка, тело
         // (правило — коммент у NOT_FOR_GRAFT в lib/bot.js)
-        text: head + (ng ? "\n" + NOT_FOR_GRAFT : "") + (body ? "\n" + body : ""),
-        reply_markup: markup,
+        text: head + "\n⏳",
         ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
     });
+    try {
+    const markup = focusMarkup(chat, chatId, await getSettings(chatId), radius,
+        focusDepth(await linkPairs(chatId), await focusSpousePairs(chatId), key), xref);
     if (first && first.message_id) {
         // чистка устаревших строк чата (старше 7 суток) + запись текущей
         const weekAgo = Date.now() - 7 * 24 * 3600000;
@@ -184,6 +184,13 @@ async function sendFocus(chat, chatId, key, radius, dd, replyTo = 0, body = "", 
         await db.insert(focusView).values({
             chatId, messageId: first.message_id, pkey: key, radius, ts: Date.now(),
         }).run();
+    }
+    await api.editMessageText({ chat_id: chatId, message_id: first.message_id,
+        text: head + (ng ? "\n" + NOT_FOR_GRAFT : "") + (body ? "\n" + body : ""), reply_markup: markup });
+    } catch (e) {
+        console.error("focus panel:", e);
+        await api.editMessageText({ chat_id: chatId, message_id: first.message_id,
+            text: head + "\n💥 Не удалось подготовить кнопки: " + e.message });
     }
     console.log("focus:", key, "chat", chatId);
     return first;
@@ -319,13 +326,22 @@ export default async function (message, ctx) {
             const rec = await recordShownOf(chatId, key);
             if (rec) {
                 const skey = rec.n + " " + rec.d; // показанный ключ → хранимый
+                const head = focusHead(skey, radius, rec.dd);
+                const hold = await api.sendMessage({ chat_id: chatId, text: head + "\n🧬⏳",
+                    reply_parameters: { message_id: message.message_id, allow_sending_without_reply: true } });
+                try {
                 const pairs = await linkPairs(chatId);
                 const spPairs = await focusSpousePairs(chatId);
                 const sexMap = new Map((await personRows(chatId))
                     .map(rw => [rw.n + " " + rw.d, rw.sex ?? null]));
                 const keys = focusListKeys(pairs, spPairs, skey, radius,
                     k => sexMap.get(k) ?? null);
-                await sendGedPdf(chatId, keys, focusHead(skey, radius, rec.dd), skey, message.message_id);
+                await sendGedPdf(chatId, keys, head, skey, hold.message_id);
+                } catch (e) {
+                    console.error("gedcom command:", e);
+                    await api.editMessageText({ chat_id: chatId, message_id: hold.message_id,
+                        text: head + "\n💥 Не удалось подготовить древо: " + e.message });
+                }
                 console.log("focus text:", skey, "радиус", radius, "chat", chatId);
                 return;
             }
@@ -339,9 +355,7 @@ export default async function (message, ctx) {
         const hold = await api.sendMessage({
             chat_id: chatId, text: "🧬⏳",
             reply_parameters: { message_id: message.message_id, allow_sending_without_reply: true } });
-        await sendGedPdf(chatId, undefined, "🧬 Гедком-древо чата", null, message.message_id);
-        await api.editMessageText({ chat_id: chatId,
-            message_id: hold.message_id, text: "🧬" }).catch(() => {});
+        await sendGedPdf(chatId, undefined, "🧬 Гедком-древо чата", null, hold.message_id);
         return;
     }
 

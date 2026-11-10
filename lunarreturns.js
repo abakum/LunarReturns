@@ -1635,8 +1635,8 @@ function chartFor(peerId, keys, title, heroKey = null, range = null) {
 
 // загрузка документа на серверы VK (docs… — файлы любого типа); сервер загрузки
 // иногда отвечает HTML-страницей ошибки вместо JSON — до 3 попыток, каждый раз
-// с новым upload_url (одноразовый) и свежим FormData; явная ошибка VK в JSON
-// (нет file) — без повторов
+// с новым upload_url (одноразовый) и свежим FormData. Получение сервера тоже
+// входит в попытку; docs.save повторяем отдельно только при сетевом сбое.
 async function vkUploadDoc(peerId, title, content) {
     let j = null, lastErr = null;
     // таймаут по размеру: 10 с + ~1 с на КБ, кап 60 с (7 КБ → 17 с; upload
@@ -1644,11 +1644,11 @@ async function vkUploadDoc(peerId, title, content) {
     const timeoutMs = Math.min(60000, 10000 + Math.ceil(content.length / 1024) * 1000);
     for (let attempt = 1; attempt <= 3 && !j; attempt++) {
         if (attempt > 1) await sleep(1500 * (attempt - 1));
-        const up = await vkApi("docs.getMessagesUploadServer",
-            groupId ? { peer_id: peerId, group_id: groupId, type: "doc" } : { peer_id: peerId, type: "doc" });
-        const fd = new FormData();
-        fd.append("file", new Blob([content]), title);
         try {
+            const up = await vkApi("docs.getMessagesUploadServer",
+                groupId ? { peer_id: peerId, group_id: groupId, type: "doc" } : { peer_id: peerId, type: "doc" });
+            const fd = new FormData();
+            fd.append("file", new Blob([content]), title);
             const res = await fetch(up.upload_url, { method: "POST", body: fd, signal: AbortSignal.timeout(timeoutMs) });
             const text = await res.text();
             try {
@@ -1671,7 +1671,17 @@ async function vkUploadDoc(peerId, title, content) {
     }
     if (!j) throw lastErr || new Error("docs upload: пустой ответ");
     if (!j.file) throw new Error("docs upload: " + JSON.stringify(j).slice(0, 200));
-    const saved = await vkApi("docs.save", { file: j.file, title });
+    let saved;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            saved = await vkApi("docs.save", { file: j.file, title });
+            break;
+        } catch (e) {
+            if (attempt === 3 || !(/fetch failed/i.test(e.message) || ["TimeoutError", "AbortError"].includes(e.name))) throw e;
+            console.error("ged save attempt", attempt, title + ":", e.message, "— повторяю");
+            await sleep(1500 * attempt);
+        }
+    }
     const d = saved.doc || (saved[0] || {}).doc;
     if (!d) throw new Error("docs.save: нет документа");
     return "doc" + d.owner_id + "_" + d.id;
@@ -1700,7 +1710,7 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
     const base = fileBaseOf(head0);
     // роспись радиуса — chatFlatText по keys (метка NOT_FOR_GRAFT — первой строкой)
     const pack = Array.isArray(keys) && keys.length ? chatFlatText(peerId, keys) : "";
-    const packFits = !!pack && pack.length < 4000;
+    const packFits = !!pack && head.length + 1 + pack.length + "\n⏳".length < 4000;
     const overflow = !!pack && !packFits;
     // перелив: голова, метка, обрезанный внутренний текст росписи (первая
     // строка росписи — метка, её не двоим; целые строки до ~4000 знака) и
@@ -1753,13 +1763,33 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
             pdf = res.pdf;
         } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
         if (Date.now() - t0 > 1000) console.log("ged chart:", (Date.now() - t0) + "ms");
-        t0 = Date.now();
-        const atts = [await vkUploadDoc(peerId, base + ".ged", g)];
-        console.log("ged upload:", base + ".ged", (Date.now() - t0) + "ms");
-        if (pdf) { t0 = Date.now(); atts.push(await vkUploadDoc(peerId, base + ".pdf", Buffer.from(pdf, "latin1"))); console.log("ged upload:", base + ".pdf", (Date.now() - t0) + "ms"); }
-        // роспись .ged.txt — третьим прицепом ТОЛЬКО когда текстом не вместилась;
-        // влезла — её текст уже в сообщении, прицепляем только .ged+.pdf
-        if (overflow) { t0 = Date.now(); atts.push(await vkUploadDoc(peerId, base + ".ged.txt", "\uFEFF" + pack)); console.log("ged upload:", base + ".ged.txt", (Date.now() - t0) + "ms"); }
+        const files = [[base + ".ged", g]];
+        if (pdf) files.push([base + ".pdf", Buffer.from(pdf, "latin1")]);
+        if (overflow) files.push([base + ".ged.txt", "\uFEFF" + pack]);
+        const atts = [], uploadErrors = [];
+        for (const [name, content] of files) {
+            t0 = Date.now();
+            try {
+                atts.push(await vkUploadDoc(peerId, name, content));
+                console.log("ged upload:", name, (Date.now() - t0) + "ms");
+                // Каждый edit повторяет весь набор: VK заменяет вложения, а не дополняет.
+                const progress = { peer_id: peerId, attachment: atts.join(","), message: holdTxt,
+                    ...(kb ? { keyboard: kb } : {}) };
+                if (origin && sent === -1) progress.conversation_message_id = origin.conversation_message_id;
+                else progress.message_id = sent;
+                try {
+                    await vkApi("messages.edit", progress);
+                } catch (editError) {
+                    console.error("ged progress edit:", editError.message);
+                }
+            } catch (e) {
+                console.error("doc upload:", name, e.message);
+                uploadErrors.push(name + ": " + e.message);
+            }
+        }
+        const readyTxt = finalTxt + (uploadErrors.length
+            ? "\n💥 Не удалось выложить файлы:\n" + uploadErrors.join("\n") : "");
+        if (!atts.length) throw new Error(uploadErrors.join("; "));
         // Чат-кейс: ОДНА комбинированная правка {attachment, message} — часы
         // сняты, метка «🧬» и файлы в том же сообщении; комбинированная правка
         // message+attachment по message_id применяет и текст, и вложение
@@ -1770,7 +1800,7 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
             t0 = Date.now();
             if (chatHold) {
                 const edit = { peer_id: peerId, message_id: sent,
-                    attachment: atts.join(","), message: finalTxt };
+                    attachment: atts.join(","), message: readyTxt };
                 try {
                     await vkApi("messages.edit", edit);
                     console.log("ged edit: text+attachment", (Date.now() - t0) + "ms");
@@ -1786,7 +1816,7 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
                 await vkApi("messages.edit", clique);
                 console.log("ged edit: attachment", (Date.now() - t0) + "ms");
                 const tlex = { peer_id: peerId, attachment: atts.join(","), keyboard: kb,
-                    message: finalTxt };
+                    message: readyTxt };
                 if (origin && sent === -1) tlex.conversation_message_id = origin.conversation_message_id;
                 else tlex.message_id = sent;
                 try {
@@ -1802,7 +1832,7 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
             }
         } catch (e) {
             console.error("editOriginAtts:", e.message, "— отношу файлом");
-            await messagesSend(peerId, finalTxt, 0, 0, null, atts.join(","));
+            await messagesSend(peerId, readyTxt, 0, 0, null, atts.join(","));
         }
         console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : "")
             + (overflow ? " + " + base + ".ged.txt" : ""), "peer", peerId);
@@ -1812,6 +1842,18 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
         return;
     } catch (e) {
         console.error("doc upload:", e.message);
+        const failed = finalTxt + "\n💥 Не удалось выложить файлы: " + e.message;
+        if (origin && sent === -1) {
+            await editOrigin(origin, failed, kb);
+            return;
+        }
+        if (sent > 0) {
+            try {
+                await vkApi("messages.edit", { peer_id: peerId, message_id: sent,
+                    message: failed, ...(kb ? { keyboard: kb } : {}) });
+                return;
+            } catch (editError) { console.error("ged error edit:", editError.message); }
+        }
         await messagesSend(peerId, "💥 Не удалось выложить файлы: " + e.message);
     }
     })();
@@ -2967,22 +3009,33 @@ async function handleEvent(o) {
             p.c === "foc" ? focusLabel(radius)
                 : (p.c === "foc:bell" ? "список " : (p.c === "foc:flat" ? "пачка ветви " : "древо ")) + focusLabel(radius));
         // 🧬 в радиусе: <имя>.ged + <имя>.pdf (диаграмма — родство к герою)
-        // и <имя>.ged.txt — роспись радиуса («-+=» печатает только вниз, тут и
-        // вверх, в пределах радиуса); правка не нужна — файлы отдельным сообщением
+        // и <имя>.ged.txt при переливе; часы → роспись с часами → прицепы
         if (p.c === "foc:tree") {
-            const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
-            const keys = focusListKeys(linkPairs(peerId), focusSpousePairs(peerId),
-                key, radius, k => sexMap.get(k) ?? null);
-            await sendGedArtifacts(peerId, keys, focusHead(key, radius, rec.dd), 0, o.conversation_message_id, key,
-                o, await focusKeyboard(peerId, o.user_id, key, radius, depth));
+            const head = focusHead(key, radius, rec.dd);
+            const kb = await focusKeyboard(peerId, o.user_id, key, radius, depth);
+            await vkApi("messages.edit", { peer_id: peerId, conversation_message_id: o.conversation_message_id,
+                message: head + "\n🧬⏳", keyboard: kb }).catch(e => console.error("DNA loading:", e.message));
+            try {
+                const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
+                const keys = focusListKeys(linkPairs(peerId), focusSpousePairs(peerId),
+                    key, radius, k => sexMap.get(k) ?? null);
+                await sendGedArtifacts(peerId, keys, head, 0, o.conversation_message_id, key, o, kb);
+            } catch (e) {
+                console.error("DNA export:", e);
+                await editOrigin(o, head + "\n💥 Не удалось подготовить древо. Попробуйте ещё раз.", kb);
+            }
             return;
         }
         // «-+=» на фокусе: роспись ВЕТВИ героя (.ged.txt) — вся глубина, герой
         // первой строкой; реплай правленной росписью на цитату заменяет ветвь
         if (p.c === "foc:flat") {
-            const pack = branchFlatText(peerId, key);
-            if (!pack) { await answerEvent(o.event_id || o.id, o.user_id, peerId, "ветвь пуста"); return; }
+            const head = focusHead(key, radius, rec.dd);
             const kb = await focusKeyboard(peerId, o.user_id, key, radius, depth);
+            await vkApi("messages.edit", { peer_id: peerId, conversation_message_id: o.conversation_message_id,
+                message: head + "\n-+=⏳", keyboard: kb }).catch(e => console.error("flat loading:", e.message));
+            try {
+            const pack = branchFlatText(peerId, key);
+            if (!pack) { await editOrigin(o, head + "\n(ветвь пуста)", kb); return; }
             const txt = focusHead(key, radius, rec.dd) + "\n" + pack;
             if (txt.length < 4000) { await editOrigin(o, txt, kb); return; }
             // перелив: держ = голова, метка, обрезанные целые строки росписи
@@ -3013,21 +3066,35 @@ async function handleEvent(o) {
             } catch (e) {
                 console.error("foc:flat doc upload:", e.message);
                 await sendTailDoc(peerId, pack, fileBaseOf(fh), ".ged.txt", o.conversation_message_id);
+                await editOrigin(o, finalTxt + "\n💥 Не удалось прикрепить файл к сообщению.", kb);
+            }
+            } catch (e) {
+                console.error("flat export:", e);
+                await editOrigin(o, head + "\n💥 Не удалось подготовить ветвь. Попробуйте ещё раз.", kb);
             }
             return;
         }
         const bell = p.c === "foc:bell" || p.c === "foc";
         // список всегда по ММ-ДД (сортировка подписки касается только дампа)
         const byFull = false;
-        // цифра меняет радиус и сразу показывает список (как 🔔); тело — по 🔔
-        const txt = focusText(peerId, key, radius, bell, rec.dd, byFull);
-        const kb = await focusKeyboard(peerId, o.user_id, key, radius, depth);
-        if (txt.length < 4000) { await editOrigin(o, txt, kb); return; }
-        // список начинается с сегодня — что не влезает в сообщение,
-        // просто отрезаем (целые строки, после заголовка)
         const head = focusHead(key, radius, rec.dd);
-        const tail = cutLines(txt.slice(head.length + 1), 4000, head.length + 1, false);
-        await editOrigin(o, head + "\n" + tail, kb);
+        const kb = await focusKeyboard(peerId, o.user_id, key, radius, depth);
+        const loading = "🔔⏳";
+        // Не используем fallback отправки для промежуточных часов.
+        await vkApi("messages.edit", {
+            peer_id: peerId, conversation_message_id: o.conversation_message_id,
+            message: head + "\n" + loading, keyboard: kb
+        }).catch(e => console.error("focus loading:", e.message));
+        let text;
+        try {
+            const txt = focusText(peerId, key, radius, bell, rec.dd, byFull);
+            text = txt.length < 4000 ? txt : head + "\n"
+                + cutLines(txt.slice(head.length + 1), 4000, head.length + 1, false);
+        } catch (e) {
+            console.error("focus list:", e);
+            text = head + "\nНе удалось подготовить список. Попробуйте ещё раз.";
+        }
+        await editOrigin(o, text, kb);
         return;
     }
     // кнопки сообщения-юбилея: 👎 — удалить событие, 👀/🌙 — тоггл
