@@ -1,0 +1,1009 @@
+{
+  "node": "v24.15.0",
+  "cpu": "Intel(R) Celeron(R) J4005 CPU @ 2.00GHz",
+  "samples": 5,
+  "includeAffinalKin": 0,
+  "note": "In-memory selection only; kinBlood counts exclude internal kinLabel calls. diamond/levels are raw candidates; export/bell/pdf are selected results.",
+  "results": [
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 1,
+      "operation": "diamond",
+      "candidates": 3,
+      "medianMs": 0.099,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 1,
+      "operation": "levels",
+      "candidates": 2,
+      "medianMs": 0.349,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 1,
+      "operation": "export",
+      "candidates": 3,
+      "medianMs": 1.639,
+      "kinBlood": 2,
+      "kinLabel": 2
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 1,
+      "operation": "bell",
+      "candidates": 3,
+      "medianMs": 0.942,
+      "kinBlood": 1,
+      "kinLabel": 2
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 1,
+      "operation": "pdf",
+      "candidates": 3,
+      "medianMs": 1.096,
+      "kinBlood": 2,
+      "kinLabel": 3
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 2,
+      "operation": "diamond",
+      "candidates": 7,
+      "medianMs": 0.087,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 2,
+      "operation": "levels",
+      "candidates": 4,
+      "medianMs": 0.174,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 2,
+      "operation": "export",
+      "candidates": 5,
+      "medianMs": 1.075,
+      "kinBlood": 6,
+      "kinLabel": 2
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 2,
+      "operation": "bell",
+      "candidates": 5,
+      "medianMs": 0.98,
+      "kinBlood": 3,
+      "kinLabel": 2
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 2,
+      "operation": "pdf",
+      "candidates": 5,
+      "medianMs": 0.759,
+      "kinBlood": 6,
+      "kinLabel": 4
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 3,
+      "operation": "diamond",
+      "candidates": 19,
+      "medianMs": 0.111,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 3,
+      "operation": "levels",
+      "candidates": 14,
+      "medianMs": 0.196,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 3,
+      "operation": "export",
+      "candidates": 5,
+      "medianMs": 1.08,
+      "kinBlood": 18,
+      "kinLabel": 2
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 3,
+      "operation": "bell",
+      "candidates": 5,
+      "medianMs": 0.806,
+      "kinBlood": 13,
+      "kinLabel": 2
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 3,
+      "operation": "pdf",
+      "candidates": 5,
+      "medianMs": 1.319,
+      "kinBlood": 18,
+      "kinLabel": 4
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 4,
+      "operation": "diamond",
+      "candidates": 24,
+      "medianMs": 0.106,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 4,
+      "operation": "levels",
+      "candidates": 21,
+      "medianMs": 0.187,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 4,
+      "operation": "export",
+      "candidates": 5,
+      "medianMs": 1.313,
+      "kinBlood": 23,
+      "kinLabel": 2
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 4,
+      "operation": "bell",
+      "candidates": 5,
+      "medianMs": 0.977,
+      "kinBlood": 20,
+      "kinLabel": 2
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 4,
+      "operation": "pdf",
+      "candidates": 5,
+      "medianMs": 1.525,
+      "kinBlood": 23,
+      "kinLabel": 4
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 5,
+      "operation": "diamond",
+      "candidates": 25,
+      "medianMs": 0.108,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 5,
+      "operation": "levels",
+      "candidates": 24,
+      "medianMs": 0.197,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 5,
+      "operation": "export",
+      "candidates": 5,
+      "medianMs": 1.432,
+      "kinBlood": 24,
+      "kinLabel": 2
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 5,
+      "operation": "bell",
+      "candidates": 5,
+      "medianMs": 1.489,
+      "kinBlood": 23,
+      "kinLabel": 2
+    },
+    {
+      "scenario": "romanov-Карл Фридрих",
+      "persons": 58,
+      "radius": 5,
+      "operation": "pdf",
+      "candidates": 5,
+      "medianMs": 1.566,
+      "kinBlood": 24,
+      "kinLabel": 4
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 1,
+      "operation": "diamond",
+      "candidates": 15,
+      "medianMs": 0.089,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 1,
+      "operation": "levels",
+      "candidates": 11,
+      "medianMs": 0.179,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 1,
+      "operation": "export",
+      "candidates": 15,
+      "medianMs": 3.363,
+      "kinBlood": 14,
+      "kinLabel": 4
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 1,
+      "operation": "bell",
+      "candidates": 12,
+      "medianMs": 1.818,
+      "kinBlood": 10,
+      "kinLabel": 3
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 1,
+      "operation": "pdf",
+      "candidates": 12,
+      "medianMs": 4.788,
+      "kinBlood": 14,
+      "kinLabel": 17
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 2,
+      "operation": "diamond",
+      "candidates": 24,
+      "medianMs": 0.106,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 2,
+      "operation": "levels",
+      "candidates": 20,
+      "medianMs": 0.187,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 2,
+      "operation": "export",
+      "candidates": 24,
+      "medianMs": 2.025,
+      "kinBlood": 23,
+      "kinLabel": 4
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 2,
+      "operation": "bell",
+      "candidates": 22,
+      "medianMs": 2.115,
+      "kinBlood": 19,
+      "kinLabel": 4
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 2,
+      "operation": "pdf",
+      "candidates": 22,
+      "medianMs": 4.074,
+      "kinBlood": 23,
+      "kinLabel": 24
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 3,
+      "operation": "diamond",
+      "candidates": 25,
+      "medianMs": 0.11,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 3,
+      "operation": "levels",
+      "candidates": 24,
+      "medianMs": 0.201,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 3,
+      "operation": "export",
+      "candidates": 25,
+      "medianMs": 2.259,
+      "kinBlood": 24,
+      "kinLabel": 4
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 3,
+      "operation": "bell",
+      "candidates": 25,
+      "medianMs": 2.376,
+      "kinBlood": 23,
+      "kinLabel": 4
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 3,
+      "operation": "pdf",
+      "candidates": 25,
+      "medianMs": 3.883,
+      "kinBlood": 24,
+      "kinLabel": 24
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 4,
+      "operation": "diamond",
+      "candidates": 25,
+      "medianMs": 0.051,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 4,
+      "operation": "levels",
+      "candidates": 25,
+      "medianMs": 0.123,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 4,
+      "operation": "export",
+      "candidates": 25,
+      "medianMs": 1.77,
+      "kinBlood": 24,
+      "kinLabel": 4
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 4,
+      "operation": "bell",
+      "candidates": 25,
+      "medianMs": 1.907,
+      "kinBlood": 24,
+      "kinLabel": 4
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 4,
+      "operation": "pdf",
+      "candidates": 25,
+      "medianMs": 4.143,
+      "kinBlood": 24,
+      "kinLabel": 24
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 5,
+      "operation": "diamond",
+      "candidates": 25,
+      "medianMs": 0.149,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 5,
+      "operation": "levels",
+      "candidates": 25,
+      "medianMs": 0.116,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 5,
+      "operation": "export",
+      "candidates": 25,
+      "medianMs": 1.504,
+      "kinBlood": 24,
+      "kinLabel": 4
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 5,
+      "operation": "bell",
+      "candidates": 25,
+      "medianMs": 1.687,
+      "kinBlood": 24,
+      "kinLabel": 4
+    },
+    {
+      "scenario": "romanov-Анна Петровна",
+      "persons": 58,
+      "radius": 5,
+      "operation": "pdf",
+      "candidates": 25,
+      "medianMs": 3.023,
+      "kinBlood": 24,
+      "kinLabel": 24
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 1,
+      "operation": "diamond",
+      "candidates": 5,
+      "medianMs": 0.03,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 1,
+      "operation": "levels",
+      "candidates": 4,
+      "medianMs": 0.099,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 1,
+      "operation": "export",
+      "candidates": 5,
+      "medianMs": 0.163,
+      "kinBlood": 4,
+      "kinLabel": 1
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 1,
+      "operation": "bell",
+      "candidates": 5,
+      "medianMs": 0.213,
+      "kinBlood": 3,
+      "kinLabel": 1
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 1,
+      "operation": "pdf",
+      "candidates": 5,
+      "medianMs": 0.434,
+      "kinBlood": 4,
+      "kinLabel": 4
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 2,
+      "operation": "diamond",
+      "candidates": 17,
+      "medianMs": 0.034,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 2,
+      "operation": "levels",
+      "candidates": 14,
+      "medianMs": 0.098,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 2,
+      "operation": "export",
+      "candidates": 17,
+      "medianMs": 1.7,
+      "kinBlood": 16,
+      "kinLabel": 3
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 2,
+      "operation": "bell",
+      "candidates": 14,
+      "medianMs": 0.807,
+      "kinBlood": 13,
+      "kinLabel": 2
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 2,
+      "operation": "pdf",
+      "candidates": 14,
+      "medianMs": 2.053,
+      "kinBlood": 16,
+      "kinLabel": 18
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 3,
+      "operation": "diamond",
+      "candidates": 24,
+      "medianMs": 0.041,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 3,
+      "operation": "levels",
+      "candidates": 21,
+      "medianMs": 0.107,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 3,
+      "operation": "export",
+      "candidates": 24,
+      "medianMs": 1.343,
+      "kinBlood": 23,
+      "kinLabel": 3
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 3,
+      "operation": "bell",
+      "candidates": 22,
+      "medianMs": 1.368,
+      "kinBlood": 20,
+      "kinLabel": 3
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 3,
+      "operation": "pdf",
+      "candidates": 22,
+      "medianMs": 2.899,
+      "kinBlood": 23,
+      "kinLabel": 24
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 4,
+      "operation": "diamond",
+      "candidates": 25,
+      "medianMs": 0.04,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 4,
+      "operation": "levels",
+      "candidates": 24,
+      "medianMs": 0.108,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 4,
+      "operation": "export",
+      "candidates": 25,
+      "medianMs": 1.284,
+      "kinBlood": 24,
+      "kinLabel": 3
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 4,
+      "operation": "bell",
+      "candidates": 25,
+      "medianMs": 1.487,
+      "kinBlood": 23,
+      "kinLabel": 3
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 4,
+      "operation": "pdf",
+      "candidates": 25,
+      "medianMs": 3.041,
+      "kinBlood": 24,
+      "kinLabel": 24
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 5,
+      "operation": "diamond",
+      "candidates": 25,
+      "medianMs": 0.043,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 5,
+      "operation": "levels",
+      "candidates": 25,
+      "medianMs": 0.116,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 5,
+      "operation": "export",
+      "candidates": 25,
+      "medianMs": 1.393,
+      "kinBlood": 24,
+      "kinLabel": 3
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 5,
+      "operation": "bell",
+      "candidates": 25,
+      "medianMs": 1.45,
+      "kinBlood": 24,
+      "kinLabel": 3
+    },
+    {
+      "scenario": "romanov-Пётр III",
+      "persons": 58,
+      "radius": 5,
+      "operation": "pdf",
+      "candidates": 25,
+      "medianMs": 2.965,
+      "kinBlood": 24,
+      "kinLabel": 24
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 1,
+      "operation": "diamond",
+      "candidates": 5,
+      "medianMs": 0.047,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 1,
+      "operation": "levels",
+      "candidates": 4,
+      "medianMs": 0.095,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 1,
+      "operation": "export",
+      "candidates": 5,
+      "medianMs": 2.953,
+      "kinBlood": 4,
+      "kinLabel": 4
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 1,
+      "operation": "bell",
+      "candidates": 5,
+      "medianMs": 2.944,
+      "kinBlood": 3,
+      "kinLabel": 4
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 1,
+      "operation": "pdf",
+      "candidates": 5,
+      "medianMs": 3.189,
+      "kinBlood": 4,
+      "kinLabel": 7
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 2,
+      "operation": "diamond",
+      "candidates": 18,
+      "medianMs": 0.056,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 2,
+      "operation": "levels",
+      "candidates": 14,
+      "medianMs": 0.103,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 2,
+      "operation": "export",
+      "candidates": 17,
+      "medianMs": 13.699,
+      "kinBlood": 17,
+      "kinLabel": 13
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 2,
+      "operation": "bell",
+      "candidates": 17,
+      "medianMs": 11.501,
+      "kinBlood": 13,
+      "kinLabel": 13
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 2,
+      "operation": "pdf",
+      "candidates": 17,
+      "medianMs": 12.822,
+      "kinBlood": 17,
+      "kinLabel": 25
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 3,
+      "operation": "diamond",
+      "candidates": 58,
+      "medianMs": 0.071,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 3,
+      "operation": "levels",
+      "candidates": 45,
+      "medianMs": 0.111,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 3,
+      "operation": "export",
+      "candidates": 53,
+      "medianMs": 24.684,
+      "kinBlood": 57,
+      "kinLabel": 13
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 3,
+      "operation": "bell",
+      "candidates": 53,
+      "medianMs": 21.701,
+      "kinBlood": 44,
+      "kinLabel": 13
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 3,
+      "operation": "pdf",
+      "candidates": 53,
+      "medianMs": 26.645,
+      "kinBlood": 57,
+      "kinLabel": 52
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 4,
+      "operation": "diamond",
+      "candidates": 71,
+      "medianMs": 0.079,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 4,
+      "operation": "levels",
+      "candidates": 58,
+      "medianMs": 0.118,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 4,
+      "operation": "export",
+      "candidates": 53,
+      "medianMs": 26.114,
+      "kinBlood": 70,
+      "kinLabel": 13
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 4,
+      "operation": "bell",
+      "candidates": 53,
+      "medianMs": 25.696,
+      "kinBlood": 57,
+      "kinLabel": 13
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 4,
+      "operation": "pdf",
+      "candidates": 53,
+      "medianMs": 30.122,
+      "kinBlood": 70,
+      "kinLabel": 52
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 5,
+      "operation": "diamond",
+      "candidates": 84,
+      "medianMs": 0.084,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 5,
+      "operation": "levels",
+      "candidates": 71,
+      "medianMs": 0.124,
+      "kinBlood": 0,
+      "kinLabel": 0
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 5,
+      "operation": "export",
+      "candidates": 53,
+      "medianMs": 38.634,
+      "kinBlood": 83,
+      "kinLabel": 13
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 5,
+      "operation": "bell",
+      "candidates": 53,
+      "medianMs": 37.029,
+      "kinBlood": 70,
+      "kinLabel": 13
+    },
+    {
+      "scenario": "descendant-affinal-branches",
+      "persons": 118,
+      "radius": 5,
+      "operation": "pdf",
+      "candidates": 53,
+      "medianMs": 41.272,
+      "kinBlood": 83,
+      "kinLabel": 52
+    }
+  ]
+}

@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import { chartRows, chartModel, chartFont, parseTtf } from '../tgcloud/lib/chart.cjs';
-import { focusKeys, focusListKeys, INCLUDE_AFFINAL_KIN } from '../tgcloud/lib/tree.cjs';
+import { focusKeys, focusListKeys } from '../tgcloud/lib/tree.cjs';
 
 const tmp = fs.mkdtempSync('/tmp/kilo/lr-pdf-radius-');
 // Independent measurement of the actual PDF /W advances, including Cyrillic.
@@ -63,7 +63,6 @@ for (const radius of [1, 2]) {
 function chartRowsNoop(names) { return rows.filter(r => names.includes(r.name)); }
 // Count actual kinLabel calls, including drawing, without a production hook.
 const require = createRequire(new URL('../tgcloud/lib/chart.cjs', import.meta.url));
-assert.equal(INCLUDE_AFFINAL_KIN, 0);
 // Both marriage directions, maternal blood lines, overlapping blood/marriage paths.
 const policyPairs = [['Grandmother', 'Mother'], ['Grandmother', 'Aunt'],
     ['Mother', 'Husband'], ['Mother', 'Brother'], ['WifeMother', 'Wife'],
@@ -73,10 +72,9 @@ const policySpouses = [['Husband', 'Wife'], ['Brother', 'BrotherWife'],
     ['BrotherWife', 'Next'], ['Aunt', 'AuntHusband']].map(p => p.map(key));
 const policyNames = [...new Set([...policyPairs, ...policySpouses].flat())];
 const policyRows = policyNames.map(k => ({ name: k.slice(0, -11), birth: '1980-01-01' }));
-for (const enabled of [0, 1]) {
+{
     const treeModule = { exports: {} };
-    vm.runInNewContext(fs.readFileSync('tgcloud/lib/tree.cjs', 'utf8')
-        .replace('const INCLUDE_AFFINAL_KIN = 0;', 'const INCLUDE_AFFINAL_KIN = ' + enabled + ';'),
+    vm.runInNewContext(fs.readFileSync('tgcloud/lib/tree.cjs', 'utf8'),
     { module: treeModule, require });
     const chartModule = { exports: {} };
     vm.runInNewContext(fs.readFileSync('tgcloud/lib/chart.cjs', 'utf8'), {
@@ -92,13 +90,13 @@ for (const enabled of [0, 1]) {
         const exports = treeModule.exports.focusListKeys(policyPairs, policySpouses, rel.hero, 5, () => null);
         const pdf = chartModule.exports.chartRows(policyRows, rel).map(r => key(r.name));
         for (const selection of [exports, pdf]) {
-            for (const n of [hero, spouse, ...own]) assert.ok(selection.includes(key(n)), `${enabled}: ${hero} keeps ${n}`);
-            for (const n of affinal) assert.equal(selection.includes(key(n)), !!enabled, `${enabled}: ${hero} affinal ${n}`);
-            if (!enabled) assert.ok(!selection.includes(key('Next')), 'no chained spouses');
+            for (const n of [hero, spouse, ...own]) assert.ok(selection.includes(key(n)), `${hero} keeps ${n}`);
+            for (const n of affinal) assert.ok(!selection.includes(key(n)), `${hero} excludes affinal ${n}`);
+            assert.ok(!selection.includes(key('Next')), 'no chained spouses');
         }
         const bell = treeModule.exports.focusListKeys(policyPairs, policySpouses, rel.hero, 5, () => null, true);
         for (const n of [hero, spouse, ...own]) assert.ok(bell.includes(key(n)), 'bell keeps ' + n);
-        for (const n of affinal) assert.equal(bell.includes(key(n)), !!enabled, 'bell affinal ' + n);
+        for (const n of affinal) assert.ok(!bell.includes(key(n)), 'bell excludes affinal ' + n);
     }
     const overlap = [...policyPairs, [key('Mother'), key('WifeBrother')]];
     assert.ok(treeModule.exports.focusListKeys(overlap, policySpouses, key('Husband'), 5, () => null)
@@ -218,37 +216,51 @@ for (const exact of [false, true, 3, 4, 5, 'Husband', 'Wife']) {
 console.log('Candidate/cache, missing parent, marriage chains, dateless spouse OK; artifacts: ' + tmp);
 
 // User regression: the live level-based bell used to ignore the export policy.
-for (const platform of ['tg', 'vk']) for (const radius of [1, 2]) {
-    const name = `${platform}-karl-bell-${radius}`;
+for (const platform of ['tg', 'vk']) for (const radius of [1, 2, 5]) for (const wife of [false, true]) {
+    const name = `${platform}-${wife ? 'anna' : 'karl'}-bell-${radius}`;
+    const hero = wife ? 'Анна Петровна Романова 1708-01-27' : 'Карл Фридрих Гольштейн-Готторпский 1700-04-20';
     const result = spawnSync(process.execPath, [platform === 'tg' ? 'dev/repl.mjs' : 'dev/vk-repl.mjs',
         '--fresh', ...(platform === 'tg' ? ['--private'] : [])], {
         encoding: 'utf8', timeout: 120000, maxBuffer: 16 * 1024 * 1024,
         input: [fs.readFileSync('dev/fixtures/Romanov_family.ged.txt', 'utf8').trim().replaceAll('\n', '\\n'),
-            '/Карл Фридрих',
-            'Карл Фридрих Гольштейн-Готторпский 1700-04-20', '>5 /bell' + radius,
+            wife ? '/Анна Петровна' : '/Карл Фридрих',
+            hero, '>5 /bell' + radius,
             '>5 /gedcom' + radius, '!wait 300'].join('\n') + '\n',
         env: { ...process.env, LR_DB: path.join(tmp, name + '.db'), LR_DEV_DB: path.join(tmp, name + '.json'),
-            LR_VKOFF: '951' },
+            LR_VKOFF: '951', LR_VK_TRACE: path.join(tmp, name + '.jsonl') },
     });
     const log = result.stdout + result.stderr;
     fs.writeFileSync(path.join(tmp, name + '.log'), log);
     assert.equal(result.status, 0, log);
     assert.doesNotMatch(log, /ERROR:|TypeError|ReferenceError/);
-    assert.match(log, /Анна Петровна Романова[^\n]* жена/);
-    assert.doesNotMatch(log, /(?:отец|мать|брат|сестра) жены/);
-    const exportLog = log.slice(log.indexOf('    /gedcom' + radius));
-    assert.doesNotMatch(exportLog, /Пётр I Алексеевич|Екатерина I Алексеевна|Елизавета Петровна/);
+    const bellLog = log.slice(log.indexOf('    /bell' + radius));
+    assert.match(bellLog, wife ? /Карл Фридрих[^\n]* муж/ : /Анна Петровна Романова[^\n]* жена/);
+    if (!wife) assert.doesNotMatch(bellLog, /(?:отец|мать|брат|сестра) жены/);
+    let exportLog = log.slice(log.indexOf('    /gedcom' + radius));
+    const txtPath = exportLog.match(/→ (.+\.ged\.txt)/);
+    if (txtPath) exportLog += fs.readFileSync(txtPath[1], 'utf8');
+    if (platform === 'vk') {
+        const calls = fs.readFileSync(path.join(tmp, name + '.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+        exportLog += calls.filter(c => c.method === 'upload' && c.body.includes('.ged.txt"')).map(c => c.body).join('\n');
+    }
+    const relatives = /Пётр I Алексеевич|Екатерина I Алексеевна|Елизавета Петровна/;
+    if (wife) {
+        assert.match(bellLog, /Екатерина I Алексеевна[^\n]* мать/);
+        assert.match(bellLog, /Елизавета Петровна[^\n]* сестра/);
+        assert.match(exportLog, relatives);
+    } else assert.doesNotMatch(exportLog, relatives);
     const pdfPath = log.match(/→ (.+\.pdf)/);
     if (platform === 'tg') {
         assert.ok(pdfPath, log);
         const text = spawnSync('pdftotext', ['-layout', pdfPath[1], '-'], { encoding: 'utf8' });
         assert.equal(text.status, 0, text.stderr);
-        assert.doesNotMatch(text.stdout, /Пётр I Алексеевич|Екатерина I Алексеевна|Елизавета Петровна/);
+        if (wife) assert.match(text.stdout, relatives);
+        else assert.doesNotMatch(text.stdout, relatives);
         assert.match(text.stdout, /Анна Петровна/);
     }
     if (radius === 2) {
         assert.match(log, /Екатерина II[^\n]* жена сына/);
         assert.match(log, /Павел I[^\n]* сын сына/);
     }
-    console.log(name + ': spouse kept, wife kin excluded, son family kept OK');
+    console.log(name + ': spouse kept, ' + (wife ? 'maternal and sibling blood retained' : 'wife kin excluded') + ' OK');
 }

@@ -4,12 +4,9 @@
 // С A3 — ещё списки: focusListText (формат+сортировка фокуса) и eventListText
 // (формат/фильтр/круговой MM-DD порядок колокольчика); строки выборки БД
 // остаются в адаптерах ботов (план .kilo/plans/20261108-canon-pure-a3-plan.md).
-const { fynny, kinLabel, kinBlood } = require('./kinship.cjs');
+const { fynny, kinLabel } = require('./kinship.cjs');
 const { approxOut } = require('./text.cjs');
 const { newStyleDate } = require('./religion.cjs');
-
-// Focused lists and GED/GED.TXT/PDF: keep spouses, but not their kin at 0.
-const INCLUDE_AFFINAL_KIN = 0;
 
 function focusDepth(pairs, spousePairs, key) {
     let m = 0;
@@ -23,8 +20,8 @@ function focusDepth(pairs, spousePairs, key) {
 // «вниз» (к детям); пары родитель-ребёнок держатся вместе в пределах окна
 // (сиблинги — u1d1, племянники — u1d2 с радиуса 2, троюродные — с 4).
 // Супруги доклеиваются отдельно (focusWithSpouses). pairs — [[parent, child]].
-// Optional spousePairs enables PDF-only bounded marriage traversal; existing
-// export/bell callers keep their original three-argument behavior.
+// Each blood segment ascends first, then descends, never ascending again.
+// Optional spousePairs starts a new segment after an explicit marriage.
 function focusKeys(pairs, key, radius, spousePairs = []) {
     const kidsOf = new Map(), parentsOf = new Map();
     const spousesOf = new Map();
@@ -64,7 +61,7 @@ function focusKeys(pairs, key, radius, spousePairs = []) {
                 queue.push([x, nu, nd, ns]);
             }
         };
-        step(parentsOf, u + 1, d);
+        if (!d) step(parentsOf, u + 1, d);
         step(kidsOf, u, d + 1);
         // Each marriage starts a new blood segment. Each segment retains
         // u+d-1 (e.g. brother of a spouse of a brother costs 1+1+1).
@@ -73,22 +70,21 @@ function focusKeys(pairs, key, radius, spousePairs = []) {
     return [...best.keys()];
 }
 
-// уровневая достижимость «жизненного» радиуса: BFS по объединённому графу —
+// уровневая достижимость «жизненного» радиуса: фазовый BFS —
 // кровь (родитель↔ребёнок) 1, брак 1, полнокровные сиблинги 1 (см. ниже);
 // полукровная родня сама выходит на 2 (вверх+вниз), сводные — на 3
 // (вверх+брак+вниз). Супермножество ярлыков: каждое слово fynny-цепочки
 // покрывает ≥1 ребро (сиблинговое слово — ровно ребро полнокровным).
 // Возвращает Map ключ → дистанция (узлы дальше radius не включаются)
+// В кровном сегменте подъём разрешён только до первого спуска/сиблинга;
+// явный брак начинает новый сегмент. Общий ребёнок не заменяет брак.
 function focusGraphDist(pairs, spousePairs, key, radius) {
-    const adj = new Map();
-    const put = (a, b) => { if (!adj.has(a)) adj.set(a, []); adj.get(a).push(b); };
-    const parentsOf = new Map();
+    const parentsOf = new Map(), kidsOf = new Map(), spousesOf = new Map(), siblingsOf = new Map();
+    const put = (map, a, b) => { if (!map.has(a)) map.set(a, []); map.get(a).push(b); };
     for (const [p, c] of pairs) {
-        put(p, c); put(c, p);
-        if (!parentsOf.has(c)) parentsOf.set(c, []);
-        parentsOf.get(c).push(p);
+        put(kidsOf, p, c); put(parentsOf, c, p);
     }
-    for (const [a, b] of spousePairs) { put(a, b); put(b, a); }
+    for (const [a, b] of spousePairs) { put(spousesOf, a, b); put(spousesOf, b, a); }
     // сиблинговое ребро — только полнокровным: дети одной родительской пары
     // (полукровные без ребра идут вверх+вниз = 2, сводные — через брак = 3);
     // клика всех пар детей — дистанция сиблингов всегда 1, независимо от
@@ -106,14 +102,30 @@ function focusGraphDist(pairs, spousePairs, key, radius) {
     }
     for (const kids of groups.values())
         for (let i = 1; i < kids.length; i++)
-            for (let j = 0; j < i; j++) { put(kids[j], kids[i]); put(kids[i], kids[j]); }
+            for (let j = 0; j < i; j++) {
+                put(siblingsOf, kids[j], kids[i]); put(siblingsOf, kids[i], kids[j]);
+            }
     const dist = new Map([[key, 0]]);
-    const queue = [key];
+    // The same person reached during descent cannot veto an ascending state.
+    const seen = [new Set([key]), new Set()];
+    const queue = [[key, 0, 0]];
     for (let qi = 0; qi < queue.length; qi++) {
-        const d = dist.get(queue[qi]);
+        const [k, d, down] = queue[qi];
         if (d >= radius) continue;
-        for (const x of (adj.get(queue[qi]) || []))
-            if (!dist.has(x)) { dist.set(x, d + 1); queue.push(x); }
+        const step = (map, phase) => {
+            for (const x of map.get(k) || []) {
+                if (seen[phase].has(x)) continue;
+                seen[phase].add(x);
+                if (!dist.has(x)) dist.set(x, d + 1);
+                queue.push([x, d + 1, phase]);
+            }
+        };
+        if (!down) {
+            step(parentsOf, 0);
+            step(siblingsOf, 1);
+        }
+        step(kidsOf, 1);
+        step(spousesOf, 0);
     }
     return dist;
 }
@@ -145,7 +157,7 @@ function focusWithSpouses(keys, spousePairs) {
 // ключи 🔔-списка при fynny: core — уровневый BFS по объединённому графу
 // при levels («жизненный» радиус: кровь 1, брак 1, полнокровный сиблинг 1;
 // уровни = числам слов ярлыка: «отец жены» и «брат жены» — 2️⃣), либо
-// кровный ромб для экспорта 🧬/PDF (в обоих режимах браки — по INCLUDE_AFFINAL_KIN);
+// кровный ромб для экспорта 🧬/PDF (оба режима обходят только кровь);
 // далее супруги доклеиваются без продолжения в другие браки;
 // доклеенный супруг остаётся, только если его ярлык-цепочка влезает в радиус
 // (супруг героя «муж/жена» — всегда; «жена брата» — с 2️⃣…);
@@ -153,13 +165,8 @@ function focusWithSpouses(keys, spousePairs) {
 // Дословная копия — tgcloud/lib/bot.js.
 function focusListKeys(pairs, spousePairs, key, radius, sexOf, levels) {
     const core = new Set(levels
-        ? focusGraphKeys(pairs, INCLUDE_AFFINAL_KIN ? spousePairs : [], key, radius)
-        : focusKeys(pairs, key, radius, INCLUDE_AFFINAL_KIN ? spousePairs : []));
-    // Parent-child graphs also reach co-parents via a shared child, without
-    // any explicit marriage edge. Only a common-ancestor path proves blood.
-    if (!INCLUDE_AFFINAL_KIN)
-        for (const k of core)
-            if (k !== key && !kinBlood(pairs, sexOf, key, k)) core.delete(k);
+        ? focusGraphKeys(pairs, [], key, radius)
+        : focusKeys(pairs, key, radius));
     const keys = [...new Set([
         ...core,
         ...spousePairs.flatMap(([a, b]) => [
@@ -269,4 +276,4 @@ function familyXref(rows, mx, fx, alias, date, used) {
 }
 
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
-module.exports = { INCLUDE_AFFINAL_KIN, familyXref, focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, eventListText, famsByGenerations };
+module.exports = { familyXref, focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, eventListText, famsByGenerations };

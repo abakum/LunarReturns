@@ -1038,7 +1038,7 @@ if (!fkeysOf(VK, 3).includes(kinKeys['Тесть']))
 if (!fkeysOf(VK, 5).includes(kinKeys['Жена Дядьки']) || fkeysOf(VK, 5).includes(kinKeys['Муж Кузины']))
     { failed++; console.log('✗ focusListKeys r5: слова ≤ 5'); }
 // уровневый список (levels=true, «жизненный» радиус): кровь 1, брак 1,
-// полнокровный сиблинг 1; брачная родня исключена при INCLUDE_AFFINAL_KIN=0.
+// полнокровный сиблинг 1; брачная родня исключена, супруги остаются.
 // супруги доклеиваются и фильтруются словами ярлыка, как раньше
 const lkeysOf = (which, r) =>
     which.focusListKeys(kinPairs, kinSpouses, sonKey, r, k => kinSex[k] ?? null, true);
