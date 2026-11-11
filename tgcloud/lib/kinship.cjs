@@ -20,11 +20,10 @@
 // «племянник», «сын сестры отца» вместо «двоюродный брат»); никаких
 // обобщающих слов (дядя, тётя, дед, внук…). Первое слово — в именительном
 // падеже (оно про to), остальные — родительном; при неизвестном поле —
-// нейтральные «родитель/ребёнок/сиблинг». Ромб фильтра (focusKeys в bot.js /
-// lunarreturns.js) при fynny = 1 режет боковую родню по числу слов цепочки
-// (u+d−1 ≤ radius), 5-й радиус — обычный (слова ≤ 5).
+// нейтральные «родитель/ребёнок/сиблинг». Радиус всегда ограничивает длину
+// цепочки независимо от fynny; переключатель меняет только отображение.
 
-const fynny = 1;
+const fynny = 0;
 
 // depth — «бюджет браковых шагов»: каждый переход через супруга (ярлык
 // партнёра по браку или «to — родня X, X — супруг») съедает 1; дефолт 2 =
@@ -33,7 +32,8 @@ const fynny = 1;
 // любой ярлык ≤ radius слов строится ≤ radius браковыми шагами, а цепочки
 // длиннее radius всё равно отфильтруются. Перебор кандидатов разматывается
 // мемо-кэшем (to, depth) — без него комбинаторика супругов взрывается
-function kinLabel(pairs, spousePairs, sexOf, from, to, depth = 2) {
+// chain=true принудительно строит цепочку для измерения радиуса.
+function kinLabel(pairs, spousePairs, sexOf, from, to, depth = 2, chain = fynny) {
     // from, pairs, spousePairs, sexOf постоянны на весь вычисл — кэш их не учитывает
     const memo = new Map();
     const label = (to, depth) => {
@@ -46,7 +46,7 @@ function kinLabel(pairs, spousePairs, sexOf, from, to, depth = 2) {
     };
     const calc = (to, depth) => {
         const blood = kinBlood(pairs, sexOf, from, to);
-        if (blood) return fynny ? kinChain(pairs, sexOf, from, to) : blood;
+        if (blood) return chain ? kinChain(pairs, sexOf, from, to) : blood;
         let best = "";                                  // кратчайший из кандидатов
         const nwords = l => l.split(" ").length;
         const put = cand => { if (cand && (!best || nwords(cand) < nwords(best))) best = cand; };
@@ -61,7 +61,7 @@ function kinLabel(pairs, spousePairs, sexOf, from, to, depth = 2) {
                 const s = sexOf ? sexOf(to) : null;
                 return s === "M" ? "муж" : s === "F" ? "жена" : "супруг";
             }
-            const l = fynny ? label(partner, depth - 1)
+            const l = chain ? label(partner, depth - 1)
                 : kinBlood(pairs, sexOf, from, partner);
             if (l) {
                 const s = sexOf ? sexOf(to) : null;
@@ -93,7 +93,7 @@ function kinLabel(pairs, spousePairs, sexOf, from, to, depth = 2) {
             for (const X of [...sibs, ...(kidsOf.get(to) || []), ...uncles, ...(parentsOf.get(to) || [])]) {
                 if (X === from) continue;
                 // to — родня X; в fynny звено — цепочка реальных шагов
-                const rl = fynny ? kinChain(pairs, sexOf, X, to) : kinBlood(pairs, sexOf, X, to);
+                const rl = chain ? kinChain(pairs, sexOf, X, to) : kinBlood(pairs, sexOf, X, to);
                 const pl = rl ? label(X, depth - 1) : "";
                 if (pl) put(rl + " " + genLabel(pl));
             }

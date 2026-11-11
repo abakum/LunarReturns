@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS sent(
 CREATE TABLE IF NOT EXISTS settings(
     chat INTEGER PRIMARY KEY, orth INTEGER NOT NULL DEFAULT 0, islam INTEGER NOT NULL DEFAULT 0,
     bud INTEGER NOT NULL DEFAULT 0, cath INTEGER NOT NULL DEFAULT 0, jud INTEGER NOT NULL DEFAULT 0,
-    bell INTEGER NOT NULL DEFAULT 1);
+    bell INTEGER NOT NULL DEFAULT 1, fynny INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`);
     // WAL: запись в разы быстрее и чтения не блокируются записью; цена —
     // при обрыве питания может откатиться последний коммит (для бота ок).
@@ -161,7 +161,7 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`);
     sdb.exec("PRAGMA synchronous=NORMAL");
     sdb.exec("PRAGMA busy_timeout=3000");
     for (const [t, c, ty] of [["indi", "note", "TEXT"], ["fam", "note", "TEXT"],
-        ["indi", "deat_plac", "TEXT"],
+        ["indi", "deat_plac", "TEXT"], ["settings", "fynny", "INTEGER NOT NULL DEFAULT 0"],
         // признаки примерных дат (юбилеи по ним не оповещаются)
         ["indi", "birt_abt", "INTEGER"], ["indi", "deat_abt", "INTEGER"],
         ["fam", "marr_abt", "INTEGER"], ["fam", "div_abt", "INTEGER"]]) {
@@ -1595,6 +1595,7 @@ function chartFor(peerId, keys, title, heroKey = null, range = null) {
     const rel = hero ? {
         hero,
         range,
+        fynny: getSettings(peerId).fynny,
         pairs: linkPairs(peerId).map(([p, c]) => [ckey(p), ckey(c)]),
         spouses: [...focusSpousePairs(peerId).map(sp => sp.map(ckey)), ...stubSpouses],
         sex: Object.fromEntries([...personRows(peerId).map(r => [pkey(r), r.sex || null]),
@@ -1865,8 +1866,8 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
 function getSettings(peerId) {
     const r = q1("SELECT * FROM settings WHERE chat=?", peerId);
     return r
-        ? { orth: !!r.orth, islam: !!r.islam, bud: !!r.bud, cath: !!r.cath, jud: !!r.jud, bell: r.bell !== 0 }
-        : {};
+        ? { orth: !!r.orth, islam: !!r.islam, bud: !!r.bud, cath: !!r.cath, jud: !!r.jud, bell: r.bell !== 0, fynny: !!r.fynny }
+        : { fynny: false };
 }
 
 function toggleRel(peerId, key) {
@@ -2545,7 +2546,7 @@ function focusText(peerId, key, radius, bell, dd, byFull = false) {
     const { mo, d: dToday } = mskNowParts();
     const mmdd = String(mo).padStart(2, "0") + "-" + String(dToday).padStart(2, "0");
     const body = bell
-        ? (focusListText(bellItems, keys, key, pairs, spPairs, k => sexMap.get(k) ?? null, byFull, mmdd, radius)
+        ? (focusListText(bellItems, keys, key, pairs, spPairs, k => sexMap.get(k) ?? null, byFull, mmdd, radius, getSettings(peerId).fynny)
             || "(в радиусе нет событий)")
         : gedcomText(peerId, keys);
     return focusHead(key, radius, dd) + "\n" + body;
@@ -2621,6 +2622,13 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         return;
     }
     const t = text.trim().toLowerCase();
+    const fm = t.match(/^\/fynny([01])(?:@[a-z0-9_]+)?$/);
+    if (fm) {
+        const mode = Number(fm[1]);
+        qr("INSERT INTO settings(chat,fynny) VALUES(?,?) ON CONFLICT(chat) DO UPDATE SET fynny=excluded.fynny", peerId, mode);
+        await messagesSend(peerId, "Родство: " + (mode ? "цепочки." : "обычные названия."), msgId, convMsgId);
+        return;
+    }
     const gm = t.match(/^\/gedcom([1-5])?(?:@\S+)?$/);
     if (gm) {
         const radius = Number(gm[1]) || 1;

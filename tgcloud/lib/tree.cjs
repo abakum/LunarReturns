@@ -4,7 +4,7 @@
 // С A3 — ещё списки: focusListText (формат+сортировка фокуса) и eventListText
 // (формат/фильтр/круговой MM-DD порядок колокольчика); строки выборки БД
 // остаются в адаптерах ботов (план .kilo/plans/20261108-canon-pure-a3-plan.md).
-const { fynny, kinLabel } = require('./kinship.cjs');
+const { kinLabel } = require('./kinship.cjs');
 const { approxOut } = require('./text.cjs');
 const { newStyleDate } = require('./religion.cjs');
 
@@ -44,13 +44,13 @@ function focusKeys(pairs, key, radius, spousePairs = []) {
         const [k, u, d, s] = queue.pop();
         const step = (adj, nu, nd, ns = s) => {
             if (nu > radius || nd > radius) return;
-            // fynny-ромб: боковая родня (u,d ≥ 1) — по числу слов цепочки
+            // Цепочный ромб: боковая родня (u,d ≥ 1) — по числу слов цепочки
             // (u+d−1 ≤ radius); 5-й радиус — обычный (слова ≤ 5),
             // «показать всех» снято (PDF был слишком велик и долог)
-            if (fynny && nu && nd && nu + nd - 1 > radius) return;
+            if (nu && nd && nu + nd - 1 > radius) return;
             // PDF-only optional marriage traversal. Keep the cheap blood
             // lower bound; labels, not graph distances, decide membership.
-            if (ns && nu + nd - (fynny && nu && nd ? 1 : 0) + ns > radius) return;
+            if (ns && nu + nd - (nu && nd ? 1 : 0) + ns > radius) return;
             for (const x of (adj.get(k) || [])) {
                 let arr = best.get(x);
                 if (!arr) best.set(x, arr = []);
@@ -65,7 +65,7 @@ function focusKeys(pairs, key, radius, spousePairs = []) {
         step(kidsOf, u, d + 1);
         // Each marriage starts a new blood segment. Each segment retains
         // u+d-1 (e.g. brother of a spouse of a brother costs 1+1+1).
-        step(spousesOf, 0, 0, s + u + d - (fynny && u && d ? 1 : 0) + 1);
+        step(spousesOf, 0, 0, s + u + d - (u && d ? 1 : 0) + 1);
     }
     return [...best.keys()];
 }
@@ -154,12 +154,14 @@ function focusWithSpouses(keys, spousePairs) {
     return [...set];
 }
 
-// ключи 🔔-списка при fynny: core — уровневый BFS по объединённому графу
+// Ключи списка: граф даёт кандидатов, окончательный радиус всегда измеряется
+// цепочкой реальных шагов, независимо от режима отображения fynny.
+// core — уровневый BFS по объединённому графу
 // при levels («жизненный» радиус: кровь 1, брак 1, полнокровный сиблинг 1;
 // уровни = числам слов ярлыка: «отец жены» и «брат жены» — 2️⃣), либо
 // кровный ромб для экспорта 🧬/PDF (оба режима обходят только кровь);
 // далее супруги доклеиваются без продолжения в другие браки;
-// доклеенный супруг остаётся, только если его ярлык-цепочка влезает в радиус
+// каждый кандидат остаётся, только если его ярлык-цепочка влезает в радиус
 // (супруг героя «муж/жена» — всегда; «жена брата» — с 2️⃣…);
 // 5-й радиус — обычный, как остальные (слова ≤ 5; «показать всех» снято).
 // Дословная копия — tgcloud/lib/bot.js.
@@ -173,12 +175,11 @@ function focusListKeys(pairs, spousePairs, key, radius, sexOf, levels) {
             ...(core.has(a) ? [b] : []), ...(core.has(b) ? [a] : []),
         ]),
     ])];
-    if (!fynny) return keys;
-    // доклеенный супруг остаётся, только если ярлык непуст и влезает:
+    // Все кандидаты, кроме героя: цепочка непуста и влезает в радиус.
     // бюджет браковых шагов kinLabel = radius (цепочки длиннее радиуса
     // всё равно отфильтруются); пустой ярлык — исключён (не «1 слово»)
-    return keys.filter(s => core.has(s)
-        || (l => l && l.split(" ").length <= radius)(kinLabel(pairs, spousePairs, sexOf, key, s, radius)));
+    return keys.filter(s => s === key
+        || (l => l && l.trim().split(/\s+/).length <= radius)(kinLabel(pairs, spousePairs, sexOf, key, s, radius, true)));
 }
 
 // список событий по множеству фокуса с ярлыками родства (kinLabel):
@@ -196,13 +197,13 @@ function sortEvents(rows, byFullDate, mmddToday) {
     return rows.sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
 }
 
-function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "", depth = 2) {
+function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "", depth = 2, chain) {
     const set = new Set(keys);
     const map = rs => rs
         .map(r => r.n + " " + approxOut(newStyleDate(r.d), r.abt || r.mabt || 0)
             + (r.dd ? " " + approxOut(newStyleDate(r.dd), r.dabt || 0) : "")
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "")
-            + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d, depth); return l ? " " + l : ""; })())
+            + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d, depth, chain); return l ? " " + l : ""; })())
         .join("\n");
     return map(sortEvents(items.filter(r => set.has(r.n + " " + r.d)
         || (r.n.includes("+") && focusHasPair(r.n, keys))), byFullDate, mmddToday));

@@ -78,6 +78,7 @@ export const settings = table('settings', {
   bud: integer('bud', { mode: 'boolean' }).default(false),
   cath: integer('cath', { mode: 'boolean' }).default(false),
   jud: integer('jud', { mode: 'boolean' }).default(false),
+  fynny: integer('fynny', { mode: 'boolean' }).default(false),
   bell: integer('bell', { mode: 'boolean' }).default(true), // подписка 🔔 (история; подписки больше нет, дамп всегда)
 });
 

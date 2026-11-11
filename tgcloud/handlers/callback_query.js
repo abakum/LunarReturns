@@ -352,10 +352,11 @@ export default async function (cq, ctx) {
             let text;
             try {
                 const sex = await sexOf();
+                const s = await getSettings(chatId);
                 const keys = focusListKeys(pairs, spPairs, row.pkey, radius, sex, true);
-                const body = focusListText(await bellItems(), keys, row.pkey, pairs, spPairs, sex, byFull, mmddToday(), radius)
+                const body = focusListText(await bellItems(), keys, row.pkey, pairs, spPairs, sex, byFull, mmddToday(), radius, s.fynny)
                     || "(в радиусе нет событий)";
-                kb = focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth, fxref);
+                kb = focusMarkup(cq.message.chat, chatId, s, radius, depth, fxref);
                 text = head + "\n" + (head.length + 1 + body.length > 4000
                     ? cutLines(body, 4000, head.length + 1, false) : body);
             } catch (e) {

@@ -1,6 +1,6 @@
 import { api, db, InputFile } from 'sdk';
 import { eq } from 'sdk/db';
-import { gedDrops, focusView } from '../schema.js';
+import { gedDrops, focusView, settings } from '../schema.js';
 import { parseTrigger, parseGedcom, gedStats, parseTree } from '../lib/parse.cjs';
 import { fileBaseOf } from '../lib/chart.cjs';
 import { jubileeText } from '../lib/text.js';
@@ -244,6 +244,21 @@ export default async function (message, ctx) {
     // в группах команда приходит с упоминанием бота: /start@botname
     const cmd = (text.match(/^\/[a-z_]+/i) || [""])[0].toLowerCase();
 
+    const fm = text.match(/^\/fynny([01])(?:@[a-z0-9_]+)?$/i);
+    if (fm) {
+        const fynny = fm[1] === "1";
+        const row = await db.select().from(settings).where(eq(settings.chatId, chatId)).get();
+        if (row) {
+            if (row.fynny !== fynny)
+                await db.update(settings).set({ fynny }).where(eq(settings.chatId, chatId)).run();
+        } else {
+            await db.insert(settings).values({ chatId, fynny }).run();
+        }
+        await api.sendMessage({ chat_id: chatId,
+            text: fynny ? "Родство: цепочки." : "Родство: обычные названия." });
+        return;
+    }
+
     if (cmd === "/start" || text === "/") {
         // «/» ответом на триггер — фокус-сообщение с радиусом родни
         const rh = replyHeadOf(message.reply_to_message);
@@ -298,7 +313,7 @@ export default async function (message, ctx) {
                     k => sexMap.get(k) ?? null, true);
                 const items = [...await personRows(chatId), ...await weddingRows(chatId)];
                 const body = focusListText(items, keys, skey, pairs,
-                    spPairs, k => sexMap.get(k) ?? null, false, mmddToday(), r)
+                    spPairs, k => sexMap.get(k) ?? null, false, mmddToday(), r, (await getSettings(chatId)).fynny)
                     || "(в радиусе нет событий)";
                 await api.sendMessage({ chat_id: chatId,
                     text: focusHead(skey, r, rec.dd) + "\n" + body });

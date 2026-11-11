@@ -4,10 +4,49 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
-import { chartRows, chartModel, chartFont, parseTtf } from '../tgcloud/lib/chart.cjs';
+import { chartRows, chartModel, chartPdf, chartFont, parseTtf } from '../tgcloud/lib/chart.cjs';
 import { focusKeys, focusListKeys } from '../tgcloud/lib/tree.cjs';
 
 const tmp = fs.mkdtempSync('/tmp/kilo/lr-pdf-radius-');
+// Every page repeats the axis; the final one follows the last person row.
+for (const count of [1, 44, 45, 100]) {
+    const rows = Array.from({ length: count }, (_, i) => ({
+        name: 'Person' + i, birth: '1960-01-01', death: '2030-01-01', sex: 'M',
+    }));
+    const file = path.join(tmp, 'page-axis-' + count + '.pdf');
+    const scale = 842 / chartModel('Page axis', rows, []).W;
+    const bodyBottom = 595 - 42 * scale;
+    fs.writeFileSync(file, chartPdf('Page axis', rows, [], chartFont()), 'latin1');
+    const bbox = spawnSync('pdftotext', ['-bbox', file, '-'], { encoding: 'utf8' });
+    assert.equal(bbox.status, 0, bbox.stderr);
+    const pages = [...bbox.stdout.matchAll(/<page\b[^>]*>([\s\S]*?)<\/page>/g)];
+    assert.ok(pages.length >= (count === 100 ? 2 : 1));
+    let expectedAxis;
+    const people = [];
+    for (const [pageIndex, [, page]] of pages.entries()) {
+        const words = [...page.matchAll(/<word xMin="([\d.-]+)" yMin="([\d.-]+)" xMax="([\d.-]+)" yMax="([\d.-]+)">([^<]+)<\/word>/g)]
+            .map(m => ({ x: +m[1], y: +m[2], bottom: +m[4], s: m[5] }));
+        const axisYs = new Set(words.filter(w => /^(19|20|00|10|30)$/.test(w.s) && w.y >= 0 && w.bottom < 595).map(w => w.y));
+        const axis = words.filter(w => /^\d{2}$/.test(w.s) && axisYs.has(w.y));
+        assert.ok(axis.length >= 16, 'axis present on every page');
+        assert.equal(new Set(axis.map(w => w.y)).size, 2, 'two axis rows');
+        assert.ok(axis.every(w => w.bottom < 595), 'axis inside page');
+        const signature = axis.map(w => [w.x, w.s]);
+        if (expectedAxis) assert.deepEqual(signature, expectedAxis, 'identical axis horizontal position and years');
+        expectedAxis = signature;
+        // Poppler bbox includes text outside a body clip; count visible rows only.
+        const persons = words.filter(w => /^Person\d+$/.test(w.s) && w.y >= 0 && w.bottom <= bodyBottom);
+        assert.ok(persons.every(w => w.bottom < Math.min(...axis.map(w => w.y))), 'person rows above axis');
+        const axisTop = Math.min(...axis.map(w => w.y));
+        if (pageIndex === pages.length - 1) {
+            const gap = axisTop - Math.max(...persons.map(w => w.bottom));
+            assert.ok(gap > 0 && gap < 30 * scale, 'final axis immediately below last person: ' + gap);
+        } else assert.ok(axisTop > 560, 'intermediate axis at page bottom');
+        people.push(...persons.map(w => w.s));
+    }
+    assert.deepEqual(people.sort(), rows.map(r => r.name).sort(), 'all people exactly once');
+    console.log('Page axis: ' + count + ' people, ' + pages.length + ' pages OK');
+}
 // Independent measurement of the actual PDF /W advances, including Cyrillic.
 const font = parseTtf(chartFont()), cmap = new Map(font.cmap);
 const textWidth = (s, size = 10) => [...s].reduce((w, c) => {
@@ -26,7 +65,7 @@ for (const radius of [3, 4, 5]) {
     rel.sex = new Proxy({}, { get() { throw Error('cached ancestor label recomputed'); } });
     const model = chartModel('width', selected, [], rel);
     const labels = model.draws.filter(d => d.k === 'text' && d.fill === '#333333');
-    const longest = 'мать' + ' матери'.repeat(radius - 1) + ' ' + (2000 - radius * 25);
+    const longest = ['прабабушка', 'пра2бабушка', 'пра3бабушка'][radius - 3] + ' ' + (2000 - radius * 25);
     assert.ok(labels.some(d => d.s === longest), 'actual kinLabel R' + radius);
     for (const label of labels) {
         const width = textWidth(label.s, label.size);
@@ -48,7 +87,7 @@ for (const radius of [1, 2]) {
     const selected = chartRows(rows, rel).map(r => r.name);
     assert.ok(selected.includes('Hero'));
     assert.ok(selected.includes('Missing'), 'one-word sibling with missing parent must not be graph-vetoed');
-    assert.equal(selected.includes('Half'), radius === 2);
+    assert.equal(selected.includes('Half'), radius === 2, 'chain radius independent of ordinary display');
     assert.ok(selected.includes('Wife'));
     assert.ok(!selected.includes('Next'), 'no further marriages through a spouse');
     assert.ok(!selected.includes('Last'));
@@ -106,6 +145,7 @@ const calls = [];
 const module = { exports: {} };
 vm.runInNewContext(fs.readFileSync('tgcloud/lib/chart.cjs', 'utf8'), {
     module, require: name => name === './kinship.cjs' ? {
+        fynny: require(name).fynny,
         kinBlood: require(name).kinBlood,
         kinLabel: (...args) => { calls.push(args[4]); return require(name).kinLabel(...args); },
     } : require(name),
@@ -113,12 +153,14 @@ vm.runInNewContext(fs.readFileSync('tgcloud/lib/chart.cjs', 'utf8'), {
 const countedRel = { hero: key('Hero'), range: 1, pairs, spouses, sex: {} };
 const countedRows = module.exports.chartRows([...rows, ...Array.from({ length: 1000 }, (_, i) => ({
     name: 'Outside' + i, birth: '2000-01-01' }))], countedRel);
-assert.deepEqual(calls.slice().sort(), ['Father', 'Mother', 'Half', 'Missing', 'Wife'].map(key).sort());
+assert.deepEqual(calls.slice().sort(), ['Father', 'Mother', 'Half', 'Missing', 'Wife'].flatMap(n => [key(n), key(n)]).sort());
 module.exports.chartModel('counted', countedRows, [], countedRel);
-assert.equal(calls.length, 5, 'render must not recalculate cached labels');
-// Blood segments on both sides of a marriage each retain the sibling discount.
+assert.equal(calls.length, 10, 'render must not recalculate cached labels');
+// Chain radius retains the sibling discount irrespective of display mode.
 const segments = [[key('Hero'), key('Brother')], [key('Partner'), key('PartnerBrother')]];
 const segmentPairs = segments.flatMap((children, i) => children.map(c => ['Parent' + i, c]));
+assert.ok(!focusKeys(segmentPairs, key('Hero'), 2, [[key('Brother'), key('Partner')]])
+    .includes(key('PartnerBrother')));
 assert.ok(focusKeys(segmentPairs, key('Hero'), 3, [[key('Brother'), key('Partner')]])
     .includes(key('PartnerBrother')));
 for (const radius of [1, 2]) {
@@ -127,7 +169,7 @@ for (const radius of [1, 2]) {
     const selected = chartRows([...rows, ...['Hero', 'Father'].map(n => ({
         name: 'Dateless' + n, k: 'Dateless' + n + ' 1980', birth: null, anchor: 1980 }))], rel);
     assert.ok(selected.some(r => r.name === 'DatelessHero'));
-    assert.equal(selected.some(r => r.name === 'DatelessFather'), radius === 2);
+    assert.equal(selected.some(r => r.name === 'DatelessFather'), radius === 2, 'dateless spouse obeys chain radius');
 }
 
 const fixture = fs.readFileSync('dev/fixtures/half-brothers-radius-one-estimated-birth.ged', 'utf8');
@@ -193,7 +235,7 @@ for (const exact of [false, true, 3, 4, 5, 'Husband', 'Wife']) {
             }
             console.log(name + ': actual GED/PDF blood and spouses only OK');
         } else if (long) {
-            const label = 'мать' + ' матери'.repeat(radius - 1) + ' ' + (2000 - radius * 25);
+            const label = ['прабабушка', 'пра2бабушка', 'пра3бабушка'][radius - 3] + ' ' + (2000 - radius * 25);
             assert.ok(text.stdout.includes(label), name + ': full label\n' + text.stdout);
             const bbox = spawnSync('pdftotext', ['-bbox', pdf, '-'], { encoding: 'utf8' });
             assert.equal(bbox.status, 0, bbox.stderr);
@@ -208,8 +250,8 @@ for (const exact of [false, true, 3, 4, 5, 'Husband', 'Wife']) {
             console.log(name + ': actual PDF full label and non-overlapping bbox OK');
         } else {
             assert.match(text.stdout, /Иван/);
-            assert.equal(text.stdout.includes('Пётр'), radius === 2, name + '\n' + text.stdout);
-            console.log(name + ': actual PDF hero present, Pyotr ' + (radius === 2 ? 'present' : 'absent'));
+            assert.equal(text.stdout.includes('Пётр'), radius === 2, name + ': half brother obeys chain radius\n' + text.stdout);
+            console.log(name + ': actual PDF hero present, half brother radius OK');
         }
     }
 }
@@ -260,7 +302,7 @@ for (const platform of ['tg', 'vk']) for (const radius of [1, 2, 5]) for (const 
     }
     if (radius === 2) {
         assert.match(log, /Екатерина II[^\n]* жена сына/);
-        assert.match(log, /Павел I[^\n]* сын сына/);
+        assert.match(log, /Павел I[^\n]* внук/);
     }
     console.log(name + ': spouse kept, ' + (wife ? 'maternal and sibling blood retained' : 'wife kin excluded') + ' OK');
 }

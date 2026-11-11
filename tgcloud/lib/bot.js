@@ -25,11 +25,13 @@ export { HELP } from './text.cjs';
 // сколько живёт «Да/Нет»-вопрос на дроп .ged-файла (час)
 export const GED_TTL = 3600000;
 
-const DEFAULT_SETTINGS = { orth: false, islam: false, bud: false, cath: false, jud: false, bell: true };
+const DEFAULT_SETTINGS = { orth: false, islam: false, bud: false, cath: false, jud: false, bell: true, fynny: false };
 
 export async function getSettings(chatId) {
     const row = await db.select().from(settings).where(eq(settings.chatId, chatId)).get();
-    return row || { chatId, ...DEFAULT_SETTINGS };
+    const normalized = { chatId, ...row };
+    for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) normalized[key] ??= value;
+    return normalized;
 }
 
 // inline-клавиатура настроек (личка): 🗑 (удалить всё) + колокольчик (список) + религии (🔔/🔕) + ❌
@@ -1517,6 +1519,7 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
     const rel = hero ? {
         hero,
         range,
+        fynny: (await getSettings(chatId)).fynny,
         pairs: (await linkPairs(chatId)).map(([p, c]) => [ckey(p), ckey(c)]),
         spouses: [...(await focusSpousePairs(chatId)).map(sp => sp.map(ckey)), ...stubSpouses],
         sex: Object.fromEntries([...(await personRows(chatId)).map(r => [pkey(r), r.sex || null]),

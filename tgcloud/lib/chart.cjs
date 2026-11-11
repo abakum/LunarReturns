@@ -17,7 +17,7 @@
 // в PDF как есть (FontFile2), из него парсятся только cmap/hmtx/head/OS2.
 
 const {FONT_B64} = require('./font-cyr.cjs');
-const {kinLabel} = require('./kinship.cjs');
+const {fynny, kinLabel} = require('./kinship.cjs');
 const {focusKeys} = require('./tree.cjs');
 
 // Called after adapter additions (including anchored dateless spouses).
@@ -36,9 +36,11 @@ function chartRows(rows, rel) {
         if (key === rel.hero) return true;
         if (!candidates.has(key)) return false;
         const label = kinLabel(rel.pairs, rel.spouses, k => rel.sex[k] ?? null,
-            rel.hero, key, rel.range);
+            rel.hero, key, rel.range, rel.fynny);
         rel.labels.set(key, label);
-        return !!label && label.trim().split(/\s+/).length <= rel.range;
+        const chain = (rel.fynny ?? fynny) ? label : kinLabel(rel.pairs, rel.spouses, k => rel.sex[k] ?? null,
+            rel.hero, key, rel.range, true);
+        return !!chain && chain.trim().split(/\s+/).length <= rel.range;
     });
 }
 
@@ -243,7 +245,7 @@ function chartModel(title, rows, links, rel = null, marriages = null,
         ? new Map(people.map(p =>
             [p.key, rel.labels?.has(p.key) ? rel.labels.get(p.key)
                 : p.key === rel.hero && rel.range ? ""
-                : kinLabel(rel.pairs || [], rel.spouses || [], k2 => (rel.sex || {})[k2] ?? null, rel.hero, p.key, rel.range || undefined)]))
+                : kinLabel(rel.pairs || [], rel.spouses || [], k2 => (rel.sex || {})[k2] ?? null, rel.hero, p.key, rel.range || undefined, rel.fynny)]))
         : null;
     if (kin && rel.range) kin.set(rel.hero, rangeLevel(rel.range));
     people.forEach((p, i) => {
@@ -265,7 +267,7 @@ function chartModel(title, rows, links, rel = null, marriages = null,
     let acc = 0;
     for (const p of people) { p.h = ROW_H; p.y0 = acc; acc += p.h; }
     const plotTop = TITLE_H + 12;
-    const H = plotTop + acc + 30;
+    const H = plotTop + acc + 42;
     const W = KW + PLOT_W + 16;
 
     // family-связи: цвет — из спектра без коллизий внутри года рождения её
@@ -356,11 +358,13 @@ function chartModel(title, rows, links, rel = null, marriages = null,
     // сетка-декады и подписи оси X (от первой декады — ниже некруглого xMin — xMin может
     // уйти в прошлое на некруглое число лет ради места под имена)
     for (let x = Math.ceil(xMin / 10) * 10; x <= xMax; x += 10) {
-        draws.push({ k: "line", x1: xS(x), y1: plotTop, x2: xS(x), y2: H - 26, stroke: "#eeeeee", w: 1 });
-        draws.push({ k: "line", x1: xS(x), y1: H - 26, x2: xS(x), y2: H - 20, stroke: "#888888", w: 1 });
-        draws.push({ k: "text", x: xS(x), y: H - 8, s: String(x), size: 10, fill: "#666666", anchor: "mid" });
+        draws.push({ k: "line", x1: xS(x), y1: plotTop, x2: xS(x), y2: H - 38, stroke: "#eeeeee", w: 1 });
+        draws.push({ k: "line", x1: xS(x), y1: H - 38, x2: xS(x), y2: H - 32, stroke: "#888888", w: 1 });
+        const year = String(x).padStart(4, "0");
+        draws.push({ k: "text", x: xS(x), y: H - 20, s: year.slice(0, -2), size: 10, fill: "#666666", anchor: "mid" });
+        draws.push({ k: "text", x: xS(x), y: H - 8, s: year.slice(-2), size: 10, fill: "#666666", anchor: "mid" });
     }
-    draws.push({ k: "line", x1: KW, y1: H - 26, x2: KW + PLOT_W, y2: H - 26, stroke: "#888888", w: 1 });
+    draws.push({ k: "line", x1: KW, y1: H - 38, x2: KW + PLOT_W, y2: H - 38, stroke: "#888888", w: 1 });
     // подписи «Связь год» слева; имя — слева от бара (перед его началом),
     // выноска — до имени, её хвост (тонкая линия) тянется от колонки
     for (const p of people) {
@@ -504,8 +508,11 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null) {
     const col = hex => [1, 3, 5].map(i => n(parseInt(hex.slice(i, i + 2), 16) / 255)).join(" ");
     // операторы чарта (координаты y вниз; флип — cm XObject'а, для текста
     // двойной флип в Tm оставляет его прямым)
-    const ops = [];
+    const chartOps = [], axisOps = [];
     for (const d of m.draws) {
+        const axis = d.k === "text" && d.y >= m.H - 42
+            || d.k === "line" && d.y1 >= m.H - 42;
+        const ops = axis ? axisOps : chartOps;
         if (d.k === "rect") {
             ops.push(col(d.fill) + " rg",
                 n(d.x) + " " + n(d.y) + " " + n(d.w) + " " + n(d.h) + " re f");
@@ -544,23 +551,26 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null) {
                 + "<" + g.hexStr + "> Tj ET");
         }
     }
-    const chart = "q\n1 0 0 -1 0 " + n(m.H) + " cm\n" + ops.join("\n") + "\nQ";
+    const chart = "q\n1 0 0 -1 0 " + n(m.H) + " cm\n" + chartOps.join("\n") + "\nQ";
+    const axis = "q\n1 0 0 -1 0 " + n(m.H) + " cm\n" + axisOps.join("\n") + "\nQ";
 
     // страницы: полотно масштабируется на ширину A4 landscape, режется по
     // высоте на полосы не выше страницы; границы полос — строго по границам
-    // строк персон (зона заголовка/ось X не режутся) — персон не делится
-    // пополам между страницами; при одной странице — весь чарт
+    // строк персон — персона не делится пополам между страницами.
+    // Шкала — отдельный XObject: внизу страницы, на последней — под строками.
     const s = PAGE_W / m.W;
-    const avail = PAGE_H / s;
+    const footer = 42;
+    const contentH = m.H - footer;
+    const avail = PAGE_H / s - footer;
     const plotTop = TITLE_H + 12;
     const cuts = [];
-    for (let t = 0; m.H - t > avail + 1e-9;) {
-        let c = plotTop + ROW_H * Math.floor((Math.min(t + avail, m.H - 30) - plotTop) / ROW_H);
+    for (let t = 0; contentH - t > avail + 1e-9;) {
+        let c = plotTop + ROW_H * Math.floor((Math.min(t + avail, contentH) - plotTop) / ROW_H);
         if (c <= t) c = t + ROW_H;
         cuts.push(c);
         t = c;
     }
-    const bands = [0, ...cuts, m.H];
+    const bands = [0, ...cuts, contentH];
     const pages = bands.length - 1;
 
     const parts = [];
@@ -581,13 +591,17 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null) {
     const f2 = chartObj + 3;             // FontDescriptor
     const f3 = chartObj + 4;             // FontFile2 (TTF как есть)
     const f4 = chartObj + 5;             // ToUnicode — поиск/копирование текста
+    const axisObj = chartObj + 6;
     for (let i = 0; i < pages; i++) {
         const band = bands[i + 1] - bands[i];        // высота полосы, единицы чарта
+        const axisY = i === pages - 1 ? Math.max(0, PAGE_H - s * (band + footer)) : 0;
         obj(3 + 2 * i, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + PAGE_W + " " + PAGE_H + "]"
-            + " /Resources << /XObject << /C " + chartObj + " 0 R >> >> /Contents " + (4 + 2 * i) + " 0 R >>");
+            + " /Resources << /XObject << /C " + chartObj + " 0 R /A " + axisObj + " 0 R >> >> /Contents " + (4 + 2 * i) + " 0 R >>");
         stream(4 + 2 * i, "",
             "q\n0 " + n(PAGE_H - s * band) + " " + PAGE_W + " " + n(s * band) + " re W n\n"
-            + n(s) + " 0 0 " + n(s) + " 0 " + n(PAGE_H - s * (m.H - bands[i])) + " cm\n/C Do\nQ");
+            + n(s) + " 0 0 " + n(s) + " 0 " + n(PAGE_H - s * (m.H - bands[i])) + " cm\n/C Do\nQ\n"
+            + "q\n0 " + n(axisY) + " " + PAGE_W + " " + n(s * footer) + " re W n\n"
+            + n(s) + " 0 0 " + n(s) + " 0 " + n(axisY) + " cm\n/A Do\nQ");
     }
     stream(chartObj, "/Type /XObject /Subtype /Form /BBox [0 0 " + n(m.W) + " " + n(m.H) + "]"
         + " /Resources << /Font << /F1 " + f0 + " 0 R >> >>", chart);
@@ -623,11 +637,13 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null) {
     }
     tu.push("endcmap", "CMapName currentdict /CMap defineresource pop", "end", "end");
     stream(f4, "", tu.join("\n"));
+    stream(axisObj, "/Type /XObject /Subtype /Form /BBox [0 0 " + n(m.W) + " " + footer + "]"
+        + " /Resources << /Font << /F1 " + f0 + " 0 R >> >>", axis);
     const xref = len;
-    push("xref\n0 " + (f4 + 1) + "\n0000000000 65535 f \n");
-    for (let i = 1; i <= f4; i++)
+    push("xref\n0 " + (axisObj + 1) + "\n0000000000 65535 f \n");
+    for (let i = 1; i <= axisObj; i++)
         push(String(off[i]).padStart(10, "0") + " 00000 n \n");
-    push("trailer\n<< /Size " + (f4 + 1) + " /Root 1 0 R >>\nstartxref\n" + xref + "\n%%EOF");
+    push("trailer\n<< /Size " + (axisObj + 1) + " /Root 1 0 R >>\nstartxref\n" + xref + "\n%%EOF");
     return parts.join("");
 }
 
