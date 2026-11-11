@@ -4,9 +4,12 @@
 // С A3 — ещё списки: focusListText (формат+сортировка фокуса) и eventListText
 // (формат/фильтр/круговой MM-DD порядок колокольчика); строки выборки БД
 // остаются в адаптерах ботов (план .kilo/plans/20261108-canon-pure-a3-plan.md).
-const { fynny, kinLabel } = require('./kinship.cjs');
+const { fynny, kinLabel, kinBlood } = require('./kinship.cjs');
 const { approxOut } = require('./text.cjs');
 const { newStyleDate } = require('./religion.cjs');
+
+// Focused lists and GED/GED.TXT/PDF: keep spouses, but not their kin at 0.
+const INCLUDE_AFFINAL_KIN = 0;
 
 function focusDepth(pairs, spousePairs, key) {
     let m = 0;
@@ -142,16 +145,27 @@ function focusWithSpouses(keys, spousePairs) {
 // ключи 🔔-списка при fynny: core — уровневый BFS по объединённому графу
 // при levels («жизненный» радиус: кровь 1, брак 1, полнокровный сиблинг 1;
 // уровни = числам слов ярлыка: «отец жены» и «брат жены» — 2️⃣), либо
-// кровный ромб без браков для экспорта 🧬/PDF; далее супруги доклеиваются;
+// кровный ромб для экспорта 🧬/PDF (в обоих режимах браки — по INCLUDE_AFFINAL_KIN);
+// далее супруги доклеиваются без продолжения в другие браки;
 // доклеенный супруг остаётся, только если его ярлык-цепочка влезает в радиус
 // (супруг героя «муж/жена» — всегда; «жена брата» — с 2️⃣…);
 // 5-й радиус — обычный, как остальные (слова ≤ 5; «показать всех» снято).
 // Дословная копия — tgcloud/lib/bot.js.
 function focusListKeys(pairs, spousePairs, key, radius, sexOf, levels) {
     const core = new Set(levels
-        ? focusGraphKeys(pairs, spousePairs, key, radius)
-        : focusKeys(pairs, key, radius));
-    const keys = focusWithSpouses(core, spousePairs);
+        ? focusGraphKeys(pairs, INCLUDE_AFFINAL_KIN ? spousePairs : [], key, radius)
+        : focusKeys(pairs, key, radius, INCLUDE_AFFINAL_KIN ? spousePairs : []));
+    // Parent-child graphs also reach co-parents via a shared child, without
+    // any explicit marriage edge. Only a common-ancestor path proves blood.
+    if (!INCLUDE_AFFINAL_KIN)
+        for (const k of core)
+            if (k !== key && !kinBlood(pairs, sexOf, key, k)) core.delete(k);
+    const keys = [...new Set([
+        ...core,
+        ...spousePairs.flatMap(([a, b]) => [
+            ...(core.has(a) ? [b] : []), ...(core.has(b) ? [a] : []),
+        ]),
+    ])];
     if (!fynny) return keys;
     // доклеенный супруг остаётся, только если ярлык непуст и влезает:
     // бюджет браковых шагов kinLabel = radius (цепочки длиннее радиуса
@@ -255,4 +269,4 @@ function familyXref(rows, mx, fx, alias, date, used) {
 }
 
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
-module.exports = { familyXref, focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, eventListText, famsByGenerations };
+module.exports = { INCLUDE_AFFINAL_KIN, familyXref, focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, eventListText, famsByGenerations };

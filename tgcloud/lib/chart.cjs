@@ -17,14 +17,24 @@
 // в PDF как есть (FontFile2), из него парсятся только cmap/hmtx/head/OS2.
 
 const {FONT_B64} = require('./font-cyr.cjs');
-const {kinLabel} = require('./kinship.cjs');
-const {focusKeys} = require('./tree.cjs');
+const {kinLabel, kinBlood} = require('./kinship.cjs');
+const {focusKeys, INCLUDE_AFFINAL_KIN} = require('./tree.cjs');
 
 // Called after adapter additions (including anchored dateless spouses).
 // The label cache belongs to this render and is reused by chartModel.
 function chartRows(rows, rel) {
     if (!rel || !rel.hero || !rel.range) return rows;
-    const candidates = new Set(focusKeys(rel.pairs, rel.hero, rel.range, rel.spouses));
+    const candidates = new Set(focusKeys(rel.pairs, rel.hero, rel.range,
+        INCLUDE_AFFINAL_KIN ? rel.spouses : []));
+    if (!INCLUDE_AFFINAL_KIN) {
+        for (const k of candidates)
+            if (k !== rel.hero && !kinBlood(rel.pairs, null, rel.hero, k)) candidates.delete(k);
+        const blood = new Set(candidates);
+        for (const [a, b] of rel.spouses) {
+            if (blood.has(a)) candidates.add(b);
+            if (blood.has(b)) candidates.add(a);
+        }
+    }
     rel.labels = new Map();
     return rows.filter(r => {
         const key = r.k ?? r.name + " " + r.birth;
