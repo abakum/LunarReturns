@@ -639,14 +639,15 @@ function cutBranch(peerId, px, extraNames = []) {
         frontier = nf;
     }
     const fams = [...inF];
-    // жертвы: потомки + половины ветви (половина остаётся, если есть семья вне ветви)
+    // Половина остаётся, если вне ветви она супруг или ребёнок семьи.
     const victims = new Set();
     for (const x of D) if (x !== px) victims.add(x);
     for (const fx of fams) {
         const f = famRows.find(t => t.xref === fx);
         for (const h of [f.husb, f.wife]) {
             if (!h || D.has(h)) continue;
-            const outside = famRows.some(t => !inF.has(t.xref) && (t.husb === h || t.wife === h));
+            const outside = famRows.some(t => !inF.has(t.xref)
+                && (t.husb === h || t.wife === h || (kidsOfFam.get(t.xref) || []).includes(h)));
             if (!outside) victims.add(h);
         }
     }

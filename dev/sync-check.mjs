@@ -514,6 +514,66 @@ const vkRepM = VK.cutAndGraft(TREE_CH, 'Нет-Такого-Человека 169
 const tgRepM = await TG.cutAndGraft(TREE_CH, 'Нет-Такого-Человека 1690-01-01', TGP.parseTree(TREE1));
 cmp('cutAndGraft без якоря', vkRepM, tgRepM);
 
+// A spouse's parental families are outside the replaced descendant branch.
+const SPOUSE_PARENTS = `-КА 1963-09-27
++1988-09-24
+ГК 1965-08-01
+--СА 1992-06-13 ^123
+++2016-08-27
+АК 1990-09-19
+---АА 2024-03-01 ^456
+-ГК 1963-07-14
++1987-08-29
+ГЧ 1963-05-14
+==АК 1990-09-19`;
+for (const [index, [scenario, extra, replacement, cut]] of [
+    ['retained', '', '-СА 1992-06-13\n+2016-08-27\nАК 1990-09-19\n--АА 2024-03-01', 1],
+    ['omitted', '', '-СА 1992-06-13', 1],
+    ['multiple parents', '\n-Другой отец 1960-01-01\n+1986\nДругая мать 1961-01-01\n==АК 1990-09-19', '-СА 1992-06-13', 1],
+    ['other marriage', '\n=АК 1990-09-19\n+2010\nДругой супруг 1988-01-01', '-СА 1992-06-13', 1],
+    ['branch-only spouse', null, '-СА 1992-06-13', 2],
+].entries()) {
+    const id = 894000 + index;
+    const results = [];
+    for (const api of [VK, TG]) {
+        const source = (extra === null || scenario === 'other marriage'
+            ? SPOUSE_PARENTS.split('\n-ГК 1963-07-14')[0] : SPOUSE_PARENTS) + (extra || '');
+        await api.applyTree(id, TGP.parseTree(source));
+        const before = TGP.parseGedcom(await api.gedcomText(id));
+        const ak = before.indis.find(p => p.name === 'АК').__xref;
+        const external = before.fams.filter(f => f.chil.includes(ak) || (f.marr?.date === '2010-01-01'));
+        const sa = before.indis.find(p => p.name === 'СА').__xref;
+        const saParents = before.fams.find(f => f.chil.includes(sa));
+        for (let repeat = 0; repeat < 2; repeat++) {
+            const rep = await api.cutAndGraft(id, 'СА 1992-06-13', TGP.parseTree(replacement));
+            assert.equal(rep.cut, repeat ? (replacement.includes('АА') ? 1 : 0) : cut, scenario);
+            assert.equal(rep.famsCut, repeat && !replacement.includes('АА') ? 0 : 1);
+            const after = TGP.parseGedcom(await api.gedcomText(id));
+            assert.equal(after.fams.length, before.fams.length - (replacement.includes('АА') ? 0 : 1));
+            assert.equal(after.indis.length, before.indis.length - (replacement.includes('АА') ? 0 : cut));
+            assert.deepEqual(after.fams.find(f => f.__xref === saParents.__xref), saParents);
+            for (const family of external)
+                assert.deepEqual(after.fams.find(f => f.__xref === family.__xref), family);
+            const partners = after.indis.filter(p => p.name === 'АК');
+            assert.equal(partners.length, extra === null ? 0 : 1);
+            if (partners.length) assert.equal(partners[0].__xref, ak);
+            const edges = api === VK ? VK.linkPairs(id) : (await TG.linksAll(id)).map(l => [l.p, l.c]);
+            assert.equal(new Set(edges.map(e => JSON.stringify(e))).size, edges.length);
+            for (const family of external.filter(f => f.chil.includes(ak))) {
+                for (const parent of [family.husb, family.wife].filter(Boolean)) {
+                    const p = before.indis.find(p => p.__xref === parent);
+                    assert.ok(edges.some(([a, b]) => a === p.name + ' ' + p.birt.date && b === 'АК 1990-09-19'));
+                }
+            }
+            assert.equal(after.indis.some(p => p.name === 'АА'), replacement.includes('АА'));
+            assert.equal(after.fams.some(f => f.marr?.date === '2016-08-27'), replacement.includes('АА'));
+            assert.equal(edges.some(([a, b]) => a === 'АК 1990-09-19' && b === 'АА 2024-03-01'), replacement.includes('АА'));
+        }
+        results.push({ ged: await api.gedcomText(id), flat: await api.chatFlatText(id) });
+    }
+    cmp('cutAndGraft spouse external families ' + scenario, results[0], results[1]);
+}
+
 // ===================== 4в. точечная правка триггера =====================
 // одна строка без маркера в ответе на триггер — ПОЛНАЯ замена записи:
 // пол цел, ветвь и связи не трогаются, ключи связей переименовываются
