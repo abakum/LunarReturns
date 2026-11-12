@@ -89,7 +89,7 @@ const abtOf = (g, q) => { const a = (q || 0) * 3 + (g || 0); return a || undefin
 // abt — квалификатор×гранулярность (см. abtOf выше); точная дата — undefined;
 // сепаратор «_» у полной даты — показанный новый стиль: конвертируем в
 // хранимый старый (копипаст шапки юбилея находит ту же запись, не плодит дубль)
-function parseDateGroups(m, gi, what) {
+function parseDateGroups(m, gi, what, preserveUnknownTime = false) {
     const hasMo = m[gi + 1] !== undefined, hasDd = m[gi + 2] !== undefined;
     const ns = hasMo && hasDd && m[gi + 1][0] === "_" && m[gi + 2][0] === "_";
     const abt = abtOf(!hasMo ? 2 : !hasDd ? 1 : 0, ABT_SUF[m[gi + 3]]);
@@ -128,11 +128,12 @@ function parseDateGroups(m, gi, what) {
             return { error: "не знаю места «" + zone + "» — укажите город из списка приложения или сдвиг вида МСК+2 / UTC+5" };
         }
     }
-    const rec = dateTimeToMsk(y, mo, dd, hh, mm, givenTime, diffMin, hasZone);
+    const rec = dateTimeToMsk(y, mo, dd, hh, mm, givenTime, diffMin,
+        hasZone && (givenTime || !preserveUnknownTime));
     if (ns && rec.d <= NEW_STYLE_END) rec.d = oldStyleDate(rec.d);
     const pad = (x, l) => String(x).padStart(l, "0");
     const srcD = y + "-" + pad(mo, 2) + "-" + pad(dd, 2);
-    const note = zoneLabel
+    const note = zoneLabel && (givenTime || !preserveUnknownTime)
         ? zoneLabel + " " + pad(hh, 2) + ":" + pad(mm, 2) + " → МСК " + pad(rec.h, 2) + ":" + pad(rec.m, 2)
             + (rec.d !== srcD ? " " + rec.d : "")
         : "";
@@ -155,7 +156,7 @@ function compactDates(s) {
             "01" <= mo && mo <= "12" ? y + "-" + mo : all);
 }
 
-function parseTrigger(text) {
+function parseTrigger(text, preserveUnknownTime = false) {
     // «^» — маркер примечания: всё после первого «^» — примечание дословно
     // (не разбирается на даты); внутренние «^» сохраняются — это переносы
     // строк NOTE из гедкома (CONC/CONT → «^»); табуляции — прочь
@@ -166,7 +167,7 @@ function parseTrigger(text) {
     const m = compactDates(s).match(TRIGGER_RE);
     if (!m) return null;
     const n = m[1].trim();
-    const b = parseDateGroups(m, 2, "");
+    const b = parseDateGroups(m, 2, "", preserveUnknownTime);
     if (b.error) return { n, error: b.error };
     const rec = Object.assign({ n }, b.rec);
     if (b.abt) rec.abt = b.abt; // примерная/квалифицированная ДР (abt!=0) — юбилеи не оповещаются
@@ -175,7 +176,7 @@ function parseTrigger(text) {
     let note = b.note;
     if (m[10] !== undefined) { // хвост смерти — только для гедком (DEAT),
         // результат события (юбилеи) не меняет
-        const s = parseDateGroups(m, 10, " смерти");
+        const s = parseDateGroups(m, 10, " смерти", preserveUnknownTime);
         if (s.error) return { n, error: s.error };
         rec.dd = s.rec.d;
         if (s.abt) rec.dabt = s.abt;
@@ -453,7 +454,7 @@ function parseTreeLine(line) {
         const run = mm[1], rest = mm[2].trim();
         if ((/^-+$/.test(run) || /^=+$/.test(run)) && rest) {
             const sex = run[0] === "-" ? "M" : "F";
-            const p = parseTrigger(rest);
+            const p = parseTrigger(rest, true);
             if (p && !p.error) return { k: "p", depth: run.length - 1, sex, rec: p.rec, note: p.tail || "" };
             if (p && p.error) return { k: "err", msg: p.error };
             const n = name.slice(run.length).trim();
@@ -475,7 +476,7 @@ function parseTreeLine(line) {
     if (/^\d{4}/.test(line)) // строка дат без «+» — не свадьба (свадьба — «+дата…»)
         return { k: "err", msg: "свадьба — строка «+дата…»; строка дат без «+» не свадьба" };
     // имя без маркера — вторая половина «+»-свадьбы (пол выводится парсером)
-    const p = parseTrigger(line);
+    const p = parseTrigger(line, true);
     if (p && p.error) return { k: "err", msg: p.error };
     if (p) return { k: "sp", rec: p.rec, note: p.tail || "" };
     if (!name) return { k: "err", msg: "не задано имя персоны" };

@@ -515,6 +515,37 @@ const tgRepM = await TG.cutAndGraft(TREE_CH, 'Нет-Такого-Человек
 cmp('cutAndGraft без якоря', vkRepM, tgRepM);
 
 // A spouse's parental families are outside the replaced descendant branch.
+for (const api of [VK, TG]) {
+    for (const [index, place] of ['Неизвестный город', 'Пермь', 'UTC+14'].entries()) {
+        const id = 893900 + index;
+        const pack = '-Без времени 1960-01-01 (' + place + ') 2020-01-01 (' + place + ')\n+1980\nСупруга 1962-01-01 (' + place + ')\n--Ребёнок 1985-01-01 (' + place + ')';
+        const parsed = TGP.parseTree(pack);
+        assert.deepEqual(parsed.errors, []);
+        for (const p of parsed.persons) {
+            assert.equal(p.rec.h, undefined);
+            assert.equal(p.rec.dh, undefined);
+            assert.equal(p.rec.srcH, undefined);
+        }
+        assert.equal(parsed.persons[0].rec.d, '1960-01-01');
+        assert.equal(parsed.persons[0].rec.dd, '2020-01-01');
+        await api.applyTree(id, parsed);
+        for (let i = 0; i < 2; i++) {
+            const exported = await api.branchFlatText(id, 'Без времени 1960-01-01');
+            assert.doesNotMatch(exported, /\d{2}:\d{2}/);
+            await api.cutAndGraft(id, 'Без времени 1960-01-01', TGP.parseTree(exported));
+            const people = await api.personRows(id);
+            for (const p of people) assert.equal(p.h, undefined);
+            const hero = people.find(p => p.n === 'Без времени');
+            assert.equal(hero.dh, undefined);
+        }
+    }
+}
+const explicitNoon = TGP.parseTree('-Полдень 1960-01-01 12:00 (Пермь) 2020-01-01 12:00 (Пермь)').persons[0].rec;
+assert.equal(explicitNoon.srcH, 12);
+assert.equal(explicitNoon.dsrcH, 12);
+assert.equal(TGP.parseTrigger('Полдень 1960-01-01 (Пермь)').rec.srcH, undefined);
+assert.equal(typeof TGP.parseTrigger('Полдень 1960-01-01 (Пермь)').rec.h, 'number');
+
 const SPOUSE_PARENTS = `-КА 1963-09-27
 +1988-09-24
 ГК 1965-08-01

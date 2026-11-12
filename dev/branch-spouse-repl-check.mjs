@@ -5,8 +5,8 @@ import { spawnSync } from 'node:child_process';
 
 const tmp = fs.mkdtempSync('/tmp/kilo/lr-branch-spouse-');
 const root = new URL('../', import.meta.url);
-const source = '-КА 1963-09-27\n+1988-09-24\nГК 1965-08-01\n--СА 1992-06-13 ^123\n++2016-08-27\nАК 1990-09-19\n---АА 2024-03-01 ^456\n-ГК 1963-07-14\n+1987-08-29\nГЧ 1963-05-14\n==АК 1990-09-19';
-const replacement = '-СА 1992-06-13\n+2016-08-27\nАК 1990-09-19\n--АА 2024-03-01';
+const source = '-КА 1963-09-27\n+1988-09-24\nГК 1965-08-01\n--СА 1992-06-13 (Пермь) ^123\n++2016-08-27\nАК 1990-09-19\n---АА 2024-03-01 ^456\n-ГК 1963-07-14\n+1987-08-29\nГЧ 1963-05-14\n==АК 1990-09-19';
+const replacement = '-СА 1992-06-13 (Пермь)\n+2016-08-27\nАК 1990-09-19\n--АА 2024-03-01';
 const line = text => text.replaceAll('\n', '\\n');
 for (const platform of ['tg', 'vk']) {
     const env = { ...process.env, LR_DEV_DB: path.join(tmp, platform + '.json'),
@@ -33,10 +33,19 @@ for (const platform of ['tg', 'vk']) {
         log = run();
     };
     tap('-+=');
-    assert.match(log, /-СА 1992-06-13 \^123/);
+    assert.match(log, /-СА 1992-06-13 \(Пермь\) \^123/);
+    assert.doesNotMatch(log, /-СА 1992-06-13 \d{2}:\d{2}/);
     commands.push('>' + anchor[1] + ' ' + line(replacement), '/АК');
     log = run();
     assert.match(log, /ветвь срезана: 1 персон, 1 семей/);
+    commands.push('/СА');
+    log = run();
+    tap('-+=');
+    const branch = [...log.matchAll(/\[(\d+)\] текст →\n((?:    .*\n)*)/g)].at(-1)[2];
+    assert.match(branch, /-СА 1992-06-13 \(Пермь\)/);
+    assert.doesNotMatch(branch, /\d{2}:\d{2}/);
+    commands.push('/АК');
+    log = run();
     tap('2');
     tap('🔔');
     const edits = [...log.matchAll(/\[(\d+)\] текст →\n((?:    .*\n)*)/g)];
