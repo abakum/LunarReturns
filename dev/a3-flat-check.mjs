@@ -6,7 +6,16 @@ import { createRequire } from 'node:module';
 // с дословными бюджетами вызывающих мест. Ожидания захардкожены вручную;
 // фрозен-реплики циклов ВК (дословно до A3) сверяются с каноном flat.cjs.
 const require = createRequire(import.meta.url);
-const { searchHead, cutLines } = require('../tgcloud/lib/flat.cjs');
+const { searchHead, cutLines, flatSearch } = require('../tgcloud/lib/flat.cjs');
+const peters = '-Пётр I 1672-06-09\n-Пётр II 1715-10-23\n-Пётр Иванов 1980-01-01';
+assert.deepEqual(flatSearch(peters, '/Пётр I #foo bar'), ['-Пётр I 1672-06-09']);
+assert.equal(flatSearch(peters, '/Пётр I').length, 2);
+assert.deepEqual(flatSearch(peters, '/Пётр #foo bar'), peters.split('\n'));
+assert.deepEqual(flatSearch(peters, '/-Пётр I #comment'), ['-Пётр I 1672-06-09']);
+assert.deepEqual(flatSearch(peters, '/ Пётр I #comment'), ['-Пётр I 1672-06-09']);
+assert.deepEqual(flatSearch(peters, '/#comment'), []);
+assert.deepEqual(flatSearch(peters, '/ #comment'), []);
+assert.equal(searchHead('/Пётр I #foo bar', 1), 'Найдено 1 строк начинающихся с Пётр I');
 const NOT_FOR_GRAFT = "#not for cut and graft";
 
 // ---- 1. Заголовок поиска: тексты дословно ВК (грамматика «строк» не меняется)

@@ -281,10 +281,12 @@ function flatTreeText(persons, fams, canonical = false) {
 // маркера; "/-", "/==", "/++" — все строки с такой серией маркеров (все
 // мужчины/женщины/свадьбы уровня). Регистр не учитывается
 function flatSearch(flat, query) {
-    const q = String(query).replace(/^\//, "");
+    const raw = String(query);
+    const q = raw.split('#', 1)[0].replace(/^\//, "");
     const sub = q.startsWith(" ");
     const mark = (q.match(/^([-+=])\1*/) || [""])[0];
-    const needle = (sub ? q.slice(1) : q.slice(mark.length)).trim().toLowerCase();
+    const text = sub ? q.slice(1) : q.slice(mark.length);
+    const needle = (raw.includes('#') ? text.trimStart() : text.trim()).toLowerCase();
     if (!needle && !mark) return [];
     const hits = String(flat).split(/\r?\n/).filter(line => {
         const lmark = (line.match(/^([-+=])\1*/) || [""])[0];
@@ -377,6 +379,7 @@ function flatHitKey(line, persons) {
 // Ива», серия маркеров («/-», «/--», «/=», «/++») — «с маркером «…»».
 // Дословно из копий (lunarreturns.js, handlers/message.js; ethalon — ВК)
 function searchHead(q, count) {
+    q = q.split('#', 1)[0];
     const sub = /^\/\s/.test(q);
     const mark = (q.slice(1).match(/^([-+=])\1*/) || [""])[0];
     const needle = (sub ? q.slice(1) : q.slice(1 + mark.length)).trim();
