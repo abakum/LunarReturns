@@ -7,7 +7,7 @@ import { kinLabel, fynny } from './kinship.cjs';
 import { REL_DEFS, religiousDigest } from './religion.cjs';
 import { jubileeText, approxOut } from './text.js';
 import { findShownRecord } from './text.cjs';
-import { chatFlatArtifacts, gedText, gedFictiveDates } from './parse.cjs';
+import { chatFlatArtifacts, gedText, gedFictiveDates, trimImport } from './parse.cjs';
 import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText } from './tree.cjs';
 // фокус-список (focusListText) — канон tree.cjs (с A3): реэкспорт — точки
 // импорта handlers не менялись
@@ -20,12 +20,12 @@ export { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, tree
 export { searchHead, cutLines } from './flat.cjs';
 export { focusListText } from './tree.cjs';
 
-export { HELP } from './text.cjs';
+export { HELP, helpText } from './text.cjs';
 
 // сколько живёт «Да/Нет»-вопрос на дроп .ged-файла (час)
 export const GED_TTL = 3600000;
 
-const DEFAULT_SETTINGS = { orth: false, islam: false, bud: false, cath: false, jud: false, bell: true, fynny: false };
+const DEFAULT_SETTINGS = { orth: false, islam: false, bud: false, cath: false, jud: false, bell: true, fynny: false, trim: false };
 
 export async function getSettings(chatId) {
     const row = await db.select().from(settings).where(eq(settings.chatId, chatId)).get();
@@ -659,14 +659,15 @@ async function cutBranch(chatId, px, extraNames = []) {
 // обновила бы связи лишь частично. Такая роспись отвергается — правки нет,
 // ответ-ошибка предлагает родословную роспись -+= тапа «-+=». Мимо якоря метка резке
 // мешает, а добавлению нет: merge росписи радиуса в чистый чат работает как прежде
-export async function cutAndGraft(chatId, anchorKey, tree) {
+export async function cutAndGraft(chatId, anchorKey, tree, trim = false) {
     if (tree.noGraft) // метка NOT_FOR_GRAFT первой строкой (роспись радиуса)
         return { persons: 0, fams: 0, links: 0, errors: [], noGraft: true };
     const px = await xrefOfKey(chatId, anchorKey);
-    if (!px) return { ...(await applyTree(chatId, tree)), cut: 0, famsCut: 0 };
+    if (!px) return { ...(await applyTree(chatId, trim ? trimImport(tree) : tree)), cut: 0, famsCut: 0 };
     const heroIdx = tree.persons.findIndex(p => !p.spouseLine
         && p.rec.n + " " + p.rec.d === anchorKey);
     const root = rootOf(tree);
+    if (trim) trimImport(tree); // hero detection uses original names; root keeps its identity
     if (heroIdx >= 0 && root && tree.persons.indexOf(root) !== heroIdx) {
         const rep = await applyTree(chatId, tree); // герой внутри росписи — merge без резки
         rep.cut = 0; rep.famsCut = 0;
@@ -674,9 +675,11 @@ export async function cutAndGraft(chatId, anchorKey, tree) {
     }
     const cut = await cutBranch(chatId, px,
         tree.persons.map(p => p.rec.n)); // свадьбы-заглушки пар росписи тоже срезаются
+    if (trim && root) await db.update(indi).set({ deatPlac: null })
+        .where(and(eq(indi.chatId, chatId), eq(indi.xref, px))).run();
     if (!root) { await deleteEventCascade(chatId, anchorKey); }
     else if (root.rec.d !== undefined) // герой без даты — заглушка не замещает запись
-        await setPersonByXref(chatId, px, Object.assign({ sex: root.sex, note: root.note }, root.rec));
+        await setPersonByXref(chatId, px, Object.assign({ sex: root.sex, note: root.note }, root.rec), trim);
     const rep = await applyTree(chatId, tree);
     await restoreEdges(chatId);
     return Object.assign(rep, { cut: cut.cut, famsCut: cut.fams });

@@ -5,7 +5,7 @@ import { parseTrigger, parseGedcom, gedStats, parseTree } from '../lib/parse.cjs
 import { fileBaseOf } from '../lib/chart.cjs';
 import { jubileeText } from '../lib/text.js';
 import {
-    HELP, startMarkup, chatAdmin, getSettings, todayText, jubileeMarkup, sendLong,
+    helpText, startMarkup, chatAdmin, getSettings, todayText, jubileeMarkup, sendLong,
     recordOf, recordShownOf, replaceWithGedcom,
     linkPairs, personRows, weddingRows, sendGedPdf, focusHead, focusMarkup,
     focusListKeys, focusSpousePairs, focusDepth, focusListText, mmddToday, upcomingText, upsertPerson, applyTree, cutAndGraft, treeReport,
@@ -135,7 +135,7 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
             console.log("txt drop reply: триггера нет, мимо, чат", chatId);
             return;
         }
-        const rep = await cutAndGraft(chatId, anchor, tree);
+        const rep = await cutAndGraft(chatId, anchor, tree, (await getSettings(chatId)).trim);
         await sendLong(chatId, treeReport(rep));
         console.log("txt tree:", rep.cut !== undefined ? "срезано " + rep.cut + ", " : "", rep.persons, "персон,", rep.links, "детей, чат", chatId);
         return;
@@ -244,6 +244,16 @@ export default async function (message, ctx) {
     // в группах команда приходит с упоминанием бота: /start@botname
     const cmd = (text.match(/^\/[a-z_]+/i) || [""])[0].toLowerCase();
 
+    const tm = text.match(/^\/trim([01])(?:@[a-z0-9_]+)?$/i);
+    if (tm) {
+        const trim = tm[1] === "1";
+        const row = await db.select().from(settings).where(eq(settings.chatId, chatId)).get();
+        if (row) await db.update(settings).set({ trim }).where(eq(settings.chatId, chatId)).run();
+        else await db.insert(settings).values({ chatId, trim }).run();
+        await api.sendMessage({ chat_id: chatId,
+            text: "Импорт: " + (trim ? "инициалы, без мест и примечаний." : "полные данные.") });
+        return;
+    }
     const fm = text.match(/^\/fynny([01])(?:@[a-z0-9_]+)?$/i);
     if (fm) {
         const fynny = fm[1] === "1";
@@ -274,7 +284,7 @@ export default async function (message, ctx) {
         }
         const admin = await chatAdmin(message.chat, message.from?.id);
         await api.sendMessage({
-            chat_id: chatId, text: HELP,
+            chat_id: chatId, text: helpText(await getSettings(chatId)),
             reply_markup: startMarkup(message.chat, admin, chatId, await getSettings(chatId)),
         });
         return;
@@ -453,7 +463,7 @@ export default async function (message, ctx) {
         }
         const admin = await chatAdmin(message.chat, message.from?.id);
         await api.sendMessage({
-            chat_id: chatId, text: HELP,
+            chat_id: chatId, text: helpText(await getSettings(chatId)),
             reply_markup: startMarkup(message.chat, admin, chatId, await getSettings(chatId)),
         });
         return;

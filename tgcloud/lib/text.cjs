@@ -15,12 +15,18 @@ const HELP = "Отправьте событие, покажу лунно-сол�
     + "/today — события сегодня (МСК).\n"
     + "/bell — список событий, /gedcom — древо: в ответ на событие — родня героя, без ответа — весь чат. /bell2 и /gedcom2 — радиус 2.\n"
     + "/links — родословная роспись: в ответ — ветвь героя, без ответа — весь чат.\n"
-    + "/fynny0 — обычные названия родства, /fynny1 — цепочки (для чата).\n"
+    + "/fynny0 — обычные названия родства, /fynny1 — цепочки (fynny=0).\n"
+    + "/trim1 — импорт .ged/.ged.txt: инициалы, без мест и примечаний; /trim0 — полные данные (trim=0).\n"
     + "/Иван — поиск по имени, / текст — поиск подстроки.\n\n"
     + "Родословная роспись обычным сообщением добавляет данные; в ответ на событие ЗАМЕНЯЕТ ветвь героя.\n"
     + "Одна строка события без маркера в ответ — правка записи с сохранением связей.\n"
     + "Импорт .ged или .ged.txt ЗАМЕНЯЕТ данные чата после подтверждения (Нет / Да / Да, с резервом).\n\n"
     + "Формат росписи: https://github.com/abakum/LunarReturns/blob/main/-%2B%3D.md";
+
+function helpText(settings = {}) {
+    return HELP.replace('(fynny=0)', '(fynny=' + Number(!!settings.fynny) + ')')
+        .replace('(trim=0)', '(trim=' + Number(!!settings.trim) + ')');
+}
 
 // примерная дата текстом: гранулярность G — урезание («1234», «1234-05»),
 // квалификатор Q — суффикс за датой: «?» ABT, «=» CAL, «<» BEF, «>» AFT,
@@ -40,4 +46,4 @@ function findShownRecord(records, key) {
         || r.d === m[2].replace(/[._]/g, "-") + m[3])) || null;
 }
 
-module.exports = { HELP, approxOut, findShownRecord };
+module.exports = { HELP, helpText, approxOut, findShownRecord };

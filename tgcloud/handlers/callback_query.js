@@ -2,12 +2,12 @@ import { api, db, InputFile } from 'sdk';
 import { and, eq } from 'sdk/db';
 import { settings, gedDrops, focusView } from '../schema.js';
 import { jubileeText } from '../lib/text.js';
-import { parseGedcom, parseTree } from '../lib/parse.cjs';
+import { parseGedcom, parseTree, trimImport } from '../lib/parse.cjs';
 import { fileBaseOf } from '../lib/chart.cjs';
 import { sendFlatPack } from '../lib/bot.js';
 import { REL_DEFS, religiousYear } from '../lib/religion.cjs';
 import {
-    HELP, GED_TTL, relMarkup, getSettings, startMarkup, chatAdmin, jubileeMarkup, branchFlatText,
+    HELP, helpText, GED_TTL, relMarkup, getSettings, startMarkup, chatAdmin, jubileeMarkup, branchFlatText,
     recordOf, recordByXref, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong,
     deleteEventCascade, replaceWithGedcom, clearChatTree, deleteLink, setIndiSex, toggleAdopted,
     linkById, linkPairs, xrefOfKey, personRows, weddingRows, sendTreeBackup,
@@ -95,7 +95,7 @@ export default async function (cq, ctx) {
 
     // сообщение со справкой (/start) редактировать нельзя — только тост;
     // в остальных (со списком событий) при пустом списке стираем показанное
-    const isHelp = cq.message?.text === HELP;
+    const isHelp = cq.message?.text?.replace(/\((fynny|trim)=[01]\)/g, '($1=0)') === HELP;
 
     if (data === "bell") {
         // список событий (.txt): всегда рендер по ММ-ДД, без подписного
@@ -197,7 +197,7 @@ export default async function (cq, ctx) {
         // настройки остаются; как в VK: HELP и клавиатура возвращаются
         const n = (await items()).length;
         await clearChatTree(chatId);
-        await editText("Удалено событий: " + n + "\n" + HELP,
+        await editText("Удалено событий: " + n + "\n" + helpText(await getSettings(chatId)),
             await startMarkup(cq.message.chat, await chatAdmin(cq.message.chat, cq.from?.id),
                 chatId, await getSettings(chatId)));
         await answer("🗑 События чата удалены");
@@ -207,7 +207,7 @@ export default async function (cq, ctx) {
     if (data === "del:no") {
         // вернуть справку и клавиатуру по чату/роли: религии — только в личке
         const isAdmin = await chatAdmin(cq.message.chat, cq.from?.id);
-        await editText(HELP, startMarkup(cq.message.chat, isAdmin, chatId, await getSettings(chatId)));
+        await editText(helpText(await getSettings(chatId)), startMarkup(cq.message.chat, isAdmin, chatId, await getSettings(chatId)));
         await answer("Отменено");
         return;
     }
@@ -438,13 +438,16 @@ export default async function (cq, ctx) {
                 await editText("💥 Не удалось выложить резерв — замена отменена, прежнее дерево цело", undefined);
                 return;
             }
+            const tree = parseTree(row.content);
+            if ((await getSettings(chatId)).trim) trimImport(tree);
             await clearChatTree(chatId);
-            const rep = await applyTree(chatId, parseTree(row.content), null);
+            const rep = await applyTree(chatId, tree);
             await editText(treeReport(rep), undefined);
             console.log("txt replace:", rep.persons, "персон,", rep.links, "детей, chat", chatId);
             return;
         }
-        const r = await replaceWithGedcom(chatId, parseGedcom(row.content), data === "ged:bak");
+        const g = parseGedcom(row.content);
+        const r = await replaceWithGedcom(chatId, (await getSettings(chatId)).trim ? trimImport(g) : g, data === "ged:bak");
         await editText(r.head, undefined);
         console.log("ged replace:", data, "chat", chatId);
         return;

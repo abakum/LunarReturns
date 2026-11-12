@@ -48,7 +48,7 @@ const {
 // Канон — tgcloud/lib/parse.cjs (план .kilo/plans/20261107-shared-modules-plan.md): его же импортирует
 // ТГ-копия через ESM-шим; правки — только в .cjs, дословных копий больше нет.
 const {
-    parseTrigger, parseGedcom, gedText, gedStats, gedFictiveDates, parseTreeLine, NOT_FOR_GRAFT, withGraftMark, parseTree, packToCsv, chatFlatArtifacts} = reqLib("parse");
+    parseTrigger, parseGedcom, gedText, gedStats, gedFictiveDates, parseTreeLine, NOT_FOR_GRAFT, withGraftMark, parseTree, packToCsv, chatFlatArtifacts, trimImport} = reqLib("parse");
 
 
 // ============================== РЕЛИГИОЗНЫЕ ДНИ (общий модуль) ==============================
@@ -67,7 +67,7 @@ const { TZ_MS, moonNew, la, ageSuffix, mskToday} = reqLib("astro");
 // Канон примерных дат — tgcloud/lib/text.cjs (approxOut): его же импортирует
 // ТГ-копия через ESM-шим; юбилейные тексты (jubileeText) платформенные —
 // остаются в копиях (ТГ: tg-spoiler/htmlEsc, ВК: plain).
-const { HELP, approxOut, findShownRecord } = reqLib("text");
+const { HELP, helpText, approxOut, findShownRecord } = reqLib("text");
 
 // ============================== РОДОСЛОВНАЯ РОСПИСЬ -+= — ЧИСТЫЕ ФУНКЦИИ (общий модуль) =====
 // Канон — tgcloud/lib/flat.cjs (план .kilo/plans/20261108-canon-flat-pure-plan.md): его же импортирует
@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS sent(
 CREATE TABLE IF NOT EXISTS settings(
     chat INTEGER PRIMARY KEY, orth INTEGER NOT NULL DEFAULT 0, islam INTEGER NOT NULL DEFAULT 0,
     bud INTEGER NOT NULL DEFAULT 0, cath INTEGER NOT NULL DEFAULT 0, jud INTEGER NOT NULL DEFAULT 0,
-    bell INTEGER NOT NULL DEFAULT 1, fynny INTEGER NOT NULL DEFAULT 0);
+    bell INTEGER NOT NULL DEFAULT 1, fynny INTEGER NOT NULL DEFAULT 0, trim INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`);
     // WAL: запись в разы быстрее и чтения не блокируются записью; цена —
     // при обрыве питания может откатиться последний коммит (для бота ок).
@@ -162,6 +162,7 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`);
     sdb.exec("PRAGMA busy_timeout=3000");
     for (const [t, c, ty] of [["indi", "note", "TEXT"], ["fam", "note", "TEXT"],
         ["indi", "deat_plac", "TEXT"], ["settings", "fynny", "INTEGER NOT NULL DEFAULT 0"],
+        ["settings", "trim", "INTEGER NOT NULL DEFAULT 0"],
         // признаки примерных дат (юбилеи по ним не оповещаются)
         ["indi", "birt_abt", "INTEGER"], ["indi", "deat_abt", "INTEGER"],
         ["fam", "marr_abt", "INTEGER"], ["fam", "div_abt", "INTEGER"]]) {
@@ -705,22 +706,24 @@ function cutBranch(peerId, px, extraNames = []) {
 // обновила бы связи лишь частично. Такая роспись отвергается — правки нет,
 // ответ-ошибка предлагает родословную роспись -+= тапа «-+=». Мимо якоря метка резке
 // мешает, а добавлению нет: merge росписи радиуса в чистый чат работает как прежде
-function cutAndGraft(peerId, anchorKey, tree) {
+function cutAndGraft(peerId, anchorKey, tree, trim = false) {
     if (tree.noGraft) // метка NOT_FOR_GRAFT первой строкой (роспись радиуса)
         return { persons: 0, fams: 0, links: 0, errors: [], noGraft: true };
     const px = xrefOfKey(peerId, anchorKey);
-    if (!px) { const rep = applyTree(peerId, tree); rep.cut = 0; rep.famsCut = 0; return rep; }
+    if (!px) { const rep = applyTree(peerId, trim ? trimImport(tree) : tree); rep.cut = 0; rep.famsCut = 0; return rep; }
     const heroIdx = tree.persons.findIndex(p => !p.spouseLine
         && p.rec.n + " " + p.rec.d === anchorKey);
     const root = rootOf(tree);
+    if (trim) trimImport(tree);
     if (heroIdx >= 0 && root && tree.persons.indexOf(root) !== heroIdx) {
         const rep = applyTree(peerId, tree); // герой внутри росписи — merge без резки
         rep.cut = 0; rep.famsCut = 0;
         return rep;
     }
     const cut = cutBranch(peerId, px, tree.persons.map(p => p.rec.n)); // свадьбы-заглушки пар росписи тоже срезаются
+    if (trim && root) qr("UPDATE indi SET deat_plac=NULL WHERE chat=? AND xref=?", peerId, px);
     if (root && root.rec.d !== undefined) // герой без даты — заглушка не замещает запись
-        setPersonByXref(peerId, px, Object.assign({ sex: root.sex, note: root.note }, root.rec));
+        setPersonByXref(peerId, px, Object.assign({ sex: root.sex, note: root.note }, root.rec), trim);
     else if (!root) deleteEventCascade(peerId, anchorKey);
     const rep = applyTree(peerId, tree);
     restoreEdges(peerId);
@@ -1876,8 +1879,8 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
 function getSettings(peerId) {
     const r = q1("SELECT * FROM settings WHERE chat=?", peerId);
     return r
-        ? { orth: !!r.orth, islam: !!r.islam, bud: !!r.bud, cath: !!r.cath, jud: !!r.jud, bell: r.bell !== 0, fynny: !!r.fynny }
-        : { fynny: false };
+        ? { orth: !!r.orth, islam: !!r.islam, bud: !!r.bud, cath: !!r.cath, jud: !!r.jud, bell: r.bell !== 0, fynny: !!r.fynny, trim: !!r.trim }
+        : { fynny: false, trim: false };
 }
 
 function toggleRel(peerId, key) {
@@ -1960,7 +1963,7 @@ async function deleteByCmid(peerId, cmid) {
         try {
             await vkApi("messages.edit", {
                 peer_id: peerId, conversation_message_id: cmid,
-                message: HELP, keyboard: JSON.stringify({ inline: true, buttons: [] })
+                message: helpText(getSettings(peerId)), keyboard: JSON.stringify({ inline: true, buttons: [] })
             });
             console.log("message edit: затёрто", cmid);
             wiped = true;
@@ -2252,7 +2255,7 @@ async function longPollStep() {
                     if (msg.action) { // сервисное: вход/выход участника и т.п.
                         console.log("action:", msg.action.type, "peer", msg.peer_id, "member", msg.action.member_id ?? "");
                         if (msg.action.type === "chat_invite_user" && msg.action.member_id !== -groupId) {
-                            await messagesSend(msg.peer_id, HELP, 0, msg.conversation_message_id,
+                            await messagesSend(msg.peer_id, helpText(getSettings(msg.peer_id)), 0, msg.conversation_message_id,
                                 (ownerId && msg.action.member_id === ownerId) ? ownerKeyboard() : bellKeyboard());
                         }
                         return;
@@ -2442,7 +2445,7 @@ async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
             console.log("txt drop reply: триггера нет, мимо, peer", peerId);
             return;
         }
-        const rep = cutAndGraft(peerId, anchor, tree);
+        const rep = cutAndGraft(peerId, anchor, tree, getSettings(peerId).trim);
         await messagesSend(peerId, treeReport(rep), msgId, convMsgId);
         console.log("txt tree:", rep.cut !== undefined ? "срезано " + rep.cut + ", " : "", rep.persons, "персон,", rep.links, "детей, peer", peerId);
         return;
@@ -2628,10 +2631,17 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         let kb;
         if (peerId < 2000000000) kb = relKeyboard(peerId);
         else kb = (await isChatAdmin(peerId, fromId)) ? ownerKeyboard() : bellKeyboard();
-        await messagesSend(peerId, HELP, msgId, convMsgId, kb);
+        await messagesSend(peerId, helpText(getSettings(peerId)), msgId, convMsgId, kb);
         return;
     }
     const t = text.trim().toLowerCase();
+    const tm = t.match(/^\/trim([01])(?:@[a-z0-9_]+)?$/);
+    if (tm) {
+        const mode = Number(tm[1]);
+        qr("INSERT INTO settings(chat,trim) VALUES(?,?) ON CONFLICT(chat) DO UPDATE SET trim=excluded.trim", peerId, mode);
+        await messagesSend(peerId, "Импорт: " + (mode ? "инициалы, без мест и примечаний." : "полные данные."), msgId, convMsgId);
+        return;
+    }
     const fm = t.match(/^\/fynny([01])(?:@[a-z0-9_]+)?$/);
     if (fm) {
         const mode = Number(fm[1]);
@@ -2807,7 +2817,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         let kb;
         if (peerId < 2000000000) kb = relKeyboard(peerId);
         else kb = (await isChatAdmin(peerId, fromId)) ? ownerKeyboard() : bellKeyboard();
-        await messagesSend(peerId, HELP, msgId, convMsgId, kb);
+        await messagesSend(peerId, helpText(getSettings(peerId)), msgId, convMsgId, kb);
         return;
     }
     // цитата для родословной росписи -+=: ветвь цитируемого срезана, роспись привита
@@ -3219,6 +3229,10 @@ async function handleEvent(o) {
         // event_id), и «вращение» висит на кнопке до конца работы
         await answerEvent(o.event_id || o.id, o.user_id, peerId,
             payload === "ged:ign" ? "не добавлено" : "идёт замена древа…");
+        if (payload === "ged:ign") {
+            await editOrigin(o, "Файл не добавлен: " + pend.name, JSON.stringify({ inline: true, buttons: [] }));
+            return;
+        }
         // роспись .ged.txt: ЗАМЕНА дерева чата (с резервом — прежнее дерево файлом)
         if (/\.ged\.txt$/i.test(pend.name)) {
             if (payload === "ged:bak" && !(await sendTreeBackup(peerId))) {
@@ -3226,14 +3240,12 @@ async function handleEvent(o) {
                     JSON.stringify({ inline: true, buttons: [] }));
                 return;
             }
+            const tree = parseTree(pend.text);
+            if (getSettings(peerId).trim) trimImport(tree);
             clearChatTree(peerId);
-            const rep = applyTree(peerId, parseTree(pend.text), null);
+            const rep = applyTree(peerId, tree);
             await editOrigin(o, treeReport(rep), JSON.stringify({ inline: true, buttons: [] }));
             console.log("txt replace:", rep.persons, "персон,", rep.links, "детей, peer", peerId);
-            return;
-        }
-        if (payload === "ged:ign") {
-            await editOrigin(o, "Файл не добавлен: " + pend.name, JSON.stringify({ inline: true, buttons: [] }));
             return;
         }
         const g = parseGedcom(pend.text);
@@ -3241,7 +3253,7 @@ async function handleEvent(o) {
             await editOrigin(o, "Файл не добавлен: " + pend.name + " (ждём GEDCOM в UTF-8)", JSON.stringify({ inline: true, buttons: [] }));
             return;
         }
-        const r = await replaceWithGedcom(peerId, g, payload === "ged:bak");
+        const r = await replaceWithGedcom(peerId, getSettings(peerId).trim ? trimImport(g) : g, payload === "ged:bak");
         await editOrigin(o, r.head, JSON.stringify({ inline: true, buttons: [] }));
         console.log("ged replace:", r.head, "peer", peerId);
         return;
@@ -3280,13 +3292,13 @@ async function handleEvent(o) {
         clearChatTree(peerId);
         console.log("deleted", n, "records peer", peerId);
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "удалено событий: " + n);
-        await editOrigin(o, "Удалено событий: " + n + "\n" + HELP, await peerKeyboard(peerId, o.user_id));
+        await editOrigin(o, "Удалено событий: " + n + "\n" + helpText(getSettings(peerId)), await peerKeyboard(peerId, o.user_id));
     } else if (payload === "close") {
         await deleteByCmid(peerId, o.conversation_message_id);
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "закрыто");
     } else if (payload === "del:no") {
         await answerEvent(o.event_id || o.id, o.user_id, peerId, "отмена удаления");
-        await editOrigin(o, HELP, await peerKeyboard(peerId, o.user_id));
+        await editOrigin(o, helpText(getSettings(peerId)), await peerKeyboard(peerId, o.user_id));
     } else if (payload === "bell") {
         // список событий (не родословная роспись -+=): всегда рендер по ММ-ДД,
         // без подписного переключения тапом; список начинается с сегодня —

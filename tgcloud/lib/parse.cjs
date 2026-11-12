@@ -725,8 +725,47 @@ function chatFlatArtifacts(pack) {
     };
 }
 
+// File imports only: strip private fields after parsing/timezone conversion.
+function trimImport(data) {
+    const initials = name => String(name).trim().split(/\s+/u)
+        .map(word => Array.from(word)[0] || '').join('');
+    const strip = rec => {
+        if (!rec) return;
+        delete rec.plac;
+        delete rec.plac2;
+        delete rec.note;
+    };
+    if (data.persons) {
+        const names = new Map(), used = new Map();
+        for (const p of data.persons) {
+            const key = JSON.stringify([p.rec.n, p.rec.d]);
+            if (!names.has(key)) {
+                const name = initials(p.rec.n), collision = JSON.stringify([name, p.rec.d]);
+                const count = (used.get(collision) || 0) + 1;
+                used.set(collision, count);
+                names.set(key, name + (count > 1 ? ' ~trim' + count : ''));
+            }
+            p.rec.n = names.get(key);
+            strip(p.rec);
+            delete p.note;
+        }
+        for (const w of data.weddings) { strip(w.rec); delete w.note; }
+    } else {
+        for (const p of data.indis) {
+            p.name = initials(p.name);
+            delete p.note;
+            for (const event of [p.birt, p.deat, p.buri]) strip(event);
+        }
+        for (const f of data.fams) {
+            delete f.note;
+            strip(f.marr); strip(f.div);
+        }
+    }
+    return data;
+}
+
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
 // NOT_FOR_GRAFT экспортируется: роспись метит платформенный chatFlatText
 // (bot.js для ТГ, инлайн ВК), sendGedArtifacts ВК режет перелив по метке;
 // у bot.js своя идентичная копия как точка реэкспорта для ТГ-хендлеров
-module.exports = { NOT_FOR_GRAFT, chatFlatArtifacts, gedText, gedFictiveDates, gedStats, packToCsv, parseGedcom, parseTree, parseTreeLine, parseTrigger, withGraftMark };
+module.exports = { NOT_FOR_GRAFT, chatFlatArtifacts, gedText, gedFictiveDates, gedStats, packToCsv, parseGedcom, parseTree, parseTreeLine, parseTrigger, trimImport, withGraftMark };
