@@ -6,8 +6,76 @@ import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import { chartRows, chartModel, chartPdf, chartFont, parseTtf } from '../tgcloud/lib/chart.cjs';
 import { focusKeys, focusListKeys } from '../tgcloud/lib/tree.cjs';
+import { createFlatAnnotationText, flatTreeText } from '../tgcloud/lib/flat.cjs';
 
 const tmp = fs.mkdtempSync('/tmp/kilo/lr-pdf-radius-');
+{
+    const persons = [
+        { key: 'father', name: 'Отец', d: '1950-01-01', sex: 'M' },
+        { key: 'mother', name: 'Тёзка', sex: 'F', nameOnly: true, note: 'Первая' },
+        { key: 'other', name: 'Тёзка', sex: 'F', nameOnly: true, note: 'Вторая' },
+        { key: 'child', name: 'Ребёнок', d: '1980-01-01', sex: 'M', plac: 'Пермь' },
+        { key: 'grandchild', name: 'Внук', d: '2000-01-01' },
+        { key: 'alone', name: 'Один', d: '1900-01-01' },
+    ];
+    const fams = [{ hKey: 'father', wKey: 'mother', children: ['child'], marr: { d: '1970-01-01' } }];
+    const snapshot = JSON.stringify([persons, fams]);
+    const textOf = createFlatAnnotationText([persons, fams], [['Ребёнок 1980-01-01', 'Внук 2000-01-01']], []);
+    const mother = textOf({ xref: 'mother' });
+    assert.match(mother, /Отец/);
+    assert.match(mother, /Ребёнок/);
+    assert.match(mother, /Первая/);
+    assert.doesNotMatch(mother, /Вторая|Внук/);
+    assert.match(textOf({ xref: 'other' }), /Вторая/);
+    assert.doesNotMatch(textOf({ xref: 'other' }), /Первая|Ребёнок/);
+    assert.match(textOf({ xref: 'child' }), /Внук/, 'relatives outside PDF and interactive edges retained');
+    assert.equal(textOf({ xref: 'alone' }), flatTreeText([persons[5]], [], true));
+    assert.equal(JSON.stringify([persons, fams]), snapshot, 'snapshot unchanged');
+    const dated = persons.filter(p => ['father', 'child', 'grandchild'].includes(p.key));
+    const allPairs = [['Отец 1950-01-01', 'Ребёнок 1980-01-01'], ['Ребёнок 1980-01-01', 'Внук 2000-01-01']];
+    const datedText = createFlatAnnotationText([dated, []], allPairs, []);
+    const keys = focusListKeys(allPairs, [], 'Отец 1950-01-01', 1, () => null, false);
+    assert.equal(datedText({ xref: 'father' }), flatTreeText(dated.filter(p => keys.includes(p.name + ' ' + p.d)), [], true));
+}
+function checkAnnotations(pdf, expectedCount) {
+    const objects = new Map([...pdf.matchAll(/(?:^|\n)(\d+) 0 obj\n([\s\S]*?)\nendobj/g)]
+        .map(m => [+m[1], m[2]]));
+    const annots = [...objects].filter(([, body]) => body.includes('/Type /Annot'));
+    assert.equal(annots.length, expectedCount);
+    const refs = new Set();
+    for (const [pageId, page] of objects) {
+        if (!/\/Type \/Page\b/.test(page)) continue;
+        for (const match of (page.match(/\/Annots \[([^\]]*)\]/)?.[1] || '').matchAll(/(\d+) 0 R/g)) {
+            const id = +match[1], body = objects.get(id);
+            assert.ok(!refs.has(id), 'annotation belongs to exactly one page');
+            refs.add(id);
+            assert.ok(body.includes('/P ' + pageId + ' 0 R'));
+            const rect = body.match(/\/Rect \[([^\]]+)\]/)[1].split(' ').map(Number);
+            assert.ok(rect[0] > 0 && rect[2] > rect[0] && rect[2] <= 842, 'connection region stays inside chart');
+            assert.ok(rect[1] >= 0 && rect[3] <= 595 && rect[3] > rect[1]);
+            const contents = objects.get(+body.match(/\/Contents (\d+) 0 R/)[1]);
+            assert.match(contents, /^<FEFF[\da-f]*>$/);
+            const bytes = Buffer.from(contents.slice(5, -1), 'hex');
+            const text = bytes.swap16().toString('utf16le');
+            assert.ok(text.length);
+            assert.ok(!text.includes('#not for cut and graft'));
+            const ap = body.match(/\/AP << \/N (\d+) 0 R >>/);
+            assert.match(objects.get(+ap[1]), /\/Length 0/);
+            assert.doesNotMatch(body, /\/R \d+ 0 R/, 'no rollover appearance');
+            assert.match(body, /\/F 0\b/);
+        }
+    }
+    assert.equal(refs.size, expectedCount);
+    const start = +pdf.match(/startxref\n(\d+)/)[1];
+    assert.equal(pdf.slice(start, start + 5), 'xref\n');
+    const lines = pdf.slice(start).split('\n');
+    const size = +lines[1].split(' ')[1];
+    for (let id = 1; id < size; id++) {
+        const offset = +lines[id + 2].slice(0, 10);
+        assert.ok(pdf.startsWith(id + ' 0 obj\n', offset), 'valid xref for ' + id);
+    }
+    return annots;
+}
 // Every page repeats the axis; the final one follows the last person row.
 for (const count of [1, 44, 45, 100]) {
     const rows = Array.from({ length: count }, (_, i) => ({
@@ -16,7 +84,18 @@ for (const count of [1, 44, 45, 100]) {
     const file = path.join(tmp, 'page-axis-' + count + '.pdf');
     const scale = 842 / chartModel('Page axis', rows, []).W;
     const bodyBottom = 595 - 42 * scale;
-    fs.writeFileSync(file, chartPdf('Page axis', rows, [], chartFont()), 'latin1');
+    const annotation = 'Роспись (тест) \\ строка\n=Персона \u{1f600}';
+    const pdf = chartPdf('Page axis', rows, [], chartFont(), null, null, () => annotation);
+    const targets = checkAnnotations(pdf, count);
+    const model = chartModel('Page axis', rows, []);
+    const bars = model.draws.filter(d => d.k === 'rrect');
+    for (const [i, [, body]] of targets.entries()) {
+        const rect = body.match(/\/Rect \[([^\]]+)\]/)[1].split(' ').map(Number);
+        assert.ok(Math.abs(rect[0] - bars[i].x * scale) < 0.001, 'target begins at bar start');
+        assert.ok(Math.abs(rect[2] - rect[0] - 16 * scale) < 0.002, 'wide touch target');
+        assert.ok(Math.abs(rect[3] - rect[1] - 16 * scale) < 0.002, 'full row height target');
+    }
+    fs.writeFileSync(file, pdf, 'latin1');
     const bbox = spawnSync('pdftotext', ['-bbox', file, '-'], { encoding: 'utf8' });
     assert.equal(bbox.status, 0, bbox.stderr);
     const pages = [...bbox.stdout.matchAll(/<page\b[^>]*>([\s\S]*?)<\/page>/g)];
@@ -47,7 +126,65 @@ for (const count of [1, 44, 45, 100]) {
     assert.deepEqual(people.sort(), rows.map(r => r.name).sort(), 'all people exactly once');
     console.log('Page axis: ' + count + ' people, ' + pages.length + ' pages OK');
 }
+{
+    let calls = 0;
+    const rows = Array.from({ length: 1001 }, (_, i) => ({ name: 'Limit' + i, birth: (1000 + i) + '-01-01' }));
+    const links = [{ child: 'Limit1000 2000-01-01', parents: ['Limit1 1001-01-01'] },
+        { child: 'Limit2 1002-01-01', parents: ['Limit0 1000-01-01'] }];
+    const annotation = 'Роспись (тест) \\ строка\n=Персона \u{1f600}';
+    const pdf = chartPdf('Limit', rows, links, chartFont(), null, null, r => {
+        calls++; assert.notEqual(r.name, 'Limit0'); return annotation;
+    });
+    const annots = [...pdf.matchAll(/\/Type \/Annot\b/g)].length;
+    assert.ok(annots > 1, 'long connection split between pages');
+    const checked = checkAnnotations(pdf, annots);
+    assert.equal(calls, 1000, 'each retained person computes annotation once, including connected child');
+    assert.equal(new Set(checked.map(([, b]) => b.match(/\/Contents (\d+) 0 R/)[1])).size, 1);
+    const id = checked[0][1].match(/\/Contents (\d+) 0 R/)[1];
+    const encoded = pdf.match(new RegExp('\\n' + id + ' 0 obj\\n<FEFF([a-f0-9]+)>'))[1];
+    assert.equal(Buffer.from(encoded, 'hex').swap16().toString('utf16le'), annotation);
+    const model = chartModel('Limit', rows, links);
+    const region = model.annotationRegions[0], scale = 842 / model.W;
+    assert.equal(region.w, 1.5, 'connection width matches line width');
+    assert.ok(model.annotationRegions.slice(1, 3).every(r => r.w === 7 && r.h === 7), 'separate point targets');
+    for (const [, body] of checked.slice(0, checked.length - 1000)) {
+        const rect = body.match(/\/Rect \[([^\]]+)\]/)[1].split(' ').map(Number);
+        const width = (rect[2] - rect[0]) / scale;
+        assert.ok(Math.abs(width - 1.5) < 0.003 || Math.abs(width - 7) < 0.003);
+        if (Math.abs(width - 1.5) < 0.003) {
+            assert.ok(Math.abs(rect[0] - region.x * scale) < 0.001);
+            assert.ok(Math.abs(rect[2] - (region.x + region.w) * scale) < 0.001);
+        }
+    }
+    const distinct = chartPdf('Own R1', rows.slice(0, 2), [], chartFont(), null, null, r => r.name);
+    const own = checkAnnotations(distinct, 2);
+    assert.equal(new Set(own.map(([, b]) => b.match(/\/Contents (\d+) 0 R/)[1])).size, 2,
+        'bar-start targets have individual contents');
+}
 // Independent measurement of the actual PDF /W advances, including Cyrillic.
+{
+    const rows = [{ name: 'Parent', birth: '1950-01-01' }];
+    const a = { name: 'OutsideA', xref: 'a', birth: '1980-01-01' }, b = { name: 'OutsideB', xref: 'b' };
+    for (const parents of [rows, [...rows, { name: 'Mother', birth: '1952-01-01' }]]) {
+        const rel = { phantoms: [{ fam: parents.map(r => r.name + ' ' + r.birth), years: [1980],
+            children: [{ year: 1980, r: a }, { year: 1980, r: b }] }] };
+        const model = chartModel('Phantom annotations', parents, [], rel);
+        assert.equal(model.annotationRegions[0].r, a, 'one child represents the phantom family');
+        assert.equal(model.annotationRegions[0].w, 1.5);
+        assert.ok(model.annotationRegions.slice(1, 1 + parents.length).every(r => r.w === 7 && r.h === 7));
+        const pdf = chartPdf('Phantom annotations', parents, [], chartFont(), rel, null,
+            r => {
+                assert.notEqual(r.xref, 'b', 'do not concatenate twin genealogies');
+                return r.xref ? 'R1 ' + r.xref + '^Note' : 'Own ' + r.name;
+            });
+        const annotations = checkAnnotations(pdf, 2 * parents.length + 1);
+        const title = annotations[0][1].match(/\/T <FEFF([a-f0-9]+)>/)[1];
+        assert.equal(Buffer.from(title, 'hex').swap16().toString('utf16le'), 'OutsideA 1980-01-01');
+        const id = annotations[0][1].match(/\/Contents (\d+) 0 R/)[1];
+        const encoded = pdf.match(new RegExp('\\n' + id + ' 0 obj\\n<FEFF([a-f0-9]+)>'))[1];
+        assert.equal(Buffer.from(encoded, 'hex').swap16().toString('utf16le'), 'R1 a\nNote');
+    }
+}
 const font = parseTtf(chartFont()), cmap = new Map(font.cmap);
 const textWidth = (s, size = 10) => [...s].reduce((w, c) => {
     const gid = cmap.get(c.codePointAt(0));
@@ -223,6 +360,10 @@ for (const exact of [false, true, 3, 4, 5, 'Husband', 'Wife']) {
                 ged = body.slice(body.indexOf('\r\n\r\n') + 4, body.lastIndexOf('\r\n--'));
             }
         }
+        const pdfBody = fs.readFileSync(pdf, 'latin1');
+        const countAnnotations = [...pdfBody.matchAll(/\/Type \/Annot\b/g)].length;
+        assert.ok(countAnnotations > 0, 'real bot export has annotations');
+        checkAnnotations(pdfBody, countAnnotations);
         const text = spawnSync('pdftotext', ['-layout', pdf, '-'], { encoding: 'utf8' });
         assert.equal(text.status, 0, text.stderr);
         if (policy) {

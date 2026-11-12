@@ -19,6 +19,7 @@
 const {FONT_B64} = require('./font-cyr.cjs');
 const {fynny, kinLabel} = require('./kinship.cjs');
 const {focusKeys} = require('./tree.cjs');
+const {approxOut} = require('./text.cjs');
 
 // Called after adapter additions (including anchored dateless spouses).
 // The label cache belongs to this render and is reused by chartModel.
@@ -277,6 +278,7 @@ function chartModel(title, rows, links, rel = null, marriages = null,
     const famOf = new Map();        // fam → номер появления
     const famYears = new Map();     // fam → годы рождения её детей
     const famStr = l => [...l.parents].sort().join(" и ");
+    const annotationRegions = [];
     for (const l of links) {
         const fam = famStr(l);
         const y = yrOf(byKey.get(l.child));
@@ -296,7 +298,8 @@ function chartModel(title, rows, links, rel = null, marriages = null,
             for (const yr of ph.years || [])
                 if (Number.isFinite(yr)) {
                     famYears.get(fam).add(yr);
-                    phantom.push({ fam, year: yr, a: ks[0], b: ks[1] ?? null });
+                    phantom.push({ fam, year: yr, a: ks[0], b: ks[1] ?? null,
+                        r: (ph.children || []).find(c => c.year === yr)?.r });
                     allYears.push(yr);
                 }
         }
@@ -385,7 +388,8 @@ function chartModel(title, rows, links, rel = null, marriages = null,
             draws.push({ k: "line", x1: KW - 6, y1: cy, x2: lnEnd, y2: cy, stroke: "#bbbbbb", w: 1 });
         // имя героя чарта — жирным
         draws.push({ k: "text", x: x1 - 6, y: cy + 3.5, s: p.r.name, size: 10, fill: "#111111", anchor: "end", bold: rel != null && p.key === rel.hero });
-        draws.push({ k: "rrect", x: x1, y: cy - BAR_H / 2, w: Math.max(2, x2 - x1), h: BAR_H, r: 2, fill: bar });
+        p.bar = { x: x1, y: cy - BAR_H / 2, w: Math.max(2, x2 - x1), h: BAR_H };
+        draws.push({ k: "rrect", ...p.bar, r: 2, fill: bar });
         if (p.dy !== null && p.r.birth != null && (p.r.abt ?? 0) < 15) // известная смерть — N прожитых лет за баром (у фиктивной ДР abt>=15, EST — не пишем)
             draws.push({ k: "text", x: x2 + 4, y: cy + 3.5, s: String(p.dy - p.yr), size: 10, fill: bar });
     }
@@ -434,6 +438,11 @@ function chartModel(title, rows, links, rel = null, marriages = null,
         // слот семьи в этом году — толщина линии на семью вправо от линии года
         const x = xS(y) + 1.5 * slotOf.get(fam + "\0" + y);
         const chY = ch0.cy;
+        const ys = [...ps.map(p => p.cy), chY];
+        annotationRegions.push({ r: ch0.r, x: x - 0.75, y: Math.min(...ys),
+            w: 1.5, h: Math.max(...ys) - Math.min(...ys) });
+        for (const cy of new Set(ys))
+            annotationRegions.push({ r: ch0.r, x: x - 3.5, y: cy - 3.5, w: 7, h: 7 });
         // прямая между двумя родителями и к ребёнку — всегда вертикали на x семьи
         if (ps.length === 2 && ps[0].cy !== ps[1].cy)
             draws.push({ k: "line", x1: x, y1: ps[0].cy, x2: x, y2: ps[1].cy, stroke: col, w: 1.5 });
@@ -456,6 +465,14 @@ function chartModel(title, rows, links, rel = null, marriages = null,
         const kk = ph.fam + "\0" + ph.year;
         const x = xS(ph.year) + 1.5 * slotOf.get(kk);
         const p1 = rowOf.get(ph.a), p2 = ph.b != null ? rowOf.get(ph.b) : null;
+        if (ph.r) {
+            const y0 = Math.min(p1.cy, p2?.cy ?? p1.cy);
+            const y1 = Math.max(p1.cy, p2?.cy ?? p1.cy) + 8;
+            if (!p2 || p1.cy !== p2.cy)
+                annotationRegions.push({ r: ph.r, x: x - 0.75, y: y0, w: 1.5, h: y1 - y0 });
+            for (const cy of new Set([p1.cy, p2?.cy ?? p1.cy]))
+                annotationRegions.push({ r: ph.r, x: x - 3.5, y: cy - 3.5, w: 7, h: 7 });
+        }
         if (!p2) { // второй супруг вне чарта — точка + зарубка вниз от бара
             draws.push({ k: "dot", x, y: p1.cy, r: 3.5, fill: col });
             draws.push({ k: "line", x1: x, y1: p1.cy, x2: x, y2: p1.cy + 8, stroke: col, w: 1.5 });
@@ -480,7 +497,10 @@ function chartModel(title, rows, links, rel = null, marriages = null,
         }
         draws.push({ k: "line", x1: x, y1: p1.cy, x2: x, y2: p2.cy, stroke: famColor(mg.fam), w: 1.5 });
     }
-    return { title, W, H, KW, draws };
+    // Put person targets last: at a parent's bar start, prefer their own R1.
+    for (const p of people)
+        annotationRegions.push({ r: p.r, x: p.bar.x, y: p.cy - ROW_H / 2, w: 16, h: ROW_H });
+    return { title, W, H, KW, draws, annotationRegions };
 }
 
 // имя файла (без расширения) из заголовка: убрать эмодзи/не-BMP и символы,
@@ -500,7 +520,7 @@ function fileBaseOf(head) {
 
 // диаграмма → PDF (строка latin1, байт на символ): страницы A4 landscape
 // режут единое полотно чарта на горизонтальные полосы (Form XObject + клип)
-function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null) {
+function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, annotationText = null) {
     const f = parseTtf(fontBytes);
     const glyphs = fontGlyphs(f);
     const m = chartModel(title, rows, links, rel, marriages, glyphs);
@@ -592,11 +612,48 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null) {
     const f3 = chartObj + 4;             // FontFile2 (TTF как есть)
     const f4 = chartObj + 5;             // ToUnicode — поиск/копирование текста
     const axisObj = chartObj + 6;
+    // PDF text strings are UTF-16BE, independent of the chart's embedded font.
+    const pdfString = text => {
+        let hex = "FEFF";
+        for (let i = 0; i < text.length; i++) hex += text.charCodeAt(i).toString(16).padStart(4, "0");
+        return "<" + hex + ">";
+    };
+    let lastObj = axisObj;
+    const extra = [];
+    const add = body => { const id = ++lastObj; extra.push([id, body]); return id; };
+    const texts = new Map();
+    const annotations = Array.from({ length: pages }, () => []);
+    if (annotationText) {
+        const normal = add("<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << >> /Length 0 >>\nstream\n\nendstream");
+        const textOf = new Map();
+        for (const p of m.annotationRegions) {
+            if (!textOf.has(p.r)) textOf.set(p.r, annotationText(p.r)?.replace(/\^/g, "\n"));
+            const text = textOf.get(p.r);
+            if (!text) continue;
+            let contents = texts.get(text);
+            if (contents == null) { contents = add(pdfString(text)); texts.set(text, contents); }
+            // Connections can cross several page bands, unlike person rows.
+            for (let page = 0; page < pages; page++) {
+                const y0 = Math.max(p.y, bands[page]), y1 = Math.min(p.y + p.h, bands[page + 1]);
+                if (y1 <= y0) continue;
+                const bottom = PAGE_H - s * (y1 - bands[page]);
+                const top = PAGE_H - s * (y0 - bands[page]);
+                const id = add("<< /Type /Annot /Subtype /Square /P " + (3 + 2 * page) + " 0 R"
+                    + " /Rect [" + n(s * p.x) + " " + n(bottom) + " " + n(s * (p.x + p.w)) + " " + n(top) + "]"
+                    + " /Border [0 0 0] /BS << /W 0 >> /F 0"
+                    + " /T " + pdfString(p.r.name + (p.r.birth != null ? " " + approxOut(p.r.birth, p.r.abt ?? 0) : ""))
+                    + " /Contents " + contents + " 0 R"
+                    + " /AP << /N " + normal + " 0 R >> >>");
+                annotations[page].push(id + " 0 R");
+            }
+        }
+    }
     for (let i = 0; i < pages; i++) {
         const band = bands[i + 1] - bands[i];        // высота полосы, единицы чарта
         const axisY = i === pages - 1 ? Math.max(0, PAGE_H - s * (band + footer)) : 0;
         obj(3 + 2 * i, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + PAGE_W + " " + PAGE_H + "]"
-            + " /Resources << /XObject << /C " + chartObj + " 0 R /A " + axisObj + " 0 R >> >> /Contents " + (4 + 2 * i) + " 0 R >>");
+            + " /Resources << /XObject << /C " + chartObj + " 0 R /A " + axisObj + " 0 R >> >> /Contents " + (4 + 2 * i) + " 0 R"
+            + (annotations[i].length ? " /Annots [" + annotations[i].join(" ") + "]" : "") + " >>");
         stream(4 + 2 * i, "",
             "q\n0 " + n(PAGE_H - s * band) + " " + PAGE_W + " " + n(s * band) + " re W n\n"
             + n(s) + " 0 0 " + n(s) + " 0 " + n(PAGE_H - s * (m.H - bands[i])) + " cm\n/C Do\nQ\n"
@@ -639,11 +696,12 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null) {
     stream(f4, "", tu.join("\n"));
     stream(axisObj, "/Type /XObject /Subtype /Form /BBox [0 0 " + n(m.W) + " " + footer + "]"
         + " /Resources << /Font << /F1 " + f0 + " 0 R >> >>", axis);
+    for (const [id, body] of extra) obj(id, body);
     const xref = len;
-    push("xref\n0 " + (axisObj + 1) + "\n0000000000 65535 f \n");
-    for (let i = 1; i <= axisObj; i++)
+    push("xref\n0 " + (lastObj + 1) + "\n0000000000 65535 f \n");
+    for (let i = 1; i <= lastObj; i++)
         push(String(off[i]).padStart(10, "0") + " 00000 n \n");
-    push("trailer\n<< /Size " + (axisObj + 1) + " /Root 1 0 R >>\nstartxref\n" + xref + "\n%%EOF");
+    push("trailer\n<< /Size " + (lastObj + 1) + " /Root 1 0 R >>\nstartxref\n" + xref + "\n%%EOF");
     return parts.join("");
 }
 

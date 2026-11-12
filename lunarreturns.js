@@ -74,7 +74,7 @@ const { HELP, approxOut, findShownRecord } = reqLib("text");
 // ТГ-копия напрямую из bot.js (`import … from './flat.cjs'`, как tree.cjs); правки — только в .cjs.
 const {
     flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey,
-    treeReport, rootOf, searchHead, cutLines} = reqLib("flat");
+    treeReport, rootOf, searchHead, cutLines, createFlatAnnotationText} = reqLib("flat");
 
 
 // ============================== ВЫВОД ==============================
@@ -1539,10 +1539,14 @@ function branchFlatText(peerId, key) {
 const ckey = k => k;
 
 function chartFor(peerId, keys, title, heroKey = null, range = null) {
+    const snapshot = flatRows(peerId);
+    const pairs = linkPairs(peerId), spousePairs = focusSpousePairs(peerId);
+    const annotationText = createFlatAnnotationText(snapshot, pairs, spousePairs);
+    const xOf = new Map(snapshot[0].filter(p => p.d != null).map(p => [p.name + " " + p.d, p.key]));
     const hasKeys = Array.isArray(keys) && keys.length > 0;
     const recs = personRows(peerId).filter(r => !hasKeys || keys.includes(pkey(r)));
     const keySet = new Set(recs.map(r => pkey(r)));
-    let rows = recs.map(r => ({ name: r.n, birth: r.d, death: r.dd || null, sex: r.sex || null, abt: r.abt ?? 0 }));
+    let rows = recs.map(r => ({ xref: xOf.get(pkey(r)), name: r.n, birth: r.d, death: r.dd || null, sex: r.sex || null, abt: r.abt ?? 0 }));
     const stubSpouses = [];
     // якоря бездатных: год ДР датированного супруга (первой семьи по порядку)
     const stubs = qa("SELECT xref,name,deat_d,sex FROM indi WHERE chat=? AND birt_d IS NULL AND name!=''", peerId);
@@ -1570,7 +1574,7 @@ function chartFor(peerId, keys, title, heroKey = null, range = null) {
         taken.add(k);
         stubSpouses.push([an.spKey, k]);
         if (!famStubKey.has(an.fam)) famStubKey.set(an.fam, k);
-        rows.push({ name: s.name, k, birth: null, anchor: an.yr, death: s.deat_d || null, sex: s.sex || null });
+        rows.push({ xref: x, name: s.name, k, birth: null, anchor: an.yr, death: s.deat_d || null, sex: s.sex || null });
     }
     // родители ребёнка: датированные, вошедшие в чарт + бездатный супруг
     // (свой ключ «Имя якорь»); fill ds/sk, ключ бездатного не под ckey
@@ -1596,8 +1600,8 @@ function chartFor(peerId, keys, title, heroKey = null, range = null) {
         hero,
         range,
         fynny: getSettings(peerId).fynny,
-        pairs: linkPairs(peerId).map(([p, c]) => [ckey(p), ckey(c)]),
-        spouses: [...focusSpousePairs(peerId).map(sp => sp.map(ckey)), ...stubSpouses],
+        pairs: pairs.map(([p, c]) => [ckey(p), ckey(c)]),
+        spouses: [...spousePairs.map(sp => sp.map(ckey)), ...stubSpouses],
         sex: Object.fromEntries([...personRows(peerId).map(r => [pkey(r), r.sex || null]),
             ...rows.filter(r => r.k).map(r => [r.k, r.sex])]),
     } : null;
@@ -1629,9 +1633,14 @@ function chartFor(peerId, keys, title, heroKey = null, range = null) {
             marriages.push({ fam: pair, year: Number(f.marr.d.slice(0, 4)) });
         const yrs = [...new Set(f.children.filter(c => !keySet.has(c) && bornOf.has(c))
             .map(c => Number(bornOf.get(c).slice(0, 4))))].sort((a, b) => a - b);
-        if (yrs.length) phantoms.push({ fam: pair, years: yrs });
+        if (yrs.length) phantoms.push({ fam: pair, years: yrs,
+            children: f.children.filter(c => !keySet.has(c) && bornOf.has(c)).map(c => ({
+                year: Number(bornOf.get(c).slice(0, 4)),
+                r: { xref: xOf.get(c), name: snapshot[0].find(p => p.key === xOf.get(c))?.name || c,
+                    birth: bornOf.get(c), abt: snapshot[0].find(p => p.key === xOf.get(c))?.abt ?? 0 },
+            })) });
     }
-    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages), persons: Math.min(rows.length, CHART_MAX) };
+    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages, annotationText), persons: Math.min(rows.length, CHART_MAX) };
 }
 
 // загрузка документа на серверы VK (docs… — файлы любого типа); сервер загрузки

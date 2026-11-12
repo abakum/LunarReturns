@@ -14,7 +14,7 @@ import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusW
 // чистые функции родословной росписи -+= — общий канон tgcloud/lib/flat.cjs
 // (волна A2): handlers берут flatSearch/flatHitKey/treeReport реэкспортом
 // ниже; правки — только в .cjs
-import { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, treeReport, rootOf, cutLines } from './flat.cjs';
+import { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, treeReport, rootOf, cutLines, createFlatAnnotationText } from './flat.cjs';
 // реэкспорт: точки импорта handlers не менялись с волны A
 export { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, treeReport, rootOf } from './flat.cjs';
 export { searchHead, cutLines } from './flat.cjs';
@@ -1460,10 +1460,14 @@ import { CHART_MAX, chartPdf, chartRows, chartFont, fileBaseOf, rangeLevel } fro
 // персон — строками с якорем (бар от года ДР супруга, колонка года пустая);
 // без датированного супруга — не рисуются
 export async function chartFor(chatId, keys, title, heroKey = null, range = null) {
+    const snapshot = await flatRows(chatId);
+    const pairs = await linkPairs(chatId), spousePairs = await focusSpousePairs(chatId);
+    const annotationText = createFlatAnnotationText(snapshot, pairs, spousePairs);
+    const xOf = new Map(snapshot[0].filter(p => p.d != null).map(p => [p.name + " " + p.d, p.key]));
     const hasKeys = Array.isArray(keys) && keys.length > 0;
     const persons = (await personRows(chatId)).filter(r => !hasKeys || keys.includes(pkey(r)));
     const keySet = new Set(persons.map(r => pkey(r)));
-    let rows = persons.map(r => ({ name: r.n, birth: r.d, death: r.dd || null, sex: r.sex || null, abt: r.abt ?? 0 }));
+    let rows = persons.map(r => ({ xref: xOf.get(pkey(r)), name: r.n, birth: r.d, death: r.dd || null, sex: r.sex || null, abt: r.abt ?? 0 }));
     const stubSpouses = [];
     // якоря бездатных: год ДР датированного супруга (первой семьи по порядку)
     const stubs = (await indiRows(chatId)).filter(r => r.birtD == null && r.name !== "");
@@ -1491,7 +1495,7 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
         taken.add(k);
         stubSpouses.push([an.spKey, k]);
         if (!famStubKey.has(an.fam)) famStubKey.set(an.fam, k);
-        rows.push({ name: s.name, k, birth: null, anchor: an.yr, death: s.deatD || null, sex: s.sex || null });
+        rows.push({ xref: x, name: s.name, k, birth: null, anchor: an.yr, death: s.deatD || null, sex: s.sex || null });
     }
     // родители ребёнка: датированные, вошедшие в чарт + бездатный супруг
     // (свой ключ «Имя якорь»); fill ds/sk, ключ бездатного не под ckey
@@ -1520,8 +1524,8 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
         hero,
         range,
         fynny: (await getSettings(chatId)).fynny,
-        pairs: (await linkPairs(chatId)).map(([p, c]) => [ckey(p), ckey(c)]),
-        spouses: [...(await focusSpousePairs(chatId)).map(sp => sp.map(ckey)), ...stubSpouses],
+        pairs: pairs.map(([p, c]) => [ckey(p), ckey(c)]),
+        spouses: [...spousePairs.map(sp => sp.map(ckey)), ...stubSpouses],
         sex: Object.fromEntries([...(await personRows(chatId)).map(r => [pkey(r), r.sex || null]),
             ...rows.filter(r => r.k).map(r => [r.k, r.sex])]),
     } : null;
@@ -1553,9 +1557,14 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
             marriages.push({ fam: pair, year: Number(f.marr.d.slice(0, 4)) });
         const yrs = [...new Set(f.children.filter(c => !keySet.has(c) && bornOf.has(c))
             .map(c => Number(bornOf.get(c).slice(0, 4))))].sort((a, b) => a - b);
-        if (yrs.length) phantoms.push({ fam: pair, years: yrs });
+        if (yrs.length) phantoms.push({ fam: pair, years: yrs,
+            children: f.children.filter(c => !keySet.has(c) && bornOf.has(c)).map(c => ({
+                year: Number(bornOf.get(c).slice(0, 4)),
+                r: { xref: xOf.get(c), name: snapshot[0].find(p => p.key === xOf.get(c))?.name || c,
+                    birth: bornOf.get(c), abt: snapshot[0].find(p => p.key === xOf.get(c))?.abt ?? 0 },
+            })) });
     }
-    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages), persons: Math.min(rows.length, CHART_MAX) };
+    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages, annotationText), persons: Math.min(rows.length, CHART_MAX) };
 }
 
 // тап 🧬 / «/gedcom» / «/gedcomN»: <имя>.ged всегда, <имя>.pdf (диаграмма,

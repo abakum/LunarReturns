@@ -12,7 +12,7 @@ const kids = '-Родитель 1950-01-01\\n+1970-02-28\\nСупруга 1952-0
 const huge = Array.from({ length: 180 }, (_, i) => '-Тестовый' + String(i).padStart(3, '0') + ' Длинное Имя Для Переполнения 2000-01-01').join('\\n');
 // REPL проверяет видимые правки; дополнительно фиксируем await до построения списка.
 const tgCallback = fs.readFileSync(new URL('../tgcloud/handlers/callback_query.js', import.meta.url), 'utf8');
-assert.match(tgCallback, /await api\.editMessageText\([\s\S]*?text: head \+ "\\n" \+ loading[\s\S]*?\)\.catch\([^\n]*\);\s*let text;\s*try \{\s*const sex = await sexOf\(\);\s*const keys = focusListKeys/);
+assert.match(tgCallback, /await api\.editMessageText\([\s\S]*?text: head \+ "\\n" \+ loading[\s\S]*?\)\.catch\([^\n]*\);\s*let text;\s*try \{\s*const sex = await sexOf\(\);\s*const s = await getSettings\(chatId\);\s*const keys = focusListKeys/);
 const vkSource = fs.readFileSync(new URL('../lunarreturns.js', import.meta.url), 'utf8');
 assert.match(vkSource, /await vkApi\("messages.edit", \{\s*peer_id: peerId,[\s\S]*?message: head \+ "\\n" \+ loading, keyboard: kb\s*\}\)\.catch\([^\n]*\);\s*let text;\s*try \{\s*const txt = focusText/);
 // Сетевая ошибка на любом этапе загрузки повторяется, постоянная save-ошибка нет.

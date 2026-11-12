@@ -16,6 +16,7 @@
 // Экспорт shorthand-объектом — cjs-module-lexer (ESM-шим/reqLib).
 
 const { approxOut } = require('./text.cjs');
+const { focusListKeys } = require('./tree.cjs');
 
 // ключ персоны «Имя Д» — дословно как в копиях (lunarreturns.js, bot.js:
 // там DB-тиры держат собственный; здесь у flatHitKey своя, дословная)
@@ -306,6 +307,38 @@ function flatSearch(flat, query) {
     });
 }
 
+// Full-chat snapshot; chart keys (especially anchored stubs) are not identities.
+// Textual edge endpoints are usable only when they resolve unambiguously.
+function createFlatAnnotationText([persons, fams], linkPairs, focusSpousePairs) {
+    const byXref = new Map(persons.map(p => [p.key, p]));
+    const xOf = new Map();
+    for (const p of persons) {
+        if (p.d == null) continue;
+        const k = p.name + " " + p.d;
+        xOf.set(k, xOf.has(k) ? null : p.key);
+    }
+    const pairs = [], spouses = [], seenPairs = new Set(), seenSpouses = new Set();
+    const put = (out, seen, a, b, undirected = false) => {
+        if (a == null || b == null || !byXref.has(a) || !byXref.has(b)) return;
+        const k = JSON.stringify(undirected ? [a, b].sort() : [a, b]);
+        if (!seen.has(k)) { seen.add(k); out.push([a, b]); }
+    };
+    for (const f of fams) {
+        put(spouses, seenSpouses, f.hKey, f.wKey, true);
+        for (const c of f.children)
+            for (const p of [f.hKey, f.wKey]) put(pairs, seenPairs, p, c);
+    }
+    for (const [p, c] of linkPairs) put(pairs, seenPairs, xOf.get(p), xOf.get(c));
+    for (const [a, b] of focusSpousePairs) put(spouses, seenSpouses, xOf.get(a), xOf.get(b), true);
+    return function annotationText(row) {
+        if (!byXref.has(row.xref)) return "";
+        const keys = new Set(focusListKeys(pairs, spouses, row.xref, 1,
+            k => byXref.get(k)?.sex ?? null, false));
+        return flatTreeText(persons.filter(p => keys.has(p.key)), fams.filter(f =>
+            [f.hKey, f.wKey, ...f.children].some(k => k != null && keys.has(k))), true);
+    };
+}
+
 // строку-попадание поиска «/Имя» в персону {n, d}: маркеры сняты, хвост
 // (даты/время, место «(…)», примечание «^…») отрезается — имя до первого
 // такого токена; строка свадьбы («+…» или начинающаяся с даты/места)
@@ -372,4 +405,4 @@ function cutLines(text, budget, reserved = 0, joinReserve = true) {
     return acc;
 }
 
-module.exports = { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, searchHead, cutLines, datePlusYears, treeReport, rootOf };
+module.exports = { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, searchHead, cutLines, datePlusYears, treeReport, rootOf, createFlatAnnotationText };
