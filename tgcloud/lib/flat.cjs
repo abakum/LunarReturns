@@ -312,6 +312,17 @@ function flatSearch(flat, query) {
 // Full-chat snapshot; chart keys (especially anchored stubs) are not identities.
 // Textual edge endpoints are usable only when they resolve unambiguously.
 function createFlatAnnotationText([persons, fams], linkPairs, focusSpousePairs) {
+    const shortPlace = place => {
+        if (!place) return place;
+        const words = place.split(/\s+/).map(word => word.replace(/^,+|,+$/g, "")).filter(Boolean);
+        return words.length > 1 ? words[0] + "…" + words.at(-1) : (words[0] || "");
+    };
+    // PDF-only copies: keep full places in the snapshot and text exports.
+    persons = persons.map(p => ({ ...p, plac: shortPlace(p.plac), dp: shortPlace(p.dp) }));
+    fams = fams.map(f => ({ ...f,
+        marr: f.marr ? { ...f.marr, plac: shortPlace(f.marr.plac) } : f.marr,
+        div: f.div ? { ...f.div, plac: shortPlace(f.div.plac) } : f.div,
+    }));
     const byXref = new Map(persons.map(p => [p.key, p]));
     const xOf = new Map();
     for (const p of persons) {

@@ -37,6 +37,35 @@ const tmp = fs.mkdtempSync('/tmp/kilo/lr-pdf-radius-');
     const keys = focusListKeys(allPairs, [], 'Отец 1950-01-01', 1, () => null, false);
     assert.equal(datedText({ xref: 'father' }), flatTreeText(dated.filter(p => keys.includes(p.name + ' ' + p.d)), [], true));
 }
+{
+    const persons = [
+        { key: 'a', name: 'Person', d: '1950-01-01', plac: 'Россия, Пермский край, Пермь',
+            dd: '2020-01-01', dp: '  Россия,\n Ростов-на-Дону,  ', note: 'Note (keep these words)' },
+        { key: 'b', name: 'Spouse', d: '1951-01-01', plac: 'Пермь', dp: ' , , ' },
+    ];
+    const fams = [{ hKey: 'a', wKey: 'b', children: [],
+        marr: { d: '1970-01-01', plac: 'Нижний Новгород' },
+        div: { d: '1980-01-01', plac: 'Россия,  область\tгород Москва' } }];
+    const snapshot = JSON.stringify([persons, fams]);
+    const textOf = createFlatAnnotationText([persons, fams], [], []);
+    const text = textOf({ xref: 'a' });
+    for (const place of ['Россия…Пермь', 'Россия…Ростов-на-Дону', 'Нижний…Новгород', 'Россия…Москва', 'Пермь'])
+        assert.ok(text.includes('(' + place + ')'), place);
+    assert.ok(text.includes('^Note (keep these words)'));
+    assert.doesNotMatch(text, /\(\)|undefined|Пермский/);
+    textOf({ xref: 'b' });
+    assert.equal(JSON.stringify([persons, fams]), snapshot, 'places and nested events unchanged');
+    const full = flatTreeText(persons, fams, true);
+    for (const place of [persons[0].plac, persons[0].dp, fams[0].marr.plac, fams[0].div.plac])
+        assert.ok(full.includes('(' + place + ')'), 'ordinary export keeps ' + place);
+    const pdf = chartPdf('Places', persons.map(p => ({ ...p, xref: p.key, birth: p.d })), [], chartFont(), null, null, textOf);
+    const annotations = checkAnnotations(pdf, 2);
+    for (const [, body] of annotations) {
+        const id = body.match(/\/Contents (\d+) 0 R/)[1];
+        const encoded = pdf.match(new RegExp('\\n' + id + ' 0 obj\\n<FEFF([a-f0-9]+)>'))[1];
+        assert.equal(Buffer.from(encoded, 'hex').swap16().toString('utf16le'), text.replaceAll('^', '\n'));
+    }
+}
 function checkAnnotations(pdf, expectedCount) {
     const objects = new Map([...pdf.matchAll(/(?:^|\n)(\d+) 0 obj\n([\s\S]*?)\nendobj/g)]
         .map(m => [+m[1], m[2]]));
@@ -433,6 +462,22 @@ for (const platform of ['tg', 'vk']) for (const radius of [1, 2, 5]) for (const 
         assert.match(exportLog, relatives);
     } else assert.doesNotMatch(exportLog, relatives);
     const pdfPath = log.match(/→ (.+\.pdf)/);
+    let pdfBody;
+    if (platform === 'tg') {
+        assert.ok(pdfPath, log);
+        pdfBody = fs.readFileSync(pdfPath[1], 'latin1');
+    } else {
+        const calls = fs.readFileSync(path.join(tmp, name + '.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+        const upload = calls.find(c => c.method === 'upload' && c.body.includes('.pdf"'));
+        assert.ok(upload, log);
+        const bytes = Buffer.from(upload.base64, 'base64');
+        pdfBody = bytes.subarray(bytes.indexOf('\r\n\r\n') + 4, bytes.lastIndexOf('\r\n--')).toString('latin1');
+    }
+    const annotationTexts = [...pdfBody.matchAll(/<FEFF([a-f0-9]+)>/g)]
+        .map(m => Buffer.from(m[1], 'hex').swap16().toString('utf16le')).join('\n');
+    assert.ok(annotationTexts.includes('(Москва…царство)'), name + ': PDF abbreviates places');
+    assert.ok(!annotationTexts.includes('(Москва, Русское царство)'), name + ': PDF omits full places');
+    assert.ok(exportLog.includes('(Москва, Русское царство)'), name + ': text export keeps full places');
     if (platform === 'tg') {
         assert.ok(pdfPath, log);
         const text = spawnSync('pdftotext', ['-layout', pdfPath[1], '-'], { encoding: 'utf8' });
