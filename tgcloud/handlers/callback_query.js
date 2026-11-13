@@ -442,13 +442,17 @@ export default async function (cq, ctx) {
             if ((await getSettings(chatId)).trim) trimImport(tree);
             await clearChatTree(chatId);
             const rep = await applyTree(chatId, tree);
-            await editText(treeReport(rep), undefined);
+            const parts = splitText(treeReport(rep));
+            await editText(parts[0], undefined);
+            for (const part of parts.slice(1)) await api.sendMessage({ chat_id: chatId, text: part });
             console.log("txt replace:", rep.persons, "персон,", rep.links, "детей, chat", chatId);
             return;
         }
         const g = parseGedcom(row.content);
         const r = await replaceWithGedcom(chatId, (await getSettings(chatId)).trim ? trimImport(g) : g, data === "ged:bak");
-        await editText(r.head, undefined);
+        const parts = splitText(r.head);
+        await editText(parts[0], undefined);
+        for (const part of parts.slice(1)) await api.sendMessage({ chat_id: chatId, text: part });
         console.log("ged replace:", data, "chat", chatId);
         return;
     }

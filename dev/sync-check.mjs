@@ -1409,7 +1409,7 @@ if (!VK.gedcomText(ND_CH).includes('1 FAMS'))
 // приоритет: ДР последнего сиблинга +1 год → свадьба +1 год →
 // ДР младшего родителя +20 лет; каждый следующий бездатный ребёнок семьи —
 // +1 год к предыдущей присвоенной дате (каскад, не повторно к якорю);
-// коллизия одинаковых фиктивных дат — +1 год (не близнецы);
+// одноимённые дети тоже следуют каскаду; коллизии ключей — суффикс ~xref;
 // без всего перечисленного — заглушка без даты
 const GED_KIDS = ['0 HEAD',
     '0 @I1@ INDI', '1 NAME Отец /О/', '1 SEX M', '1 BIRT', '2 DATE 10 MAY 1900',
@@ -1467,11 +1467,79 @@ kidWant('Тот П', '1924-02-02', 'младший родитель +20 лет')
 kidWant('Сын П', '1926-03-03', 'родитель без свадьбы +20 лет');
 kidWant('Дочка П', '1927-03-03', 'каскад +1 год к фиктивной дате Сына');
 kidWant('Близнец К', '1944-12-01', 'свадьба +1 год');
-kidWant('Близнец К', '1945-12-01', 'коллизия фиктивных дат +1 год');
+kidWant('Близнец К', '1945-12-01', 'второй одноимённый ребёнок — каскад +1 год');
 kidWant('Третий К', '1946-12-01', 'каскад +1 год к фиктивной дате Близнеца');
 {
     const reb = kidOf('Реб Н')[0];
     if (reb && reb.d !== undefined) { failed++; console.log('✗ бездатные дети: «Реб Н» получил дату ' + reb.d); }
+}
+
+// Constrained children keep their selected dates through adapter collisions and GED round-trips.
+{
+    const id = 151;
+    const source = ['0 HEAD',
+        '0 @P@ INDI', '1 NAME Constraint Parent', '1 BIRT', '2 DATE 1 JAN 1970',
+        '0 @D@ INDI', '1 NAME Death Limited', '1 DEAT', '2 DATE 1 JUN 2004', '2 PLAC Rest',
+        '0 @S1@ INDI', '1 NAME Death Sibling', '1 BIRT', '2 DATE 1 JUN 2005',
+        '0 @V@ INDI', '1 NAME Divorce Limited',
+        '0 @S2@ INDI', '1 NAME Divorce Sibling', '1 BIRT', '2 DATE 1 JUN 2005',
+        '0 @C1@ INDI', '1 NAME Fallback Child', '1 DEAT', '2 DATE 1 JAN 2000', '2 PLAC Rest',
+        '0 @C2@ INDI', '1 NAME Fallback Child', '1 DEAT', '2 DATE ABT 1 JAN 2000', '2 PLAC Rest',
+        '0 @FD@ FAM', '1 HUSB @P@', '1 CHIL @D@', '1 CHIL @S1@', '1 MARR', '2 DATE 1 JAN 2000',
+        '0 @FV@ FAM', '1 HUSB @P@', '1 CHIL @V@', '1 CHIL @S2@',
+        '1 MARR', '2 DATE 1 JAN 2000', '1 DIV', '2 DATE 1 JUN 2003',
+        '0 @FC@ FAM', '1 HUSB @P@', '1 CHIL @C1@', '1 CHIL @C2@', '1 MARR', '2 DATE 1 JAN 2010',
+        '0 TRLR',
+    ].join('\n');
+    const results = [];
+    for (const [platform, api] of [['VK', VK], ['TG', TG]]) {
+        const report = await api.importGedcom(id, TGP.parseGedcom(source));
+        assert.deepEqual(report.dups, [{ from: 'Fallback Child', to: 'Fallback Child ~C2 2000-01-01~' }], platform);
+        const before = {
+            rows: await api.personRows(id), families: await api.famList(id),
+            flat: await api.chatFlatText(id), ged: await api.gedcomText(id),
+        };
+        for (let pass = 0; pass < 2; pass++) {
+            const rows = await api.personRows(id);
+            const ged = TGP.parseGedcom(await api.gedcomText(id));
+            assert.equal(rows.length, 7, platform + ': duplicate fallback children remain distinct');
+            for (const [xref, name, date, death, deathAbt] of [
+                ['D', 'Death Limited', '2004-06-01', '2004-06-01', 0],
+                ['V', 'Divorce Limited', '2004-06-01', null, 0],
+                ['C1', 'Fallback Child', '2000-01-01', '2000-01-01', 0],
+                ['C2', 'Fallback Child ~C2', '2000-01-01', '2000-01-01', 3],
+            ]) {
+                const row = rows.find(p => p.n === name);
+                assert.ok(row, platform + ': saved ' + name);
+                assert.deepEqual([row.d, row.abt, row.dd || null, row.dabt || 0],
+                    [date, 15, death, deathAbt], platform + ': saved constrained birth/death ' + xref);
+                const person = ged.indis.find(p => p.__xref === xref);
+                assert.ok(person, platform + ': exported xref ' + xref);
+                // GED exports clean names; xref restores the collision suffix on import.
+                assert.equal(person.name, name.replace(/ ~\S+$/, ''));
+                assert.deepEqual([person.birt.date, person.birt.abt], [date, 15], platform + ': exported EST ' + xref);
+                assert.deepEqual(person.deat && [person.deat.date, person.deat.abt || 0, person.deat.plac],
+                    death ? [death, deathAbt, 'Rest'] : null, platform + ': exported death ' + xref);
+            }
+            for (const [family, children] of [['FD', ['D', 'S1']], ['FV', ['V', 'S2']], ['FC', ['C1', 'C2']]]) {
+                const f = ged.fams.find(f => f.__xref === family);
+                assert.equal(f.husb, 'P');
+                assert.deepEqual(f.chil, children, platform + ': preserved family ' + family);
+            }
+            for (const xref of ['S1', 'S2']) {
+                const sibling = ged.indis.find(p => p.__xref === xref);
+                assert.deepEqual([sibling.birt.date, sibling.birt.abt || 0], ['2005-06-01', 0], platform + ': factual sibling unchanged');
+            }
+            if (pass === 0) await api.importGedcom(id, TGP.parseGedcom(before.ged));
+        }
+        const after = {
+            rows: await api.personRows(id), families: await api.famList(id),
+            flat: await api.chatFlatText(id), ged: await api.gedcomText(id),
+        };
+        assert.deepEqual(after, before, platform + ': constrained children export/reimport is stable');
+        results.push(after);
+    }
+    cmp('importGedcom constrained children export/reimport', results[0], results[1]);
 }
 
 // ==================== 3бг. первенцы жён одного родителя ==================
@@ -1940,6 +2008,107 @@ for (const [what, ln, rows] of ASSERTS) {
     cmp('chartPdf assert «' + what + '»', vkE, tgE);
     if (!vkE) { failed++; console.log('✗ chartPdf assert «' + what + '»: не бросил ошибку'); }
 }
+// Diagnostics collect independent failures without rendering or throwing.
+{
+    const rows = [
+        { name: 'Child', birth: '2000-01-01', death: '1999-01-01' },
+        { name: 'Young', birth: '2001-01-01' },
+        { name: 'Older', birth: '1970-01-01' },
+    ];
+    const death = 'смерть раньше рождения Child 2000-01-01';
+    const young = 'родитель не старше ребёнка Young 2001-01-01 → Child 2000-01-01';
+    const count = 'родителей не 1–2 Child 2000-01-01';
+    const badFont = new Uint8Array(12);
+    assert.throws(() => TGC.parseTtf(badFont), /ttf: нет обязательных таблиц/);
+    const cases = [
+        ['valid', rows.slice(1), [], FONT, []],
+        ['empty', [], [], null, ['персоны пусты']],
+        ['unanchored only', [{ name: 'Hidden', birth: null }], [], null, ['персоны пусты']],
+        ['death before birth', rows, [], null, [death]],
+        ['younger parent', rows.slice(1).concat({ ...rows[0], death: null }),
+            [{ child: 'Child 2000-01-01', parents: ['Young 2001-01-01'] }], null, [young]],
+        ['no parents', [{ ...rows[0], death: null }],
+            [{ child: 'Child 2000-01-01', parents: [] }], null, [count]],
+        ['missing child and parents', rows.slice(1),
+            [{ child: 'Missing child', parents: ['Missing parent', 'Other missing parent'] }], null,
+            ['имя не найдено Missing child', 'имя не найдено Missing parent', 'имя не найдено Other missing parent']],
+        ['anchored parent is not a factual birth', [
+            { name: 'Parent', birth: null, anchor: 2020, death: '1990-01-01' },
+            { name: 'Child', birth: null, anchor: 2000 },
+        ], [{ child: 'Child 2000', parents: ['Parent 2020'] }], null, []],
+        ['bad font', rows.slice(1), [], badFont, ['ttf: нет обязательных таблиц']],
+        ['multiple failures, deduplicated', rows, [
+            { child: 'Child 2000-01-01', parents: ['Young 2001-01-01', 'Older 1970-01-01', 'Missing parent'] },
+            { child: 'Child 2000-01-01', parents: ['Young 2001-01-01'] },
+        ], badFont, [death, count, young, 'имя не найдено Missing parent', 'ttf: нет обязательных таблиц']],
+    ];
+    for (const [label, people, links, font, expected] of cases) {
+        const before = structuredClone({ people, links, font });
+        assert.deepEqual(TGC.chartDiagnostics(people, links, font), expected, 'chartDiagnostics: ' + label);
+        assert.deepEqual({ people, links, font }, before, 'chartDiagnostics does not mutate: ' + label);
+    }
+}
+
+// Import diagnostics are nonfatal and use all parental families, not just one.
+{
+    const id = 895100;
+    const source = ['0 HEAD',
+        '0 @C@ INDI', '1 NAME Diagnostic Child', '1 BIRT', '2 DATE 1 JAN 2000', '1 DEAT', '2 DATE 1 JAN 1999',
+        '0 @Y@ INDI', '1 NAME Diagnostic Young', '1 SEX M', '1 BIRT', '2 DATE 1 JAN 2001',
+        '0 @P@ INDI', '1 NAME Diagnostic Parent', '1 SEX F', '1 BIRT', '2 DATE 1 JAN 1970',
+        '0 @Q@ INDI', '1 NAME Diagnostic Other', '1 SEX M', '1 BIRT', '2 DATE 1 JAN 1972',
+        '0 @F1@ FAM', '1 HUSB @Y@', '1 WIFE @P@', '1 CHIL @C@',
+        '0 @F2@ FAM', '1 HUSB @Q@', '1 CHIL @C@', '0 TRLR',
+    ].join('\n');
+    const expected = [
+        'смерть раньше рождения Diagnostic Child 2000-01-01',
+        'родителей не 1–2 Diagnostic Child 2000-01-01',
+        'родитель не старше ребёнка Diagnostic Young 2001-01-01 → Diagnostic Child 2000-01-01',
+    ];
+    const results = [];
+    for (const [platform, api] of [['VK', VK], ['TG', TG]]) {
+        const empty = await api.chartFor(id, null, 'empty diagnostics', null, null, true);
+        assert.deepEqual(empty, ['персоны пусты'], platform + ': empty diagnostic mode');
+        const report = await api.importGedcom(id, TGP.parseGedcom(source));
+        assert.deepEqual(report.errors, [], platform + ': diagram failures are not import failures');
+        assert.deepEqual(report.chartWarnings, expected, platform + ': all import warnings');
+        assert.deepEqual([report.persons, report.fams, report.links], [4, 2, 2]);
+        const before = {
+            rows: await api.personRows(id), families: await api.famList(id), ged: await api.gedcomText(id),
+        };
+        assert.deepEqual(await api.chartFor(id, null, 'diagnostics', null, null, true), expected,
+            platform + ': sixth argument returns diagnostics instead of rendering');
+        assert.deepEqual({ rows: await api.personRows(id), families: await api.famList(id), ged: await api.gedcomText(id) },
+            before, platform + ': diagnostic mode preserves database');
+        const exported = TGP.parseGedcom(before.ged);
+        assert.deepEqual(exported.indis.map(p => [p.__xref, p.name, p.birt.date, p.deat?.date || null]),
+            TGP.parseGedcom(source).indis.map(p => [p.__xref, p.name, p.birt.date, p.deat?.date || null]),
+            platform + ': factual birth and death dates remain unchanged');
+        assert.deepEqual(exported.fams.map(f => [f.__xref, f.husb, f.wife, f.chil]),
+            TGP.parseGedcom(source).fams.map(f => [f.__xref, f.husb, f.wife, f.chil]), platform + ': both parental families survive');
+        const edges = api === VK ? VK.linkPairs(id) : (await TG.linksAll(id)).map(l => [l.p, l.c]);
+        assert.deepEqual(edges.map(([p, c]) => [p, c]).sort(),
+            ['Diagnostic Young 2001-01-01', 'Diagnostic Parent 1970-01-01', 'Diagnostic Other 1972-01-01']
+                .map(p => [p, 'Diagnostic Child 2000-01-01']).sort(), platform + ': all parent links survive');
+        const text = api.treeReport(report);
+        for (const warning of expected) assert.ok(text.includes('Диаграмма не построена: ' + warning), platform + ': report ' + warning);
+        assert.equal(text.split('Диаграмма не построена: ').length - 1, expected.length);
+        results.push({ report, before, text });
+
+        const treeId = id + 1;
+        const tree = TGP.parseTree('-Diagnostic Tree 2000-01-01 1999-01-01');
+        assert.deepEqual(tree.errors, []);
+        const treeReport = await api.applyTree(treeId, tree);
+        assert.deepEqual(treeReport.errors, []);
+        assert.deepEqual(treeReport.chartWarnings, ['смерть раньше рождения Diagnostic Tree 2000-01-01']);
+        const saved = await api.personRows(treeId);
+        assert.equal(saved.length, 1);
+        assert.deepEqual([saved[0].d, saved[0].dd], ['2000-01-01', '1999-01-01']);
+        assert.ok(api.treeReport(treeReport).includes('Диаграмма не построена: ' + treeReport.chartWarnings[0]));
+    }
+    cmp('importGedcom nonfatal chart diagnostics and preserved data', results[0], results[1]);
+}
+
 // бездатный супруг (birth null + anchor — год ДР супруга): левая колонка
 // пустая, бар от якоря, «лет прожито» не выводится (год чужой); строка без
 // якоря не рисуется; любые коллизии ключей — невидимый суффикс (без броска)

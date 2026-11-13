@@ -183,6 +183,40 @@ function fontGlyphs(f) {
 // Вычисляет всю геометрию (без рендера) → модель с примитивами draws
 // (rect/rrect/line/dot/text) в порядке отрисовки — единая основа для
 // PDF-эммитера
+function chartDiagnostics(rows, links, font = null) {
+    const errors = [];
+    if (!rows.length) errors.push("персоны пусты");
+    const year = d => Number(String(d).slice(0, 4));
+    const byKey = new Map(), taken = new Set();
+    for (const r of rows) {
+        if (r.birth == null && !Number.isFinite(r.anchor)) continue;
+        let k = r.k ?? r.name + " " + (r.birth != null ? r.birth : r.anchor);
+        if (r.k == null) while (taken.has(k)) k += " ";
+        taken.add(k);
+        byKey.set(k, r);
+        if (r.birth != null && r.death && year(r.death) < year(r.birth))
+            errors.push("смерть раньше рождения " + k);
+    }
+    if (rows.length && !byKey.size) errors.push("персоны пусты");
+    for (const l of links) {
+        const child = byKey.get(l.child);
+        if (!child) errors.push("имя не найдено " + l.child);
+        if (!l.parents.length || l.parents.length > 2) errors.push("родителей не 1–2 " + l.child);
+        for (const p of l.parents) {
+            const parent = byKey.get(p);
+            if (!parent) errors.push("имя не найдено " + p);
+            else if (child && parent.birth != null
+                && year(parent.birth) > (child.birth != null ? year(child.birth) : child.anchor))
+                errors.push("родитель не старше ребёнка " + p + " → " + l.child);
+        }
+    }
+    if (font !== null) {
+        try { parseTtf(font); }
+        catch (e) { errors.push(e.message || String(e)); }
+    }
+    return [...new Set(errors)];
+}
+
 function chartModel(title, rows, links, rel = null, marriages = null,
     glyphs = fontGlyphs(parseTtf(chartFont()))) {
     if (!rows.length) throw new Error("chart: персоны пусты");
@@ -216,21 +250,9 @@ function chartModel(title, rows, links, rel = null, marriages = null,
         rows = rows.filter(r => keep.has(keyOf(r)));
         links = links.filter(l => keep.has(l.child) && l.parents.every(p => keep.has(p)));
     }
-    // «смерть раньше рождения» — ошибка данных, суффиксом не исправляется
-    for (const r of rows)
-        if (r.birth != null && r.death && year(r.death) < year(r.birth))
-            throw new Error("chart: смерть раньше рождения " + keyOf(r));
+    const errors = chartDiagnostics(rows, links);
+    if (errors.length) throw new Error("chart: " + errors[0]);
     const byKey = new Map(rows.map(r => [keyOf(r), r]));
-    for (const l of links) {
-        if (!byKey.has(l.child)) throw new Error("chart: имя не найдено " + l.child);
-        if (!l.parents.length || l.parents.length > 2) throw new Error("chart: родителей не 1–2 " + l.child);
-        for (const p of l.parents) {
-            if (!byKey.has(p)) throw new Error("chart: имя не найдено " + p);
-            // якорь бездатного — не его ДР: «старше ребёнка» не проверяем
-            if (byKey.get(p).birth != null && yrOf(byKey.get(p)) > yrOf(byKey.get(l.child)))
-                throw new Error("chart: родитель не старше ребёнка " + p);
-        }
-    }
     // The same 10px glyph advances as PDF anchoring, for labels and names.
     const textW = s => glyphs(s).w * 10;
     // порядок строк: (год рождения/якорь, имя) — ключи «Имя год»
@@ -715,4 +737,4 @@ function chartFont() {
 
 
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
-module.exports = { CHART_MAX, b64ToBytes, chartFont, chartModel, chartPdf, chartRows, fileBaseOf, parseTtf, rangeLevel };
+module.exports = { CHART_MAX, b64ToBytes, chartFont, chartDiagnostics, chartModel, chartPdf, chartRows, fileBaseOf, parseTtf, rangeLevel };

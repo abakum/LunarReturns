@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { parseGedcom, parseTree } from '../tgcloud/lib/parse.cjs';
+import { parseGedcom, parseTree, trimImport } from '../tgcloud/lib/parse.cjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const tmp = fs.mkdtempSync(path.join('/tmp/kilo', 'lr-cli-'));
@@ -126,11 +126,41 @@ try {
         assert.equal(normalize(read(output + '.txt')), normalize(txt), name + ': normalized TXT must repeat');
         console.log(name + ': contents and round-trip OK');
     }
-    for (const mode of ['ged2txt', 'txt2ged']) {
+    for (const name of fixtures) {
+        const source = fs.readFileSync(path.join(root, 'dev/fixtures', name + '.ged'), 'utf8');
+        const input = path.join(tmp, name + ' private.GED');
+        fs.writeFileSync(input, '\uFEFF' + source);
+        const output = input.replace(/\.ged$/i, '.trim.ged');
+        run('trim', [input]);
+        const text = read(output), expected = trimImport(parseGedcom(source));
+        assert.deepEqual(parseGedcom(text), expected, name + ': same canonical trim without invented dates');
+        const dates = s => s.split(/\r?\n/).filter(l => /^\d+ (?:DATE|TIME)\b/.test(l));
+        assert.deepEqual(dates(text), dates(source), name + ': date/time lines unchanged');
+        assert.equal(read(input), source, 'input unchanged');
+        run('trim', [input], false);
+        assert.equal(read(output), text, 'existing output unchanged');
+    }
+    const rawTrim = path.join(tmp, 'raw.ged');
+    fs.writeFileSync(rawTrim, '0 HEAD\r\n0 @I@ INDI\r\n1 NAME Foo /Bar/\r\n2 GIVN Foo\r\n2 SURN Bar\r\n1 BIRT\r\n2 DATE BEF 29 FEB 1904\r\n3 TIME 12:34:56\r\n2 PLAC Private\r\n3 MAP\r\n4 LATI N12\r\n1 NOTE Secret\r\n2 CONT More secret\r\n0 TRLR\r\n');
+    run('trim', [rawTrim]);
+    assert.equal(read(path.join(tmp, 'raw.trim.ged')), '0 HEAD\r\n0 @I@ INDI\r\n1 NAME FB\r\n1 BIRT\r\n2 DATE BEF 29 FEB 1904\r\n0 TRLR\r\n');
+    const mediaInput = path.join(tmp, 'media.ged');
+    fs.writeFileSync(mediaInput, '0 HEAD\n0 @I@ INDI\n1 NAME Foo /Bar/\n1 OBJE\n2 FILE foo\n3 FORM bar\n1 BIRT\n2 DATE 1900\n1 OBJE @O1@\n0 @O1@ OBJE\n1 FILE private.jpg\n2 FORM jpg\n0 TRLR\n');
+    run('trim', [mediaInput]);
+    assert.equal(read(path.join(tmp, 'media.trim.ged')), '0 HEAD\n0 @I@ INDI\n1 NAME FB\n1 BIRT\n2 DATE 1900\n0 TRLR\n');
+    const whitelistInput = path.join(tmp, 'whitelist.ged');
+    const whitelistSource = '0 HEAD\n1 SOUR PrivateApp\n1 GEDC\n2 VERS 5.5.1\n2 FORM LINEAGE-LINKED\n1 CHAR UTF-8\n0 @I@ INDI\n1 NAME Foo /Bar/\n1 EMAIL private@example.test\n1 _CUSTOM\n2 DATE 2000\n1 BIRT\n2 DATE EST 1900\n2 TIME 12:34:56\n1 ADOP\n2 FAMC @F@\n0 @F@ FAM\n1 HUSB @I@\n1 CHIL @I@\n2 PEDI adopted\n1 MARR\n2 DATE ABT 1920\n1 SOUR @S@\n0 @S@ SOUR\n1 TITL Private Source\n0 TRLR\n';
+    fs.writeFileSync(whitelistInput, whitelistSource);
+    run('trim', [whitelistInput]);
+    const whitelistText = read(path.join(tmp, 'whitelist.trim.ged'));
+    assert.doesNotMatch(whitelistText, /SOUR|Private|EMAIL|_CUSTOM|DATE 2000|CONC|CONT|NOTE|PLAC/);
+    assert.match(whitelistText, /2 TIME 12:34:56/);
+    assert.deepEqual(parseGedcom(whitelistText), trimImport(parseGedcom(whitelistSource)), 'whitelist preserves imported adoption and date fields');
+    for (const mode of ['ged2txt', 'txt2ged', 'trim']) {
         run(mode, [], false);
         run(mode, ['a', 'b'], false);
         run(mode, ['wrong.extension'], false);
-        run(mode, ['missing' + (mode === 'ged2txt' ? '.ged' : '.ged.txt')], false);
+        run(mode, ['missing' + (mode === 'txt2ged' ? '.ged.txt' : '.ged')], false);
     }
     for (const [mode, name, content] of [
         ['ged2txt', 'bad.ged', 'not GEDCOM'],
@@ -159,6 +189,12 @@ try {
     fs.symlinkSync(link, link + '.txt');
     const before = fs.readFileSync(link);
     run('ged2txt', [link], false);
+    assert.deepEqual(fs.readFileSync(link), before);
+    fs.symlinkSync(link, path.join(tmp, 'linked.trim.ged'));
+    run('trim', [link], false);
+    run('trim', [path.join(tmp, 'directory.ged')], false);
+    run('trim', [path.join(tmp, 'bad.ged')], false);
+    run('trim', [path.join(tmp, 'invalid-utf8.ged')], false);
     assert.deepEqual(fs.readFileSync(link), before);
     const linkedTxt = path.join(tmp, 'linked-back.ged.txt');
     fs.writeFileSync(linkedTxt, read(upper));

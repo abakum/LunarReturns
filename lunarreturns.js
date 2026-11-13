@@ -41,7 +41,7 @@ const {
 // Канон — tgcloud/lib/chart.cjs (план .kilo/plans/20261107-shared-modules-plan.md): его же импортирует
 // ТГ-копия через ESM-шим; правки — только в .cjs, дословных копий больше нет.
 const {
-    CHART_MAX, b64ToBytes, parseTtf, chartModel, fileBaseOf, chartPdf, chartRows, chartFont, rangeLevel} = reqLib("chart");
+    CHART_MAX, b64ToBytes, parseTtf, chartDiagnostics, chartModel, fileBaseOf, chartPdf, chartRows, chartFont, rangeLevel} = reqLib("chart");
 
 
 // ============================== ПАРСИНГ (общий модуль) ==============================
@@ -515,6 +515,7 @@ function applyTree(peerId, tree) {
     // роспись без гедкома тоже восстанавливает интерактивные связи (edges) — иначе
     // /gedcom после импорта .ged.txt не видит связей
     restoreEdges(peerId);
+    rep.chartWarnings = importChartWarnings(peerId);
     return rep;
 }
 
@@ -1163,11 +1164,12 @@ function importGedcom(peerId, g) {
     // полусиблы/родитель, супруги) — в каноне. Вставки, коллизии фиктивных
     // дат (uniqueKeyOf yearly) и счётчики — ниже, платформенные
     const fullOf = gedFictiveDates(g, famRefs, resolved);
+    const dateProtectedRefs = new Set(g.fams.flatMap(f => [...f.chil, ...(f.chil.length ? [f.husb, f.wife] : [])]));
     // второй проход: бездатные супруги и дети — фиктивная полная дата,
     // birt_abt 15 (EST-день: в шкале PDF нет года и прожитых лет, печать —
     // «1234-05-06~»); полная точность сохраняет round-trip .ged.txt
     // (экспорт «EST 6 MAY 1234»); коллизия фиктивных
-    // дат — +1 год (не близнецы); безымянные — мимо
+    // дат детей — суффикс имени без изменения выбранной даты; безымянные — мимо
     for (const ind of g.indis) {
         if (!ind.name || (ind.birt && ind.birt.date)) continue;
         if (!famRefs.has(ind.__xref)) continue;
@@ -1198,7 +1200,7 @@ function importGedcom(peerId, g) {
             persons++;
             continue;
         }
-        const u = uniqueKeyOf(peerId, ind.name, full, true, true, ind.__xref);
+        const u = uniqueKeyOf(peerId, ind.name, full, true, !dateProtectedRefs.has(ind.__xref), ind.__xref);
         // фиктивная ДР от супруга — всегда birt_abt 15 (EST-день, как и
         // сдвинутый дубль): в шкале PDF у такой строки нет года и прожитых
         // лет; полная точность — для round-trip .ged.txt
@@ -1217,8 +1219,7 @@ function importGedcom(peerId, g) {
             ind.birt && ind.birt.plac ? ind.birt.plac : null,
             ind.deat && ind.deat.plac ? ind.deat.plac : null,
             ind.note ?? null,
-            uabt, // дубль со сдвинутой датой — abt 15 (EST-день; сдвиг виден в
-                // печати, дублей дополнительно различает суффикс «~xref»)
+            uabt, // EST-день; коллизия у ребёнка меняет имя, не дату
             (ind.deat && ind.deat.abt) || 0);
         byId.set(ind.__xref, ind.__xref);
         persons++;
@@ -1257,7 +1258,8 @@ function importGedcom(peerId, g) {
             if (famRaw(peerId, fx))
                 qr("UPDATE chil SET adopted=1 WHERE chat=? AND fam=? AND indi=?", peerId, fx, c);
     }
-    return { persons, fams: famCount, links: childCount, errors: [], dups };
+    return { persons, fams: famCount, links: childCount, errors: [], dups,
+        chartWarnings: importChartWarnings(peerId) };
 }
 
 function gedcomText(peerId, keys) {
@@ -1542,7 +1544,12 @@ function branchFlatText(peerId, key) {
 // пробелы; бездатный супруг идёт своим «Имя якорь», мимо ckey)
 const ckey = k => k;
 
-function chartFor(peerId, keys, title, heroKey = null, range = null) {
+function importChartWarnings(peerId) {
+    try { return chartFor(peerId, null, "", null, null, true); }
+    catch (e) { return [String(e.message || e).replace(/^chart:\s*/, "")]; }
+}
+
+function chartFor(peerId, keys, title, heroKey = null, range = null, diagnose = false) {
     const snapshot = flatRows(peerId);
     const pairs = linkPairs(peerId), spousePairs = focusSpousePairs(peerId);
     const annotationText = createFlatAnnotationText(snapshot, pairs, spousePairs);
@@ -1609,6 +1616,7 @@ function chartFor(peerId, keys, title, heroKey = null, range = null) {
         sex: Object.fromEntries([...personRows(peerId).map(r => [pkey(r), r.sex || null]),
             ...rows.filter(r => r.k).map(r => [r.k, r.sex])]),
     } : null;
+    if (diagnose) return chartDiagnostics(rows, links, chartFont());
     rows = chartRows(rows, rel);
     const visible = new Set(rows.map(r => r.k ?? r.name + " " + r.birth));
     for (const k of keySet) if (!visible.has(k)) keySet.delete(k);
@@ -2446,7 +2454,7 @@ async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
             return;
         }
         const rep = cutAndGraft(peerId, anchor, tree, getSettings(peerId).trim);
-        await messagesSend(peerId, treeReport(rep), msgId, convMsgId);
+        for (const part of splitText(treeReport(rep))) await messagesSend(peerId, part, msgId, convMsgId);
         console.log("txt tree:", rep.cut !== undefined ? "срезано " + rep.cut + ", " : "", rep.persons, "персон,", rep.links, "детей, peer", peerId);
         return;
     }
@@ -2830,7 +2838,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         const st = gedStats(g);
         if (st.persons || st.links) {
             const r = await replaceWithGedcom(peerId, g, true);
-            await messagesSend(peerId, r.head, msgId, convMsgId);
+            for (const part of splitText(r.head)) await messagesSend(peerId, part, msgId, convMsgId);
             return;
         }
         // гедком без персон с датами — молчим, дальше как триггеры
@@ -2852,7 +2860,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             }
             const rep = anchor ? cutAndGraft(peerId, anchor, tree) : applyTree(peerId, tree);
             const body = treeReport(rep);
-            await messagesSend(peerId, body, msgId, convMsgId);
+            for (const part of splitText(body)) await messagesSend(peerId, part, msgId, convMsgId);
             console.log("tree:", rep.cut !== undefined ? "срезано " + rep.cut + ", " : "", rep.persons, "персон,", rep.fams, "семей,", rep.links, "детей,", rep.errors.length, "ошибок, peer", peerId);
             return;
         }
@@ -3244,7 +3252,9 @@ async function handleEvent(o) {
             if (getSettings(peerId).trim) trimImport(tree);
             clearChatTree(peerId);
             const rep = applyTree(peerId, tree);
-            await editOrigin(o, treeReport(rep), JSON.stringify({ inline: true, buttons: [] }));
+            const parts = splitText(treeReport(rep));
+            await editOrigin(o, parts[0], JSON.stringify({ inline: true, buttons: [] }));
+            for (const part of parts.slice(1)) await messagesSend(peerId, part);
             console.log("txt replace:", rep.persons, "персон,", rep.links, "детей, peer", peerId);
             return;
         }
@@ -3254,7 +3264,9 @@ async function handleEvent(o) {
             return;
         }
         const r = await replaceWithGedcom(peerId, getSettings(peerId).trim ? trimImport(g) : g, payload === "ged:bak");
-        await editOrigin(o, r.head, JSON.stringify({ inline: true, buttons: [] }));
+        const parts = splitText(r.head);
+        await editOrigin(o, parts[0], JSON.stringify({ inline: true, buttons: [] }));
+        for (const part of parts.slice(1)) await messagesSend(peerId, part);
         console.log("ged replace:", r.head, "peer", peerId);
         return;
     }

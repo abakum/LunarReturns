@@ -449,6 +449,7 @@ export async function applyTree(chatId, tree) {
     // роспись без гедкома тоже восстанавливает интерактивные связи (edges) — иначе
     // /gedcom после импорта росписи .txt не видит связей
     await restoreEdges(chatId);
+    rep.chartWarnings = await importChartWarnings(chatId);
     return rep;
 }
 
@@ -1455,7 +1456,7 @@ export async function branchFlatText(chatId, key) {
 // Чистая логика дословно продублирована в lunarreturns.js (dev/sync-check.mjs)
 
 import { InputFile } from 'sdk';
-import { CHART_MAX, chartPdf, chartRows, chartFont, fileBaseOf, rangeLevel } from './chart.cjs';
+import { CHART_MAX, chartPdf, chartRows, chartFont, chartDiagnostics, fileBaseOf, rangeLevel } from './chart.cjs';
 
 // диаграммные данные чата/фрагмента (как у gedcomText: те же INDI, свадьбы
 // «Имя+Имя» вне; семьи усекаются до персон фрагмента). heroKey — pkey героя
@@ -1463,7 +1464,12 @@ import { CHART_MAX, chartPdf, chartRows, chartFont, fileBaseOf, rangeLevel } fro
 // — просто «Год» (древо чата). Бездатные именованные супруги датированных
 // персон — строками с якорем (бар от года ДР супруга, колонка года пустая);
 // без датированного супруга — не рисуются
-export async function chartFor(chatId, keys, title, heroKey = null, range = null) {
+async function importChartWarnings(chatId) {
+    try { return await chartFor(chatId, null, "", null, null, true); }
+    catch (e) { return [String(e.message || e).replace(/^chart:\s*/, "")]; }
+}
+
+export async function chartFor(chatId, keys, title, heroKey = null, range = null, diagnose = false) {
     const snapshot = await flatRows(chatId);
     const pairs = await linkPairs(chatId), spousePairs = await focusSpousePairs(chatId);
     const annotationText = createFlatAnnotationText(snapshot, pairs, spousePairs);
@@ -1533,6 +1539,7 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
         sex: Object.fromEntries([...(await personRows(chatId)).map(r => [pkey(r), r.sex || null]),
             ...rows.filter(r => r.k).map(r => [r.k, r.sex])]),
     } : null;
+    if (diagnose) return chartDiagnostics(rows, links, chartFont());
     rows = chartRows(rows, rel);
     const visible = new Set(rows.map(r => r.k ?? r.name + " " + r.birth));
     for (const k of keySet) if (!visible.has(k)) keySet.delete(k);
@@ -1748,11 +1755,12 @@ export async function importGedcom(chatId, g) {
     // полусиблы/родитель, супруги) — в каноне. Вставки, коллизии фиктивных
     // дат (uniqueKeyOf yearly) и счётчики — ниже, платформенные
     const fullOf = gedFictiveDates(g, famRefs, resolved);
+    const dateProtectedRefs = new Set(g.fams.flatMap(f => [...f.chil, ...(f.chil.length ? [f.husb, f.wife] : [])]));
     // второй проход: бездатные супруги и дети — фиктивная полная дата,
     // birtAbt 15 (EST-день: в шкале PDF нет года и прожитых лет, печать —
     // «1234-05-06~»); полная точность сохраняет round-trip .ged.txt
     // (экспорт «EST 6 MAY 1234»); коллизия фиктивных
-    // дат — +1 год (не близнецы); безымянные — мимо
+    // дат детей — суффикс имени без изменения выбранной даты; безымянные — мимо
     for (const ind of g.indis) {
         if (!ind.name || (ind.birt && ind.birt.date)) continue;
         if (!famRefs.has(ind.__xref)) continue;
@@ -1781,7 +1789,7 @@ export async function importGedcom(chatId, g) {
             persons++;
             continue;
         }
-        const u = await uniqueKeyOf(chatId, ind.name, full, true, true, ind.__xref);
+        const u = await uniqueKeyOf(chatId, ind.name, full, true, !dateProtectedRefs.has(ind.__xref), ind.__xref);
         // фиктивная ДР от супруга — всегда birtAbt 15 (EST-день, как и
         // сдвинутый дубль): в шкале PDF у такой строки нет года и прожитых
         // лет; полная точность — для round-trip .ged.txt
@@ -1797,8 +1805,7 @@ export async function importGedcom(chatId, g) {
             plac: ind.birt && ind.birt.plac ? ind.birt.plac : null,
             deatPlac: ind.deat && ind.deat.plac ? ind.deat.plac : null,
             note: ind.note ?? null,
-            birtAbt: uabt, // дубль со сдвинутой датой — abt 15 (EST-день; сдвиг виден в
-                // печати, дублей дополнительно различает суффикс «~xref»)
+            birtAbt: uabt, // EST-день; коллизия у ребёнка меняет имя, не дату
             deatAbt: (ind.deat && ind.deat.abt) || 0,
         }).run();
         byX.set(ind.__xref, ind.__xref);
@@ -1847,7 +1854,8 @@ export async function importGedcom(chatId, g) {
                 .where(and(eq(chil.chatId, chatId), eq(chil.fam, fx), eq(chil.indi, c))).run();
         }
     }
-    return { persons, fams: famCount, links: childCount, errors: [], dups };
+    return { persons, fams: famCount, links: childCount, errors: [], dups,
+        chartWarnings: await importChartWarnings(chatId) };
 }
 
 // резерв прежнего дерева чата файлом <имя>-old.ged (фолбэк — текстом);

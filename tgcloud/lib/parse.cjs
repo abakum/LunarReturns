@@ -344,6 +344,9 @@ function gedStats(g) {
 // в т.ч. фиктивной — половиной). Всё в одной карте, чтобы фиктивная ДР
 // родителя/супруга (которой нет в файле) работала якорем дальше —
 // раньше бездатные жёны такого родителя оставались заглушками.
+// Детский якорь проецируется на допустимые даты: свадьба +1 год,
+// развод +1 год, смерть, годовой интервал до детей той же семьи.
+// Нет места — день смерти; нет смерти — прежний якорь.
 // Чистая: g/famRefs/resolved не мутирует; вставки в БД, счётчики и разруление
 // коллизий фиктивных дат (uniqueKeyOf yearly) — у адаптеров (importGedcom
 // ВК lunarreturns.js и ТГ lib/bot.js). Независимые ожидания — dev/a3-ged-check.mjs
@@ -355,6 +358,11 @@ function gedFictiveDates(g, famRefs, resolved) {
         else if (famRefs.has(ind.__xref)) fullOf.set(ind.__xref, null);
     }
     const kidDated = cx => fullOf.get(cx) || null;
+    const parentLimit = x => {
+        const first = g.fams.filter(f => f.husb === x || f.wife === x)
+            .flatMap(f => f.chil).map(kidDated).filter(Boolean).sort()[0];
+        return first ? datePlusYears(first, -20) : null;
+    };
     for (let sweep = 0; sweep < fullOf.size; sweep++) {
         let changed = false;
         // дети fam'а: якорь первого бездатного (датный — в т.ч. фиктивный —
@@ -385,10 +393,28 @@ function gedFictiveDates(g, famRefs, resolved) {
                     else if (f.marr && f.marr.date) prev = datePlusYears(f.marr.date, 1);
                     else if (cousMax !== null) prev = datePlusYears(cousMax, 1);
                     else if (pars.length) prev = datePlusYears(pars[pars.length - 1], 20);
+                    else if (p.deat && p.deat.date) prev = p.deat.date;
                     else continue;
                 } else {
                     prev = datePlusYears(prev, 1);
                 }
+                const original = prev;
+                const lower = f.marr && f.marr.date ? datePlusYears(f.marr.date, 1) : null;
+                const death = p.deat && p.deat.date || null;
+                const limit = parentLimit(cx);
+                const upper = [death, limit, f.div && f.div.date ? datePlusYears(f.div.date, 1) : null]
+                    .filter(Boolean).sort()[0] || null;
+                const gaps = f.chil.filter(x => x !== cx).map(kidDated).filter(Boolean)
+                    .map(d => [datePlusYears(d, -1), datePlusYears(d, 1)]);
+                // Ближайшая допустимая дата — исходная или граница одного из
+                // интервалов. Дни не перебираем; открытые годовые окна запрещены.
+                const candidates = [original, lower, upper, ...gaps.flat()].filter(Boolean)
+                    .filter(d => (!lower || d >= lower) && (!upper || d <= upper)
+                        && gaps.every(([a, b]) => d <= a || d >= b));
+                candidates.sort((a, b) => Math.abs(Date.parse(a) - Date.parse(original))
+                    - Math.abs(Date.parse(b) - Date.parse(original)) || a.localeCompare(b));
+                prev = candidates[0] || death || original;
+                if (limit && prev > limit) prev = limit;
                 fullOf.set(cx, prev);
                 changed = true;
             }
@@ -402,7 +428,31 @@ function gedFictiveDates(g, famRefs, resolved) {
                 if (f.husb !== ind.__xref && f.wife !== ind.__xref) continue;
                 const sx = f.husb === ind.__xref ? f.wife : f.husb;
                 const v = (sx && fullOf.get(sx)) || null;
-                if (v !== null) { fullOf.set(ind.__xref, v); changed = true; break; }
+                if (v !== null) {
+                    const limit = parentLimit(ind.__xref);
+                    fullOf.set(ind.__xref, limit && v > limit ? limit : v);
+                    changed = true;
+                    break;
+                }
+            }
+            // Датированный первенец — самостоятельный якорь, даже без супруга.
+            if (fullOf.get(ind.__xref) === null) {
+                const limit = parentLimit(ind.__xref);
+                if (limit) { fullOf.set(ind.__xref, limit); changed = true; }
+            }
+        }
+        if (!changed) break;
+    }
+    // Потомки могли получить даты после родителя: распространяем верхнюю
+    // границу вверх по поколениям, не меняя явно заданные в файле даты.
+    for (let sweep = 0; sweep < fullOf.size; sweep++) {
+        let changed = false;
+        for (const ind of g.indis) {
+            if (ind.birt && ind.birt.date) continue;
+            const date = kidDated(ind.__xref), limit = parentLimit(ind.__xref);
+            if (date && limit && date > limit) {
+                fullOf.set(ind.__xref, limit);
+                changed = true;
             }
         }
         if (!changed) break;

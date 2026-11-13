@@ -199,6 +199,91 @@ const cases = [
     },
 ];
 
+// Один бездатный ребёнок; датные сиблинги намеренно стоят после него в CHIL.
+for (const [name, marr, div, death, siblings, want] of [
+    ['свадьба ограничивает ранний якорь', '1900-06-01', null, null, ['1900-01-01'], '1901-06-01'],
+    ['смерть: свободное место до младшего', null, null, '1904-01-01', ['1905-01-01'], '1904-01-01'],
+    ['развод: свободное место между детьми', '1900-01-01', '1904-01-01', null, ['1902-01-01', '1906-01-01'], '1905-01-01'],
+    ['ровно год между детьми', '1900-01-01', '1902-01-01', '1903-01-01', ['1902-01-01', '1904-01-01'], '1903-01-01'],
+    ['нет места: день смерти', '1900-01-01', null, '1901-06-01', ['1901-01-01'], '1901-06-01'],
+    ['нет места и смерти: старый вариант', '1900-01-01', '1900-01-01', null, ['1901-01-01'], '1902-01-01'],
+    ['смерть до свадьбы', '1900-01-01', null, '1899-12-31', [], '1899-12-31'],
+    ['только смерть', null, null, '1900-05-06', [], '1900-05-06'],
+    ['високосная граница свадьбы', '1904-02-29', null, '1905-03-01', [], '1905-03-01'],
+    ['ограничение внутри одного года', null, null, '1904-04-01', ['1905-03-01'], '1904-03-01'],
+]) {
+    const g = {
+        indis: [{ __xref: 'C', name: 'Child', deat: death ? { date: death } : undefined },
+            ...siblings.map((d, i) => ({ __xref: 'S' + i, name: 'Sibling' + i, birt: { date: d } }))],
+        fams: [{ chil: ['C', ...siblings.map((_, i) => 'S' + i)],
+            marr: marr ? { date: marr } : undefined, div: div ? { date: div } : undefined }],
+    };
+    cases.push({ name, g, resolved: new Map(), want: [['C', want], ...siblings.map((d, i) => ['S' + i, d])] });
+}
+cases.push({
+    name: 'частичные даты: первая назначившая семья, супруги без изменений',
+    g: ged([
+        '0 @P@ INDI', '1 NAME Parent', '1 BIRT', '2 DATE 1880',
+        '0 @W@ INDI', '1 NAME Wife',
+        '0 @C@ INDI', '1 NAME Child', '1 DEAT', '2 DATE JUN 1903',
+        '0 @S@ INDI', '1 NAME Sibling', '1 BIRT', '2 DATE 1904',
+        '0 @F@ FAM', '1 HUSB @P@', '1 WIFE @W@', '1 CHIL @C@', '1 CHIL @S@',
+        '1 MARR', '2 DATE 1900', '1 DIV', '2 DATE 1902',
+        '0 @F2@ FAM', '1 CHIL @C@', '1 MARR', '2 DATE 1950',
+    ]),
+    resolved: new Map(),
+    want: [['P', '1880-01-01'], ['W', '1880-01-01'], ['C', '1903-01-01'], ['S', '1904-01-01']],
+});
+cases.push({
+    name: 'полусиблинг не блокирует место, выбранная дата якорит следующего',
+    g: ged([
+        '0 @P@ INDI', '1 NAME Parent', '1 BIRT', '2 DATE 1 JAN 1880',
+        '0 @S@ INDI', '1 NAME Half', '1 BIRT', '2 DATE 1 JUN 1901',
+        '0 @C@ INDI', '1 NAME Child', '0 @D@ INDI', '1 NAME Next',
+        '0 @F1@ FAM', '1 HUSB @P@', '1 CHIL @S@',
+        '0 @F2@ FAM', '1 HUSB @P@', '1 CHIL @C@', '1 CHIL @D@',
+        '1 MARR', '2 DATE 1 JAN 1900',
+    ]),
+    resolved: new Map(),
+    want: [['P', '1880-01-01'], ['S', '1901-06-01'], ['C', '1901-01-01'], ['D', '1902-01-01']],
+});
+
+for (const [name, parentBirth, parentDeath, spouseBirth, childBirth, want] of [
+    ['день смерти ограничен первенцем', null, '1937-01-01', '1886-03-01', '1909-10-19', '1886-03-01'],
+    ['поздний супруг ограничен первенцем', null, null, '1937-01-01', '1909-10-19', '1889-10-19'],
+    ['известная дата родителя не исправляется', '1937-01-01', null, '1886-03-01', '1909-10-19', '1937-01-01'],
+    ['високосный первенец минус двадцать', null, null, '2000-01-01', '1904-02-29', '1884-02-29'],
+]) {
+    const g = { indis: [
+        { __xref: 'P', name: 'Parent', birt: parentBirth ? { date: parentBirth } : undefined,
+            deat: parentDeath ? { date: parentDeath } : undefined },
+        { __xref: 'W', name: 'Spouse', birt: { date: spouseBirth } },
+        { __xref: 'C', name: 'First', birt: { date: childBirth } },
+    ], fams: [{ husb: 'P', wife: 'W', chil: ['C'] }] };
+    cases.push({ name, g, resolved: new Map(), want: [['P', want], ['W', spouseBirth], ['C', childBirth]] });
+}
+cases.push({
+    name: 'запасная смерть ребёнка-родителя ограничена первенцем другого брака',
+    g: ged([
+        '0 @G@ INDI', '1 NAME Grandparent', '1 BIRT', '2 DATE 1900',
+        '0 @P@ INDI', '1 NAME Parent', '1 DEAT', '2 DATE 1937',
+        '0 @C@ INDI', '1 NAME Child', '1 BIRT', '2 DATE 19 OCT 1909',
+        '0 @D@ INDI', '1 NAME Older', '1 BIRT', '2 DATE 1 JAN 1900',
+        '0 @F@ FAM', '1 HUSB @G@', '1 CHIL @P@', '1 MARR', '2 DATE 1938',
+        '0 @F2@ FAM', '1 HUSB @P@', '1 CHIL @C@',
+        '0 @F3@ FAM', '1 HUSB @P@', '1 CHIL @D@',
+    ]), resolved: new Map(),
+    want: [['G', '1900-01-01'], ['P', '1880-01-01'], ['C', '1909-10-19'], ['D', '1900-01-01']],
+});
+
+cases.push({
+    name: 'одинокий бездатный родитель: первенец сам служит якорем',
+    g: ged(['0 @P@ INDI', '1 NAME Parent',
+        '0 @C@ INDI', '1 NAME Child', '1 BIRT', '2 DATE 19 OCT 1909',
+        '0 @F@ FAM', '1 HUSB @P@', '1 CHIL @C@']),
+    resolved: new Map(), want: [['P', '1889-10-19'], ['C', '1909-10-19']],
+});
+
 for (const c of cases) {
     const famRefs = famRefsOf(c.g);
     const resolvedBefore = JSON.stringify([...c.resolved.entries()]);

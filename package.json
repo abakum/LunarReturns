@@ -5,7 +5,8 @@
   "main": "lunarreturns.js",
   "bin": {
     "ged2txt": "bin/ged2txt.cjs",
-    "txt2ged": "bin/txt2ged.cjs"
+    "txt2ged": "bin/txt2ged.cjs",
+    "trim": "bin/trim.cjs"
   },
   "scripts": {
     "start": "node lunarreturns.js",

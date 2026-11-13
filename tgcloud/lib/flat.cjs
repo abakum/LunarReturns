@@ -52,6 +52,8 @@ function treeReport(rep) {
         body += "\n" + rep.dups.map(d => "♻️ дубль: " + d.from + " → " + d.to).join("\n");
     if (rep.errors.length)
         body += "\n" + rep.errors.map(e => "💥 стр " + e.line + ": " + e.msg).join("\n");
+    if (rep.chartWarnings?.length)
+        body += "\n" + rep.chartWarnings.map(msg => "💥 Диаграмма не построена: " + msg).join("\n");
     return body;
 }
 
