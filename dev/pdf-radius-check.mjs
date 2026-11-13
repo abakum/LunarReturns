@@ -40,8 +40,10 @@ const tmp = fs.mkdtempSync('/tmp/kilo/lr-pdf-radius-');
 {
     const persons = [
         { key: 'a', name: 'Person', d: '1950-01-01', plac: 'Россия, Пермский край, Пермь',
-            dd: '2020-01-01', dp: '  Россия,\n Ростов-на-Дону,  ', note: 'Note (keep these words)' },
-        { key: 'b', name: 'Spouse', d: '1951-01-01', plac: 'Пермь', dp: ' , , ' },
+             dd: '2020-01-01', dp: '  Россия,\n Ростов-на-Дону,  ',
+             note: 'Note (keep these words)^Жил: foo bar baz^Жил: Пермь^Титул: keep these words^Похоронен: foo bar baz (note with (nested) words)^Похоронен: foo bar baz^Похоронен: (note only words)^' },
+        { key: 'b', name: 'Spouse', d: '1951-01-01', plac: 'Пермь', dp: ' , , ',
+             note: 'Жил: Россия, Пермский край, Пермь^' },
     ];
     const fams = [{ hKey: 'a', wKey: 'b', children: [],
         marr: { d: '1970-01-01', plac: 'Нижний Новгород' },
@@ -52,10 +54,22 @@ const tmp = fs.mkdtempSync('/tmp/kilo/lr-pdf-radius-');
     for (const place of ['Россия…Пермь', 'Россия…Ростов-на-Дону', 'Нижний…Новгород', 'Россия…Москва', 'Пермь'])
         assert.ok(text.includes('(' + place + ')'), place);
     assert.ok(text.includes('^Note (keep these words)'));
+    assert.ok(text.includes('^Жил: foo…baz^Жил: Пермь^Титул: keep these words^'));
+    assert.ok(text.includes('^Жил: Россия…Пермь^'));
+    assert.ok(text.includes('^Похоронен: foo…baz (note with (nested) words)^'));
+    assert.ok(text.includes('^Похоронен: foo…baz^Похоронен: (note only words)^'));
+    assert.ok(createFlatAnnotationText([[{ key: 'burial', name: 'Burial', nameOnly: true,
+        note: 'Похоронен: foo bar baz (note)^' }], []], [], [])({ xref: 'burial' })
+        .includes('^Похоронен: foo…baz (note)^'));
+    assert.doesNotMatch(text, /foo bar baz/);
+    const dateless = { key: 'stub', name: 'Stub', nameOnly: true, note: 'Жил: foo bar baz^' };
+    assert.match(createFlatAnnotationText([[dateless], []], [], [])({ xref: 'stub' }), /\^Жил: foo…baz\^/);
     assert.doesNotMatch(text, /\(\)|undefined|Пермский/);
     textOf({ xref: 'b' });
     assert.equal(JSON.stringify([persons, fams]), snapshot, 'places and nested events unchanged');
     const full = flatTreeText(persons, fams, true);
+    assert.ok(full.includes('^' + persons[0].note), 'ordinary export keeps full residence tails');
+    assert.ok(full.includes('^' + persons[1].note), 'initial residence segment stays full');
     for (const place of [persons[0].plac, persons[0].dp, fams[0].marr.plac, fams[0].div.plac])
         assert.ok(full.includes('(' + place + ')'), 'ordinary export keeps ' + place);
     const pdf = chartPdf('Places', persons.map(p => ({ ...p, xref: p.key, birth: p.d })), [], chartFont(), null, null, textOf);
@@ -63,7 +77,9 @@ const tmp = fs.mkdtempSync('/tmp/kilo/lr-pdf-radius-');
     for (const [, body] of annotations) {
         const id = body.match(/\/Contents (\d+) 0 R/)[1];
         const encoded = pdf.match(new RegExp('\\n' + id + ' 0 obj\\n<FEFF([a-f0-9]+)>'))[1];
-        assert.equal(Buffer.from(encoded, 'hex').swap16().toString('utf16le'), text.replaceAll('^', '\n'));
+        const decoded = Buffer.from(encoded, 'hex').swap16().toString('utf16le');
+        assert.equal(decoded, text.replace(/\^+$/gm, '').replaceAll('^', '\n'));
+        assert.doesNotMatch(decoded, /\n\n|\n$/, 'closing tail delimiters do not create empty annotation lines');
     }
 }
 function checkAnnotations(pdf, expectedCount) {

@@ -649,7 +649,7 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, a
         const normal = add("<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << >> /Length 0 >>\nstream\n\nendstream");
         const textOf = new Map();
         for (const p of m.annotationRegions) {
-            if (!textOf.has(p.r)) textOf.set(p.r, annotationText(p.r)?.replace(/\^/g, "\n"));
+            if (!textOf.has(p.r)) textOf.set(p.r, annotationText(p.r)?.replace(/\^+$/gm, "").replace(/\^/g, "\n"));
             const text = textOf.get(p.r);
             if (!text) continue;
             let contents = texts.get(text);
