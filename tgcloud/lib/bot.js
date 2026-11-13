@@ -7,7 +7,7 @@ import { kinLabel, fynny } from './kinship.cjs';
 import { REL_DEFS, religiousDigest } from './religion.cjs';
 import { jubileeText, approxOut } from './text.js';
 import { findShownRecord } from './text.cjs';
-import { chatFlatArtifacts, gedText, gedFictiveDates, trimImport } from './parse.cjs';
+import { chatFlatArtifacts, gedNoteLines, gedText, gedFictiveDates, trimImport } from './parse.cjs';
 import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText } from './tree.cjs';
 // фокус-список (focusListText) — канон tree.cjs (с A3): реэкспорт — точки
 // импорта handlers не менялись
@@ -1246,12 +1246,7 @@ export async function gedcomText(chatId, keys) {
             if (r.dsrcH !== undefined) out.push("2 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
             if (r.dp) out.push("2 PLAC " + r.dp);
         }
-        // NOTE с переносами («^») — построчно: 1 NOTE + 2 CONT на строку
-        if (r.note) {
-            const segs = r.note.split("^");
-            for (let i = 0; i < segs.length; i++)
-                out.push((i ? "2 CONT " : "1 NOTE ") + segs[i]);
-        }
+        out.push(...gedNoteLines(r.note));
         for (const f of fams) {
             if (f.chd.some(c => c.x === r.xref)) {
                 out.push("1 FAMC @" + fidOf.get(f) + "@");
@@ -1264,7 +1259,7 @@ export async function gedcomText(chatId, keys) {
     for (const [x, st] of stubInfo) {
         out.push("0 @" + stubId.get(x) + "@ INDI");
         out.push("1 NAME " + cleanName(st.name));
-        if (st.note) st.note.split("^").forEach((s, i) => out.push((i ? "2 CONT " : "1 NOTE ") + s));
+        out.push(...gedNoteLines(st.note));
         if (st.sex) out.push("1 SEX " + st.sex);
         if (st.deat) {
             out.push("1 DEAT", "2 DATE " + gdateAbt(st.deat, st.dabt));
@@ -1297,12 +1292,7 @@ export async function gedcomText(chatId, keys) {
             out.push("1 DIV", "2 DATE " + gdateAbt(f.div.d, f.div.abt));
             if (f.div.plac) out.push("2 PLAC " + f.div.plac);
         }
-        // NOTE с переносами — построчно (как у персон)
-        if (f.fnote) {
-            const segs = f.fnote.split("^");
-            for (let i = 0; i < segs.length; i++)
-                out.push((i ? "2 CONT " : "1 NOTE ") + segs[i]);
-        }
+        out.push(...gedNoteLines(f.fnote, false));
     }
     out.push("0 TRLR");
     return out.join("\n");

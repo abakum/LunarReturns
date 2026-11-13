@@ -220,7 +220,7 @@ for (const platform of ['tg', 'vk']) {
             assert.match(log, /Датный/);
         } else {
             for (const token of ['Dateless №Father ~I№1 ^Father №1, continued №2^Next №3',
-                'Dateless №Mother ~I№2 ^Mother №4', '+ ^Family №5^Undated №6',
+                'Dateless №Mother ~I№2 ^Титул: Mother №4^', '+ ^Family №5^Undated №6',
                 '(Birth №7)', '(Death №8)', '(Wedding №10)', '(Divorce №11)', '(Burial №13)']) {
                 assert.ok(contents.txt.includes(token), contents.txt);
             }

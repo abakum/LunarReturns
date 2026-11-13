@@ -217,6 +217,69 @@ function gdateToISO(s) {
 // (DATE, PLAC) у FAM; BURI (похороны) — фолбэк смерти: дата/место заходят
 // в deat, когда своей смерти нет (или нет её места)
 const gedText = value => String(value).replace(/#/g, "№");
+const gedLabels = { TITL: "Титул", CAST: "Сословие", OCCU: "Занятие" };
+const utf8Size = c => c.codePointAt(0) <= 0x7f ? 1 : c.codePointAt(0) <= 0x7ff ? 2 : c.codePointAt(0) <= 0xffff ? 3 : 4;
+function gedPrefix(value, bytes, chars = Infinity) {
+    let out = "", count = 0;
+    for (const c of value) {
+        const size = utf8Size(c);
+        if (size > bytes || count >= chars) break;
+        out += c; bytes -= size; count++;
+    }
+    return out;
+}
+function gedShortLine(prefix, value, chars = Infinity) {
+    const budget = 254 - prefix.length;
+    const full = gedPrefix(value, budget, chars);
+    return prefix + (full === value ? full : gedPrefix(value, budget - 3, chars - 1) + "…");
+}
+// Shared by both transports. Caret segments with reserved labels restore INDI attributes.
+function gedNoteLines(note, person = true) {
+    if (!note) return [];
+    const out = [], parts = String(note).split("^");
+    let continuing = false, structured = false;
+    for (let index = 0; index < parts.length; index++) {
+        const part = parts[index];
+        const m = person && part.match(/^(Титул|Сословие|Занятие|Жил|Похоронен): (.*)$/u);
+        if (m) {
+            continuing = false; structured = true;
+            const [, label, value] = m;
+            const tag = Object.keys(gedLabels).find(k => gedLabels[k] === label);
+            if (tag) out.push(gedShortLine("1 " + tag + " ", value, tag === "TITL" ? 120 : 90));
+            else if (label === "Жил") out.push("1 RESI", gedShortLine("2 PLAC ", value, 120));
+            else {
+                let place = value, burialNote = "";
+                if (value.endsWith(")")) {
+                    let depth = 0;
+                    for (let i = value.length - 1; i >= 0; i--) {
+                        if (value[i] === ")") depth++;
+                        else if (value[i] === "(" && --depth === 0 && (i === 0 || value[i - 1] === " ")) {
+                            place = value.slice(0, i).trimEnd(); burialNote = value.slice(i + 1, -1); break;
+                        }
+                    }
+                }
+                out.push("1 BURI");
+                if (place) out.push(gedShortLine("2 PLAC ", place, 120));
+                if (burialNote) out.push(gedShortLine("2 NOTE ", burialNote));
+            }
+            continue;
+        }
+        if (structured && index === parts.length - 1 && !part) continue;
+        structured = false;
+        let rest = part, prefix = continuing ? "2 CONT " : "1 NOTE ";
+        do {
+            let chunk = gedPrefix(rest, 254 - prefix.length);
+            if (chunk.length < rest.length) {
+                const space = chunk.lastIndexOf(" ");
+                if (space >= 0) chunk = chunk.slice(0, space + 1);
+            }
+            out.push(prefix + chunk);
+            rest = rest.slice(chunk.length); prefix = "2 CONC ";
+        } while (rest);
+        continuing = true;
+    }
+    return out;
+}
 function parseGedcom(text) {
     // строки не тримировать целиком: хвостовые пробелы строки принадлежат
     // значению (GEDCOM: «Иванов » + 2 CONC «Иван» → «Иванов Иван»), ведущий
@@ -226,13 +289,31 @@ function parseGedcom(text) {
     if (!lines.some(l => /^0\s+HEAD\b/i.test(l))) return null;
     if (!lines.some(l => /^1\s+(?:GEDC|FAM|INDI)\b/i.test(l) || /@\s+(?:INDI|FAM)\s*$/i.test(l))) return null;
     const indis = new Map(), fams = new Map();
-    let cur = null, curTag = null;
+    let cur = null, curTag = null, entry = null, continuationLevel = null;
+    const tails = new Map();
+    const flush = () => {
+        if (!entry) return;
+        let value = entry.value;
+        if (entry.tag === "RESI") value = entry.place || "";
+        if (entry.tag === "BURI") value = (entry.place || "") + (entry.notes.length ? (entry.place ? " " : "") + "(" + entry.notes.join(" ") + ")" : "");
+        if (entry.tag !== "NOTE") {
+            const label = gedLabels[entry.tag] || (entry.tag === "RESI" ? "Жил" : "Похоронен");
+            if (!value) { entry = null; return; }
+            value = label + ": " + value;
+        }
+        if (!tails.has(cur)) tails.set(cur, []);
+        tails.get(cur).push({ value, structured: entry.tag !== "NOTE" });
+        entry = null;
+    };
     for (const l of lines) {
         const m = l.match(/^(\d)\s+(?:@([^@]+)@\s+)?([A-Za-z]+)?(?:\s(.*))?$/);
         if (!m) continue;
         const lvl = Number(m[1]), xref = m[2], tag = (m[3] || "").toUpperCase(), val = (m[4] || "").trim();
+        const continuation = lvl === continuationLevel && (tag === "CONC" || tag === "CONT");
+        if (!continuation) continuationLevel = null;
         // Normalize text, never xrefs or pointer values (e.g. @I#1@).
         const valN = gedText(m[4] ?? ""); // NOTE spaces remain significant
+        if (lvl <= 1) flush();
         if (lvl === 0) {
             curTag = null;
             cur = null;
@@ -247,12 +328,13 @@ function parseGedcom(text) {
             else if (tag === "SEX") cur.sex = /^F/i.test(val) ? "F" : /^M/i.test(val) ? "M" : null;
             else if (tag === "BIRT") cur.birt = cur.birt || {};
             else if (tag === "DEAT") cur.deat = cur.deat || {};
-            else if (tag === "BURI") cur.buri = cur.buri || {};
+            else if (tag === "BURI") { cur.buri = cur.buri || {}; if (cur.adopFams) entry = { tag, notes: [] }; }
             else if (tag === "MARR") cur.marr = cur.marr || {};
             else if (tag === "DIV") cur.div = cur.div || {};
-            else if (tag === "NOTE") cur.note = valN;
-            // TITL — тоже хвост персоны (хранится в note, выводится как хвост росписи)
-            else if (tag === "TITL" && cur.note == null) cur.note = valN;
+            else if (tag === "NOTE" || (cur.adopFams && (gedLabels[tag] || tag === "RESI"))) {
+                entry = { tag, value: valN };
+                if (tag === "NOTE") continuationLevel = 2;
+            }
             else if (tag === "HUSB" || tag === "WIFE" || tag === "CHIL") {
                 const r = val.match(/@([^@]+)@/);
                 if (r) {
@@ -277,19 +359,24 @@ function parseGedcom(text) {
             if (curTag === "BIRT" && cur.birt) cur.birt.time = val.slice(0, 5);
             else if (curTag === "DEAT" && cur.deat) cur.deat.time = val.slice(0, 5);
         } else if (lvl === 2 && tag === "PLAC") {
+            if (entry && (entry.tag === "RESI" || entry.tag === "BURI")) entry.place = valN.trim();
             if (curTag === "BIRT" && cur.birt) cur.birt.plac = valN.trim();
             else if (curTag === "DEAT" && cur.deat) cur.deat.plac = valN.trim();
             else if (curTag === "BURI" && cur.buri) cur.buri.plac = valN.trim();
             else if (curTag === "MARR" && cur.marr) cur.marr.plac = valN.trim();
             else if (curTag === "DIV" && cur.div) cur.div.plac = valN.trim();
-        } else if (lvl === 2 && (tag === "CONC" || tag === "CONT") && (curTag === "NOTE" || curTag === "TITL")) {
-            // продолжение NOTE/TITL: CONC — склейка без пробела, CONT — новая
-            // строка («^» в note — маркер переноса, симметричен росписи/экспорту);
-            // значение дословно — хвостовые пробелы строки и ведущие пробелы
-            // продолжения принадлежат тексту (склейка слов через границу строк)
-            if (cur.note) cur.note += (tag === "CONT" ? "^" : "") + valN;
-            else if (valN) cur.note = valN;
+        } else if (lvl === 2 && tag === "NOTE" && entry?.tag === "BURI") {
+            entry.notes.push(valN);
+            continuationLevel = 3;
+        } else if (continuation && lvl === 3 && entry?.tag === "BURI" && entry.notes.length) {
+            entry.notes[entry.notes.length - 1] += (tag === "CONT" ? " " : "") + valN;
+        } else if (continuation && lvl === 2 && entry?.tag === "NOTE") {
+            entry.value += (tag === "CONT" ? "^" : "") + valN;
         }
+    }
+    flush();
+    for (const [record, segments] of tails) {
+        record.note = segments.map(s => s.value).join("^") + (segments.at(-1).structured ? "^" : "");
     }
     // похороны → смерть: дата/место, когда своей смерти нет (или нет места)
     for (const ind of indis.values()) {
@@ -819,4 +906,4 @@ function trimImport(data) {
 // NOT_FOR_GRAFT экспортируется: роспись метит платформенный chatFlatText
 // (bot.js для ТГ, инлайн ВК), sendGedArtifacts ВК режет перелив по метке;
 // у bot.js своя идентичная копия как точка реэкспорта для ТГ-хендлеров
-module.exports = { NOT_FOR_GRAFT, chatFlatArtifacts, gedText, gedFictiveDates, gedStats, packToCsv, parseGedcom, parseTree, parseTreeLine, parseTrigger, trimImport, withGraftMark };
+module.exports = { NOT_FOR_GRAFT, chatFlatArtifacts, gedNoteLines, gedText, gedFictiveDates, gedStats, packToCsv, parseGedcom, parseTree, parseTreeLine, parseTrigger, trimImport, withGraftMark };

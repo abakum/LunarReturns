@@ -36,7 +36,7 @@ try {
             assert.equal(parsed.fams[0].__xref, 'F#1');
             assert.equal(parsed.indis[0].name, 'Dateless №Father');
             assert.equal(parsed.indis[0].note, 'Father №1, continued №2^Next №3');
-            assert.equal(parsed.indis[1].note, 'Mother №4');
+            assert.equal(parsed.indis[1].note, 'Титул: Mother №4^');
             assert.equal(parsed.indis[0].birt, null);
             assert.equal(parsed.fams[0].marr, null);
             assert.equal(parsed.fams[0].note, 'Family №5^Undated №6');
@@ -65,11 +65,11 @@ try {
         assert.ok(ged);
         if (name === 'hash-text-xrefs-dateless-notes') {
             assert.ok(txt.includes('Dateless №Father ~I№1 ^Father №1, continued №2^Next №3'), txt);
-            assert.ok(txt.includes('Dateless №Mother ~I№2 ^Mother №4'), txt);
+            assert.ok(txt.includes('Dateless №Mother ~I№2 ^Титул: Mother №4^'), txt);
             assert.ok(txt.includes('+ ^Family №5^Undated №6'), txt);
             assert.doesNotMatch(txt, /#/);
             assert.equal(ged.indis.find(i => i.name === 'Dateless №Father').birt, null);
-            assert.equal(ged.indis.find(i => i.name === 'Dateless №Mother').note, 'Mother №4');
+            assert.equal(ged.indis.find(i => i.name === 'Dateless №Mother').note, 'Титул: Mother №4^');
             assert.ok(ged.fams.some(f => f.marr === null && f.note === 'Family №5^Undated №6'));
         }
         assert.equal(ged.indis.length, parseGedcom(source).indis.length);

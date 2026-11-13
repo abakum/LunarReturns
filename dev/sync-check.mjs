@@ -1362,11 +1362,11 @@ cmp('importGedcom бездатные пачка', VK.chatFlatText(GS_CH), await 
 cmp('importGedcom бездатные свадьбы', VK.weddingRows(GS_CH), await TG.weddingRows(GS_CH));
 cmp('importGedcom бездатные гедком', VK.gedcomText(GS_CH), await TG.gedcomText(GS_CH));
 const stubFlat = VK.chatFlatText(GS_CH);
-const STUB_FLAT_EXPECT = '-Иван Г 1960-05-10 (Пермь) 2020-05-05 (Пермь)\n'
+const STUB_FLAT_EXPECT = '-Иван Г 1960-05-10 (Пермь) 2020-05-05 (Пермь) ^Похоронен: Пермь^\n'
     + '+1983-06-04\n'
     + 'Мария С 1960-05-10~ (Сарапул) 2020-02-03 (Курск)\n'
-    + '--Сын Бездатный 1984-06-04~ 1990-05-05 (Москва)\n' // свадьба +1 год (birt_abt 15, EST-день)
-    + '=Ольга Д 1955-03-01 2001-01-01 (Кладбище)';
+    + '--Сын Бездатный 1984-06-04~ 1990-05-05 (Москва) ^Похоронен: Москва^\n' // свадьба +1 год (birt_abt 15, EST-день)
+    + '=Ольга Д 1955-03-01 2001-01-01 (Кладбище) ^Похоронен: Кладбище^';
 if (stubFlat !== STUB_FLAT_EXPECT)
     { failed++; console.log('✗ пачка бездатные/места:\n  ' + stubFlat); }
 // похороны: у Ивана (без DEAT) — deat от BURI; у Ольги (DEAT без места) —
