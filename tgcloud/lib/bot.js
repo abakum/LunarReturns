@@ -753,18 +753,6 @@ export async function parentKeys(chatId, childKey) {
     return [...new Set((await edgeRows(chatId)).filter(l => l.child === childKey).map(l => l.parent))];
 }
 
-// удалить связь: ребро + chil семьи, когда других связей ребёнка в ней нет;
-// опустевшая adhoc-семья без свадьбы уходит (пара с marr живёт — носитель)
-export async function deleteLink(chatId, link) {
-    await db.delete(edges).where(and(eq(edges.chatId, chatId), eq(edges.id, link.id))).run();
-    if (link.famXref) {
-        const cx = await xrefOfKey(chatId, link.c);
-        const rest = cx ? (await edgeRows(chatId)).filter(l => l.famXref === link.famXref && l.child === link.c) : [];
-        if (cx && !rest.length)
-            await db.delete(chil).where(and(eq(chil.chatId, chatId), eq(chil.fam, link.famXref), eq(chil.indi, cx))).run();
-        await normalizeFam(chatId, link.famXref);
-    }
-}
 async function normalizeFam(chatId, fx) {
     const f = await getFam(chatId, fx);
     if (!f) return;
@@ -933,63 +921,6 @@ export async function deleteEventCascade(chatId, key) {
             await db.update(edges).set({ pairCand: cand.length ? JSON.stringify(cand) : null })
                 .where(and(eq(edges.chatId, chatId), eq(edges.id, l.id))).run();
     }
-}
-
-// пол персоны по xref (кнопки ♂/♀ сообщения-связи)
-export async function setIndiSex(chatId, xref, sex) {
-    await db.update(indi).set({ sex: sex === 'F' ? 'F' : 'M' })
-        .where(and(eq(indi.chatId, chatId), eq(indi.xref, xref))).run();
-}
-
-// усыновление: toggle флага adopted у ребёнка (xref) в семье связи
-export async function toggleAdopted(chatId, link) {
-    const cx = await xrefOfKey(chatId, link.c);
-    if (!link.famXref || !cx) return false;
-    const row = await db.select().from(chil)
-        .where(and(eq(chil.chatId, chatId), eq(chil.fam, link.famXref), eq(chil.indi, cx))).get();
-    if (!row) return false;
-    const nv = !row.adopted;
-    await db.update(chil).set({ adopted: nv })
-        .where(and(eq(chil.chatId, chatId), eq(chil.fam, link.famXref), eq(chil.indi, cx))).run();
-    return nv;
-}
-
-// текст сообщения-связи: строки связи (+ семья/вопрос), без юбилеев события —
-// гедком-фрагмент добавляется отдельно (gedcomText с ключами)
-export async function linkText(chatId, link) {
-    let t = "🔗 Родитель: " + link.p + " → ребёнок: " + link.c + (link.adopted ? " 🤱 (усыновление)" : "");
-    if (link.famXref) {
-        const f = await famView(chatId, link.famXref);
-        if (f) t += "\n🧬 " + f.parents.map(keyN).join("+") + " — родители: " + keyN(link.c)
-            + (f.marr ? " (свадьба " + f.marr.d + (f.marr.plac ? ", " + f.marr.plac : "") + ")" : "")
-            + (f.div ? " (развод " + f.div.d + ")" : "");
-    }
-    if (link.pairCand && link.pairCand.length) {
-        if (link.pairCand.length === 1)
-            t += "\n🧬 Свадьба его родителей: " + link.pairCand[0].pair + "?";
-        else
-            t += "\n🧬 Свадьба его родителей?\n"
-                + link.pairCand.map((k, i) => (i + 1) + ") " + k.pair).join("\n");
-    }
-    return t;
-}
-
-// клавиатура сообщения-связи: ♂/♀ для нового лица, Да/Нет или 1 2… Нет для пары;
-// 👎 — удалить связь (ВК: реакция 👎); callback_data короткие: id связи
-export async function linkMarkup(chatId, link) {
-    const btn = (text, data) => ({ text, callback_data: data });
-    const rows = [[btn("👎", "dell:" + link.id)], [btn("🤱", "adop:" + link.id)]];
-    const rec = await recordOf(chatId, link[link.who === 'p' ? 'p' : 'c']);
-    if (rec && !rec.sex)
-        rows.push([btn("♂", "sex:" + link.id + ":M"), btn("♀", "sex:" + link.id + ":F")]);
-    if (link.pairCand && link.pairCand.length) {
-        const btns = link.pairCand.length === 1
-            ? [btn("Да", "pair:" + link.id + ":0")]
-            : link.pairCand.map((k, i) => btn(String(i + 1), "pair:" + link.id + ":" + i));
-        btns.push(btn("Нет", "pair:" + link.id + ":-1"));
-        rows.push(btns);
-    }
-    return { inline_keyboard: rows };
 }
 
 // ============================== ВЫВОД: сегодня/список ==============================

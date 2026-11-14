@@ -8,9 +8,9 @@ import { sendFlatPack } from '../lib/bot.js';
 import { REL_DEFS, religiousYear } from '../lib/religion.cjs';
 import {
     HELP, helpText, GED_TTL, relMarkup, getSettings, startMarkup, chatAdmin, jubileeMarkup, branchFlatText,
-    recordOf, recordByXref, setLinkCand, confirmPair, linkText, linkMarkup, gedcomText, sendLong,
-    deleteEventCascade, replaceWithGedcom, clearChatTree, deleteLink, setIndiSex, toggleAdopted,
-    linkById, linkPairs, xrefOfKey, personRows, weddingRows, sendTreeBackup,
+    recordOf, recordByXref, sendLong,
+    deleteEventCascade, replaceWithGedcom, clearChatTree,
+    linkPairs, personRows, weddingRows, sendTreeBackup,
     NOT_FOR_GRAFT, cutLines,
     upcomingText, mmddToday, focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText,
     focusWithSpouses, focusListKeys, focusSpousePairs, focusListText, focusDepth, sendGedPdf,
@@ -146,9 +146,8 @@ export default async function (cq, ctx) {
             .find(r => r.messageId === cq.message?.message_id);
 
     // события чата записями {n,d,h,m,dd} (персоны + свадьбы);
-    // 🔔-ветки (bell/focbell) — без примерных дат (список оповещений)
+    // Фильтрация неточных дат — в общих форматтерах tree.cjs.
     const items = async () => [...await personRows(chatId), ...await weddingRows(chatId)];
-    const bellItems = async () => (await items()).filter(r => !r.abt && !r.dabt && !r.mabt);
     // пол по ключу «Имя Д» (ярлыки родства)
     const sexOf = async () => (rows => k => (rows.find(r => r.n + " " + r.d === k) || {}).sex ?? null)
         (await personRows(chatId));
@@ -272,54 +271,6 @@ export default async function (cq, ctx) {
         return;
     }
 
-    // кнопки сообщения-связи: пол нового лица (♂/♀), свадьба (Да/Нет, 1 2…),
-    // 👎 — удалить связь
-    if (data.startsWith("sex:") || data.startsWith("pair:") || data.startsWith("adop:") || data.startsWith("dell:")) {
-        const [act, idStr, arg] = data.split(":");
-        const link = await linkById(chatId, Number(idStr));
-        if (!link) { await answer("связь не найдена"); return; }
-        if (act === "sex") {
-            const xref = await xrefOfKey(chatId, link[link.who === 'p' ? 'p' : 'c']);
-            if (xref) await setIndiSex(chatId, xref, arg);
-            await answer("пол: " + (arg === 'F' ? "♀" : "♂"));
-        } else if (act === "adop") {
-            const on = await toggleAdopted(chatId, link);
-            link.adopted = on;
-            await answer(on ? "🤱 усыновление" : "усыновление снято");
-        } else if (act === "pair") {
-            const i = Number(arg);
-            let fragKeys = [link.p, link.c];
-            const cand = link.pairCand;
-            if (i >= 0 && cand && cand[i]) {
-                const f = await confirmPair(chatId, link, cand[i]);
-                await answer(f && f.marr ? "💍 " + f.marr.d + (f.marr.plac ? ", " + f.marr.plac : "") : "не найдено");
-                if (f) fragKeys = [...f.parents, ...f.children]; // все трое
-            } else {
-                await setLinkCand(link, null);
-                await answer("без свадьбы");
-            }
-            const fresh = await linkById(chatId, link.id);
-            if (fresh) await editText(await linkText(chatId, fresh) + "\n" + await gedcomText(chatId, fragKeys), await linkMarkup(chatId, fresh), 'HTML');
-            return;
-        } else { // dell — удалить связь, событие остаётся; семья чистится
-            const heroKey = link[link.who === 'p' ? 'p' : 'c'];
-            const rec = await recordOf(chatId, heroKey);
-            await deleteLink(chatId, link);
-            await editText("🔗 Связь удалена: " + link.p + " → " + link.c
-                + (rec ? "\n" + jubileeText(rec, "") : ""), undefined, 'HTML');
-            await answer();
-            console.log("link deleted:", link.p, "→", link.c, "chat", chatId);
-            return;
-        }
-        const fresh = await linkById(chatId, link.id);
-        if (fresh) {
-            // sex/adop: фрагмент — новое лицо (с полом) либо родитель+ребёнок
-            const fragKeys = act === "sex" ? [fresh[fresh.who === 'p' ? 'p' : 'c']] : [fresh.p, fresh.c];
-            await editText(await linkText(chatId, fresh) + "\n" + await gedcomText(chatId, fragKeys), await linkMarkup(chatId, fresh), 'HTML');
-        }
-        return;
-    }
-
     // фокус-сообщение: радиус родни 1–5, 🔔/🧬 в радиусе; «-+=» — ветвь героя
     if (/^foc[1-5]$/.test(data) || data === "focbell" || data === "foctree" || data === "focflat") {
         const row = await fvOf();
@@ -354,7 +305,7 @@ export default async function (cq, ctx) {
                 const sex = await sexOf();
                 const s = await getSettings(chatId);
                 const keys = focusListKeys(pairs, spPairs, row.pkey, radius, sex, true);
-                const body = focusListText(await bellItems(), keys, row.pkey, pairs, spPairs, sex, byFull, mmddToday(), radius, s.fynny)
+                const body = focusListText(await items(), keys, row.pkey, pairs, spPairs, sex, byFull, mmddToday(), radius, s.fynny)
                     || "(в радиусе нет событий)";
                 kb = focusMarkup(cq.message.chat, chatId, s, radius, depth, fxref);
                 text = head + "\n" + (head.length + 1 + body.length > 4000

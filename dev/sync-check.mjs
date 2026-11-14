@@ -1694,13 +1694,13 @@ cmp('двое родителей — одна fam', [VK.famView(CH, vkL1.fam).pa
     [(await TG.famView(CH, tgL1.famXref)).parents, (await TG.famView(CH, tgL1.famXref)).children]);
 cmp('pairRecords (двое родителей)', VK.pairRecords(CH, vkL2), await TG.pairRecords(CH, tgL2));
 
-// подтвердить свадьбу — сравнить текст связи и фрагмент гедкома
+// подтвердить свадьбу — сравнить состав семьи и фрагмент гедкома
 const vkCand = VK.pairRecords(CH, vkL2);
 const tgCand = await TG.pairRecords(CH, tgL2);
 VK.confirmPair(CH, vkL2, vkCand[0]);
 await TG.confirmPair(CH, tgL2, tgCand[0]);
-const tgFresh = await TG.linkById(CH, tgL2.id);
-cmp('linkText после confirmPair', VK.linkText(CH, vkL2), await TG.linkText(CH, tgFresh));
+cmp('семья после confirmPair', [VK.famView(CH, vkL2.fam).parents, VK.famView(CH, vkL2.fam).children],
+    [(await TG.famView(CH, tgL2.famXref)).parents, (await TG.famView(CH, tgL2.famXref)).children]);
 cmp('gedcomText фрагмент', VK.gedcomText(CH, [pk, mk, ck]), await TG.gedcomText(CH, [pk, mk, ck]));
 cmp('gedcomText весь чат', VK.gedcomText(CH), await TG.gedcomText(CH));
 
@@ -1713,7 +1713,7 @@ VK.setLinkCand(vkL1, vkCand0);
 VK.deleteEventCascade(CH, pairKey);
 await TG.deleteEventCascade(CH, pairKey);
 const tgL1f = await TG.linkById(CH, tgL1.id);
-cmp('linkText: pairCand после удаления пары', VK.linkText(CH, vkL1), await TG.linkText(CH, tgL1f));
+cmp('pairCand после удаления пары', vkL1.pairCand || [], tgL1f.pairCand || []);
 cmp('gedcomText: MARR после удаления пары', VK.gedcomText(CH), await TG.gedcomText(CH));
 
 // каскад: удалить персону «Мать» — связи падают, семья остаётся с «Отцом»;

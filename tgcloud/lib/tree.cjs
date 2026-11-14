@@ -197,6 +197,11 @@ function sortEvents(rows, byFullDate, mmddToday) {
     return rows.sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
 }
 
+// Both chat and focus bells exclude uncertain dates; deletion lists keep all.
+function eventRows(rows, byFullDate) {
+    return byFullDate ? rows : rows.filter(r => !r.abt && !r.dabt && !r.mabt);
+}
+
 function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "", depth = 2, chain) {
     const set = new Set(keys);
     const map = rs => rs
@@ -205,7 +210,7 @@ function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate =
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "")
             + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d, depth, chain); return l ? " " + l : ""; })())
         .join("\n");
-    return map(sortEvents(items.filter(r => set.has(r.n + " " + r.d)
+    return map(sortEvents(eventRows(items, byFullDate).filter(r => set.has(r.n + " " + r.d)
         || (r.n.includes("+") && focusHasPair(r.n, keys))), byFullDate, mmddToday));
 }
 
@@ -223,8 +228,7 @@ function eventListText(rows, byFullDate = false, mmddNow = "") {
             + (r.dd !== undefined ? " " + approxOut(newStyleDate(r.dd), r.dabt || 0) : "")
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : ""))
         .join("\n");
-    if (!byFullDate) rows = rows.filter(r => !r.abt && !r.dabt && !r.mabt); // примерные — мимо оповещений
-    return map(sortEvents(rows, byFullDate, mmddNow));
+    return map(sortEvents(eventRows(rows, byFullDate), byFullDate, mmddNow));
 }
 
 // GEDCOM 5.5.1 по чату — выгрузка дерева: INDI из персон (плюс заглушки-

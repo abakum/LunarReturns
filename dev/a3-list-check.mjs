@@ -111,7 +111,19 @@ function checkCanon(tag) {
     const tied = [{ n: 'Second', d: '2000-03-01' }, { n: 'First', d: '2000-03-01' }];
     assert.equal(tree.eventListText(tied, false, '03-01'), 'Second 2000-03-01\nFirst 2000-03-01');
     const old = [{ n: 'Old', d: '1900-01-01', dd: '1901-01-01', abt: 3 }];
-    assert.equal(tree.focusListText(old, ['Old 1900-01-01'], 'Old 1900-01-01', [], [], () => null), 'Old 1900-01-13? 1901-01-14');
+    assert.equal(tree.focusListText(old, ['Old 1900-01-01'], 'Old 1900-01-01', [], [], () => null), '');
+    assert.equal(tree.focusListText(old, ['Old 1900-01-01'], 'Old 1900-01-01', [], [], () => null, true), 'Old 1900-01-13? 1901-01-14');
+    const exact = { n: 'Exact', d: '2000-03-01' };
+    const uncertain = ['abt', 'dabt', 'mabt'].flatMap(field =>
+        Array.from({ length: 17 }, (_, i) => ({ n: field + (i + 1), d: '2000-03-01', [field]: i + 1 })));
+    const mixed = [exact, ...uncertain];
+    const keys = mixed.map(r => r.n + ' ' + r.d);
+    for (const full of [false, true]) {
+        const focus = tree.focusListText(mixed, keys, keys[0], [], [], () => null, full);
+        assert.equal(focus, tree.eventListText(mixed, full), 'focus/chat share date filtering');
+        assert.equal(focus.split('\n').length, full ? mixed.length : 1);
+    }
+    assert.equal(tree.focusListText(mixed, keys, keys[0], [], [], () => null), 'Exact 2000-03-01');
     const E = EXPECTED.focus;
     assert.equal(tree.focusListText(items, R1_KEYS, sonKey, pairs, spousePairs, sexOf), E.r1_bell, tag + ' r1 bell');
     assert.equal(tree.focusListText(items, R1_KEYS, sonKey, pairs, spousePairs, sexOf, true), E.r1_full, tag + ' r1 full');

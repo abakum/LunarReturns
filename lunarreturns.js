@@ -325,21 +325,9 @@ function linkRowOf(r) {
     return { id: r.id, peerId: r.chat, p: r.p, c: r.c, who: r.who, fam: r.fam, cmid: r.cmid,
         pairCand: r.pairCand ? JSON.parse(r.pairCand) : null, adopted };
 }
-function linkById(peerId, id) {
-    const r = q1("SELECT * FROM links WHERE chat=? AND id=?", peerId, id);
-    return r ? linkRowOf(r) : null;
-}
-function linkByCmid(peerId, cmid) {
-    const r = q1("SELECT * FROM links WHERE chat=? AND cmid=?", peerId, cmid);
-    return r ? linkRowOf(r) : null;
-}
 function setLinkCand(link, cand) {
     qr("UPDATE links SET pairCand=? WHERE chat=? AND id=?", cand ? JSON.stringify(cand) : null, link.peerId, link.id);
     link.pairCand = cand || null;
-}
-function setLinkCmid(link, cmid) {
-    qr("UPDATE links SET cmid=? WHERE chat=? AND id=?", cmid || 0, link.peerId, link.id);
-    link.cmid = cmid || 0;
 }
 
 // ---- мутации ----
@@ -810,17 +798,6 @@ function parentKeys(peerId, childKey) {
     return [...new Set(qa("SELECT p FROM links WHERE chat=? AND c=?", peerId, childKey).map(l => l.p))];
 }
 
-// удалить связь: ребро + chil семьи, когда других связей ребёнка в ней нет;
-// опустевшая adhoc-семья без свадьбы уходит (пара с marr живёт — носитель)
-function deleteLink(peerId, link) {
-    qr("DELETE FROM links WHERE chat=? AND id=?", peerId, link.id);
-    if (link.fam) {
-        const cx = xrefOfKey(peerId, link.c);
-        if (cx && !q1("SELECT id FROM links WHERE chat=? AND fam=? AND c=?", peerId, link.fam, link.c))
-            qr("DELETE FROM chil WHERE chat=? AND fam=? AND indi=?", peerId, link.fam, cx);
-        normalizeFam(peerId, link.fam);
-    }
-}
 function normalizeFam(peerId, fx) {
     const f = famRaw(peerId, fx);
     if (!f) return;
@@ -1062,51 +1039,6 @@ function deleteEventCascade(peerId, key) {
             qr("UPDATE links SET pairCand=? WHERE chat=? AND id=?", cand.length ? JSON.stringify(cand) : null, peerId, l.id);
     }
 }
-
-// текст сообщения-связи: строки связи (+ семья/вопрос), без юбилеев события —
-// гедком-фрагмент добавляется отдельно (gedcomText с ключами)
-function linkText(peerId, link) {
-    let t = "🔗 Родитель: " + link.p + " → ребёнок: " + link.c + (link.adopted ? " 🤱 (усыновление)" : "");
-    if (link.fam) {
-        const f = famView(peerId, link.fam);
-        if (f) t += "\n🧬 " + f.parents.map(keyN).join("+") + " — родители: " + keyN(link.c)
-            + (f.marr ? " (свадьба " + f.marr.d + (f.marr.plac ? ", " + f.marr.plac : "") + ")" : "")
-            + (f.div ? " (развод " + f.div.d + ")" : "");
-    }
-    if (link.pairCand && link.pairCand.length) {
-        if (link.pairCand.length === 1)
-            t += "\n🧬 Свадьба его родителей: " + link.pairCand[0].pair + "?";
-        else
-            t += "\n🧬 Свадьба его родителей?\n"
-                + link.pairCand.map((k, i) => (i + 1) + ") " + k.pair).join("\n");
-    }
-    return t;
-}
-
-// клавиатура сообщения-связи: ♂/♀ для нового лица, Да/Нет или 1 2… Нет для пары;
-// 👎 в ВК не даём — реакция 👎 удаляет связь (в ТГ это кнопка)
-function linkKeyboard(peerId, link) {
-    const mk = (label, payload) => ({
-        action: { type: "callback", label, payload: JSON.stringify(payload) },
-        color: "secondary"
-    });
-    const rows = [];
-    rows.push([mk("🤱", { c: "adop", l: link.id }, "secondary")]);
-    const rec = recordOf(peerId, link[link.who]);
-    if (rec && !rec.sex)
-        rows.push([mk("♂", { c: "sex", l: link.id, s: "M" }), mk("♀", { c: "sex", l: link.id, s: "F" })]);
-    if (link.pairCand && link.pairCand.length) {
-        const btns = link.pairCand.length === 1
-            ? [mk("Да", { c: "pair", l: link.id, i: 0 })]
-            : link.pairCand.map((k, i) => mk(String(i + 1), { c: "pair", l: link.id, i }));
-        btns.push(mk("Нет", { c: "pair", l: link.id, i: -1 }));
-        rows.push(btns);
-    }
-    // пустая клавиатура обязана проходить в edit — иначе останется прежняя
-    return JSON.stringify({ inline: true, buttons: rows });
-}
-
-
 
 // импорт разобранного гедкома = ЗАМЕНА: дерево чата очищается и заливается
 // заново (слияние больше не делаем — смешивание источников ломало базу).
@@ -2551,13 +2483,11 @@ function focusText(peerId, key, radius, bell, dd, byFull = false) {
     // (2 слова) влезает — связность сохраняется; радиус 5 — без лимита
     const keys = focusListKeys(pairs, spPairs, key, radius, k => sexMap.get(k) ?? null, bell);
     const items = [...personRows(peerId), ...weddingRows(peerId)];
-    // 🔔-список — без примерных дат (список оповещений); гедком/дамп — как есть
-    const bellItems = byFull ? items : items.filter(r => !r.abt && !r.dabt && !r.mabt);
     // круговой порядок «от сегодня» (МСК) — ось сортировки списка; MM-DD
     const { mo, d: dToday } = mskNowParts();
     const mmdd = String(mo).padStart(2, "0") + "-" + String(dToday).padStart(2, "0");
     const body = bell
-        ? (focusListText(bellItems, keys, key, pairs, spPairs, k => sexMap.get(k) ?? null, byFull, mmdd, radius, getSettings(peerId).fynny)
+        ? (focusListText(items, keys, key, pairs, spPairs, k => sexMap.get(k) ?? null, byFull, mmdd, radius, getSettings(peerId).fynny)
             || "(в радиусе нет событий)")
         : gedcomText(peerId, keys);
     return focusHead(key, radius, dd) + "\n" + body;
@@ -3149,53 +3079,6 @@ async function handleEvent(o) {
             await jubileeKeyboard(peerId, o.user_id, key, depth, detail, rec.n.includes("+")));
         return;
     }
-    // кнопки сообщения-связи: пол нового лица, свадьба, усыновление, удаление
-    if (p && typeof p === "object" && (p.c === "sex" || p.c === "pair" || p.c === "adop" || p.c === "dell")) {
-        const link = linkById(peerId, p.l);
-        if (!link) { await answerEvent(o.event_id || o.id, o.user_id, peerId, "связь не найдена"); return; }
-        let snack = "";
-        if (p.c === "sex") {
-            const x = xrefOfKey(peerId, link[link.who]);
-            if (x) qr("UPDATE indi SET sex=? WHERE chat=? AND xref=?", p.s === "F" ? "F" : "M", peerId, x);
-            snack = "пол: " + (p.s === "F" ? "♀" : "♂");
-        } else if (p.c === "adop") {
-            const cx = xrefOfKey(peerId, link.c);
-            const cur = link.fam && cx
-                ? !!(q1("SELECT adopted AS a FROM chil WHERE chat=? AND fam=? AND indi=?", peerId, link.fam, cx) || {}).a
-                : false;
-            if (link.fam && cx)
-                qr("UPDATE chil SET adopted=? WHERE chat=? AND fam=? AND indi=?", cur ? 0 : 1, peerId, link.fam, cx);
-            snack = !cur ? "🤱 усыновление" : "усыновление снято";
-        } else if (p.c === "dell") {
-            const head = "🔗 Связь удалена: " + link.p + " → " + link.c;
-            deleteLink(peerId, link);
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "связь удалена");
-            const rec = await findRecordByCmid(peerId, o.conversation_message_id);
-            await editOrigin(o, (rec ? jubileeText(rec, "") + "\n" : "") + head, JSON.stringify({ inline: true, buttons: [] }));
-            return;
-        } else {
-            const i = Number(p.i);
-            let fragKeys = [link.p, link.c];
-            if (i >= 0 && link.pairCand && link.pairCand[i]) {
-                const f = confirmPair(peerId, link, link.pairCand[i]);
-                snack = f && f.marr ? "💍 " + f.marr.d + (f.marr.plac ? ", " + f.marr.plac : "") : "не найдено";
-                if (f) fragKeys = [...f.parents, ...f.children]; // все трое
-            } else {
-                setLinkCand(link, null);
-                snack = "без свадьбы";
-            }
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, snack);
-            const fresh = linkById(peerId, link.id) || link;
-            await editOrigin(o, linkText(peerId, fresh) + "\n" + gedcomText(peerId, fragKeys), linkKeyboard(peerId, fresh));
-            return;
-        }
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, snack);
-        // sex/adop: фрагмент — новое лицо (с полом) либо родитель+ребёнок
-        const fresh = linkById(peerId, link.id) || link;
-        const fragKeys = p.c === "sex" ? [fresh[fresh.who]] : [fresh.p, fresh.c];
-        await editOrigin(o, linkText(peerId, fresh) + "\n" + gedcomText(peerId, fragKeys), linkKeyboard(peerId, fresh));
-        return;
-    }
     // нормализуем: {c} / {rel} либо строка "del" / "del:yes" / "rel:orth"
     const payload = typeof p === "object" ? (p.rel ? "rel:" + p.rel : String(p.c ?? "")) : p;
     console.log("event:", payload, "peer", peerId);
@@ -3396,30 +3279,7 @@ async function handleReaction(o) {
         }
         return;
     }
-    if (o.reaction_id === 9) { // 👎 — удалить связь (сообщение-связь) либо событие
-        const link = linkByCmid(peerId, cmid);
-        if (link) {
-            const head = "🔗 Связь удалена: " + link.p + " → " + link.c;
-            deleteLink(peerId, link);
-            console.log("reaction 👎: удалена связь", link.p, "→", link.c, "peer", peerId);
-            // остаётся текст события без строки связи
-            const rec = await findRecordByCmid(peerId, cmid);
-            try {
-                await vkApi("messages.edit", {
-                    peer_id: peerId, conversation_message_id: cmid,
-                    message: rec ? jubileeText(rec, "") + "\n" + head : head,
-                    keyboard: JSON.stringify({ inline: true, buttons: [] })
-                });
-            } catch (e) {
-                console.error("reaction edit:", e.message, "— reply");
-                try {
-                    await messagesSend(peerId, head, 0, cmid);
-                } catch (e2) {
-                    console.error("reaction reply:", e2.message);
-                }
-            }
-            return;
-        }
+    if (o.reaction_id === 9) { // 👎 — удалить событие
         const rec = await findRecordByCmid(peerId, cmid);
         if (!rec) return;
         // связи персоны, свадьба пары «Имя+Имя», висячие кандидаты, семьи
@@ -3759,10 +3619,10 @@ module.exports.__test = {
     HELP,
     parseTrigger, parseGedcom, gedStats, parseTree, parseTreeLine, applyTree, treeReport,
     focusGraphKeys, focusKeys, focusHasPair, focusWithSpouses, focusListKeys, focusLabel, focusHead,
-    focusListText, kinLabel, focusDepth, addLink, deleteLink, pairRecords, confirmPair, linkText, linkPairs,
+    focusListText, kinLabel, focusDepth, addLink, pairRecords, confirmPair, linkPairs,
     personRows, weddingRows, famList, famView, focusSpousePairs, upsertPerson, deleteEventCascade,
     clearChatTree, recordOf, recordAnyOf, chartPdf, chartModel, chartFor, fileBaseOf, b64ToBytes, parseTtf,
-    gedcomText, importGedcom, jubileeText, setLinkCand, setLinkCmid, weddingByFx, upsertWedding, linkRowOf,
+    gedcomText, importGedcom, jubileeText, setLinkCand, weddingByFx, upsertWedding, linkRowOf,
     chatFlatText, flatTreeText, branchFlatText, subsetBranch, flatRows, flatSearch,
     flatHitPerson, flatHitKey, packToCsv,
     cutAndGraft, setPersonByXref, editTrigger, rootOf, uniqueKeyOf, upcomingEvents, hasTree,
