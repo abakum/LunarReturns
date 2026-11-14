@@ -38,9 +38,31 @@ function rootOf(tree) {
     return null;
 }
 
+function graftError(tree, anchorKey, records = []) {
+    if (tree.noGraft) return "Для замены ветки используйте плоское дерево полученное нажатием на кнопку -+=";
+    if (tree.errors.length) return "Роспись содержит ошибки: ветвь не изменена.";
+    const roots = tree.persons.filter((p, i) => !p.spouseLine && !tree.children.some(ch => ch.c === i));
+    if (roots.length !== 1 || !roots[0].rec.d) return "Для прививки нужен единственный корень с датой рождения: ветвь не изменена.";
+    if (tree.persons.some(p => p !== roots[0] && p.rec.n + " " + p.rec.d === anchorKey))
+        return "Цитируемый герой находится внутри росписи, а не в корне: ветвь не изменена.";
+    const rootKey = roots[0].rec.n + " " + roots[0].rec.d;
+    if (rootKey !== anchorKey && records.some(r => r.n + " " + r.d === rootKey))
+        return "Новые имя и дата корня принадлежат другой персоне: ветвь не изменена.";
+    for (const ch of tree.children) {
+        const cd = tree.persons[ch.c].rec.d;
+        for (const pi of [ch.m, ch.f].filter(i => i != null)) {
+            const pd = tree.persons[pi].rec.d;
+            if (pd && cd && Number(cd.slice(0, 4)) - Number(pd.slice(0, 4)) < 12)
+                return "Родитель слишком молод для ребёнка: ветвь не изменена.";
+        }
+    }
+    return null;
+}
+
 // отчёт по применению росписи (applyTree/cutAndGraft): «древо: персон …»,
 // маркер росписи радиуса → отказ, дубли и ошибки построчно
 function treeReport(rep) {
+    if (rep.graftError) return "💥 " + rep.graftError;
     if (rep.noGraft) // роспись радиуса в ответ на триггер — правки нет
         return "💥 Для замены ветки используйте плоское дерево полученное нажатием на кнопку -+=";
     let body = "✅ древо: персон " + rep.persons + ", семей " + rep.fams
@@ -420,8 +442,8 @@ function searchHead(q, count) {
 // joinReserve (по умолчанию) — консервативный запас ВК: «+1» под соединитель
 // строк считается и перед первой строкой накопления (переливы поиска/росписи,
 // списки событий без заголовка). joinReserve=false — бюджет «заголовок +
-// хвост» (reserved уже несёт соединитель заголовка; межстрочных «+1» в
-// бюджете нет — как в ВК у хвоста после заголовка). Сборка держателя/финала
+// хвост» (reserved уже несёт соединитель заголовка; остальные соединители
+// считаются по фактической длине). Сборка держателя/финала
 // и суффиксы (✂️, ⏳) — снаружи, у вызывающих мест (бюджеты дословно ВК):
 //   переливы росписи: reserved = head.length + 1 + NOT_FOR_GRAFT.length + 1
 //   перелив поиска: reserved = NOT_FOR_GRAFT.length + 1
@@ -429,10 +451,10 @@ function searchHead(q, count) {
 function cutLines(text, budget, reserved = 0, joinReserve = true) {
     let acc = "";
     for (const l of String(text).split("\n")) {
-        if (reserved + acc.length + (joinReserve ? 1 : 0) + l.length > budget) break;
+        if (reserved + acc.length + (acc || joinReserve ? 1 : 0) + l.length > budget) break;
         acc += (acc ? "\n" : "") + l;
     }
     return acc;
 }
 
-module.exports = { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, searchHead, cutLines, datePlusYears, treeReport, rootOf, createFlatAnnotationText };
+module.exports = { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, searchHead, cutLines, datePlusYears, treeReport, rootOf, graftError, createFlatAnnotationText };

@@ -5,17 +5,14 @@ import { createRequire } from 'node:module';
 
 // Original A3 expectations, with explicit corrections for displayed-key defects.
 const require = createRequire(import.meta.url);
-const { approxOut, findShownRecord } = require('../tgcloud/lib/text.cjs');
+const { approxOut, findShownRecord, replyHeader, resolveReplyRecord } = require('../tgcloud/lib/text.cjs');
 const { newStyleDate } = require('../tgcloud/lib/religion.cjs');
 const source = fs.readFileSync(new URL('../lunarreturns.js', import.meta.url), 'utf8');
-const tgSource = fs.readFileSync(new URL('../tgcloud/handlers/message.js', import.meta.url), 'utf8');
-// Exercise the actual reply regex literals, including the VK reaction lookup.
-const replyPatterns = [...source.matchAll(/\.match\((\/\^.*?\/)\)/g),
-    ...tgSource.matchAll(/\.match\((\/\^.*?\/)\)/g)]
-    .map(m => m[1]).filter(s => s.includes('[-._]'));
+// Reply parsing is shared; the VK reaction lookup retains its own pattern.
 const reactionPattern = source.match(/const RX = (\/\^.*?\/);/)[1];
-assert.ok(replyPatterns.length >= 8);
-for (const literal of [...replyPatterns, reactionPattern]) {
+for (const date of ['2000-02-03>', '2000.02>', '2000>', '1900_01_13'])
+    assert.equal(replyHeader('Person ' + date + ' other text'), 'Person ' + date);
+for (const literal of [reactionPattern]) {
     const regex = vm.runInNewContext(literal);
     const head = literal.startsWith('/^\\d') ? '1 Person ' : 'Person ';
     for (const date of ['2000-02-03>', '2000.02>', '2000>', '1900_01_13']) {
@@ -23,6 +20,9 @@ for (const literal of [...replyPatterns, reactionPattern]) {
         assert.equal(match?.[2], date, literal + ': ' + date);
     }
 }
+const crossingMonth = { n: 'Crossing', d: '1900-01-25', abt: 1 };
+assert.equal(resolveReplyRecord([crossingMonth], 'Crossing 1900-01'), null);
+assert.equal(resolveReplyRecord([crossingMonth], 'Crossing 1900-02'), crossingMonth);
 const body = source.match(/^function recordShownOf\(peerId, key\) \{[\s\S]*?^\}/m)[0];
 const exactBody = source.match(/^function recordOf\(peerId, key\) \{[\s\S]*?^\}/m)[0];
 const people = [

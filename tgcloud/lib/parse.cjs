@@ -680,10 +680,9 @@ function weddingRecOf(s) {
 // половиной — дети ниже принадлежат ему).
 function parseTree(text) {
     const errors = [], persons = [], weddings = [], children = [];
-    // метка NOT_FOR_GRAFT первой непустой строкой (BOM перед ней — мимо):
-    // роспись радиуса, резке-прививке не подлежит (см. cutAndGraft)
-    const ng0 = String(text).replace(/^\uFEFF/, "").split(/\r?\n/).find(l => l.trim());
-    const noGraft = !!ng0 && ng0.trim().toLowerCase() === NOT_FOR_GRAFT;
+    // A wrapper heading/comment must not hide the radius export's safety mark.
+    const noGraft = String(text).replace(/^\uFEFF/, "").split(/\r?\n/)
+        .some(l => l.trim().toLowerCase() === NOT_FOR_GRAFT);
     const stack = []; // открытые семьи: {depth, m, f, o} — глубины строго растут; o — владелец
     let pw = null;    // открытое «+»: {wIdx, depth, spi|null, line}
     let ln = 0;

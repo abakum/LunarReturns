@@ -4,21 +4,41 @@ import { gedDrops, focusView, settings } from '../schema.js';
 import { parseTrigger, parseGedcom, gedStats, parseTree } from '../lib/parse.cjs';
 import { fileBaseOf } from '../lib/chart.cjs';
 import { jubileeText } from '../lib/text.js';
+import { normalizeFocusRadius, focusListMessage } from '../lib/tree.cjs';
+import { REPLY_TARGET_ERROR, resolveReplyRecord } from '../lib/text.cjs';
 import {
     helpText, startMarkup, chatAdmin, getSettings, todayText, jubileeMarkup, sendLong,
-    recordOf, recordShownOf, replaceWithGedcom,
+    recordOf, recordShownOf, recordByXref, replaceWithGedcom,
     linkPairs, personRows, weddingRows, sendGedPdf, focusHead, focusMarkup,
     focusListKeys, focusSpousePairs, focusDepth, focusListText, mmddToday, upcomingText, upsertPerson, applyTree, cutAndGraft, treeReport,
     editTrigger, hasTree, NOT_FOR_GRAFT,
     chatFlatText, flatSearch, sendFlatPack, flatHitKey, searchHead, cutLines,
 } from '../lib/bot.js';
 
-// заголовок «Имя ГГГГ-ММ-ДД» (+ цифра радиуса у фокус-сообщений) в цитате;
-// якорь — только сообщение пользователя (не бота), как в ВК; `_` в датах —
-// маркер показанного нового стиля: сохраняем до поиска по отображённой форме
-const replyHeadOf = reply => reply && reply.from && !reply.from.is_bot
-    ? String(reply.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)/) : null;
-const keyOfHead = m => m[1].trim() + " " + m[2];
+async function resolveReply(chatId, reply) {
+    if (!reply || reply.chat?.id !== chatId || !Number.isInteger(reply.from?.id)
+        || reply.from.id <= 0 || reply.sender_chat) return null;
+    const bot = !!reply.from?.is_bot;
+    let context = null;
+    if (bot) {
+        let me;
+        try { me = await api.getMe({}); } catch { return null; }
+        if (reply.from.id !== me.id) return null;
+        const contexts = (await db.select().from(focusView).where(eq(focusView.chatId, chatId)).all())
+            .filter(r => r.messageId === reply.message_id);
+        if (contexts.length > 1) return null;
+        context = contexts[0] || null;
+    }
+    const rec = resolveReplyRecord([...await personRows(chatId), ...await weddingRows(chatId)], reply.text, bot, context);
+    if (!rec) return null;
+    const ids = new Set((reply.reply_markup?.inline_keyboard || []).flat()
+        .map(b => b.callback_data?.match(/^(?:det|mon|del1):(.+)$/)?.[1]).filter(Boolean));
+    for (const id of ids) {
+        const identified = await recordByXref(chatId, id);
+        if (!identified || identified.n !== rec.n || identified.d !== rec.d) return null;
+    }
+    return rec;
+}
 
 // сжатый юбилей + единая клавиатура (jubileeMarkup): цифры радиуса, 👎,
 // 👀/🌙, 🔔/🧬/-+=/❌; фок-кнопки работают через строку focus_view —
@@ -107,6 +127,11 @@ async function gedDrop(chatId, doc, fromId) {
 
 // дроп .txt-документа с родословной росписью -+= (см. txtDrop ниже в коде)
 async function txtDrop(chatId, doc, fromId, replyTo) {
+    const resolved = await resolveReply(chatId, replyTo);
+    if (replyTo && !resolved) {
+        await api.sendMessage({ chat_id: chatId, text: REPLY_TARGET_ERROR });
+        return;
+    }
     const name = doc.file_name || "пачка.ged.txt";
     let content;
     try {
@@ -117,16 +142,19 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
         return;
     }
     const tree = parseTree(content);
+    if (replyTo && (await resolveReply(chatId, replyTo))?.xref !== resolved?.xref) {
+        await api.sendMessage({ chat_id: chatId, text: REPLY_TARGET_ERROR });
+        return;
+    }
     if (!tree.persons.length && !tree.errors.length) {
         await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось разобрать файл " + name + " (ждём пачку «плоское древо»)" });
         return;
     }
     // в ответе на триггер (сообщение пользователя) — ветвь цитируемого:
     // срезана, роспись привита
-    const rh = replyHeadOf(replyTo);
-    if (rh) {
+    if (resolved) {
         let anchor = null;
-        const sh = await recordShownOf(chatId, keyOfHead(rh));
+        const sh = resolved;
         if (sh) anchor = sh.n + " " + sh.d;
         if (!anchor) {
             // цитата на триггера не нашлась — добавлять молча нельзя: так
@@ -269,12 +297,24 @@ export default async function (message, ctx) {
         return;
     }
 
+    const scopedCommand = cmd === "/start" || text === "/"
+        || /^\/(?:bell[1-5]?|gedcom[1-5]?|links)(?:@\S+)?$/i.test(text)
+        || text.toLowerCase() === "связи";
+    const anchorInput = text.split(/\r?\n/).some(l => /^\s*[-+=]/.test(l))
+        || (text.split(/\r?\n/).length === 1 && parseTrigger(text));
+    let resolved = null;
+    if (message.reply_to_message && (scopedCommand || anchorInput) && !parseGedcom(text)) {
+        resolved = await resolveReply(chatId, message.reply_to_message);
+        if (!resolved) {
+            await api.sendMessage({ chat_id: chatId, text: REPLY_TARGET_ERROR });
+            return;
+        }
+    }
+
     if (cmd === "/start" || text === "/") {
         // «/» ответом на триггер — фокус-сообщение с радиусом родни
-        const rh = replyHeadOf(message.reply_to_message);
-        if (rh) {
-            const key = keyOfHead(rh);
-            const rec = await recordShownOf(chatId, key);
+        if (resolved) {
+            const rec = resolved;
             if (rec) {
                 // показанный ключ → хранимый
                 await sendFocus(message.chat, chatId, rec.n + " " + rec.d, 1, rec.dd, message.message_id,
@@ -300,20 +340,18 @@ export default async function (message, ctx) {
     }
 
     // /bellN (в ответ на триггер): список родни в радиусе N — как тап 🔔 на
-    // фокусе; без триггера — весь список чата (как 🔔 чата), не влезает —
+    // фокусе; без reply — весь список чата (как 🔔 чата), не влезает —
     // отрезаем (целые строки)
     const bm = text.match(/^\/bell([1-5])?(?:@\S+)?$/i);
     if (bm) {
         const radius = Number(bm[1]) || 1;
-        const rh = replyHeadOf(message.reply_to_message);
-        if (rh) {
-            const key = keyOfHead(rh);
-            const rec = await recordShownOf(chatId, key);
+        if (resolved) {
+            const rec = resolved;
             if (rec) {
                 const skey = rec.n + " " + rec.d; // показанный ключ → хранимый
                 // как тап: радиус не глубже имеющихся связей
                 const pairs = await linkPairs(chatId);
-                const r = Math.min(radius, Math.max(1, focusDepth(pairs, await focusSpousePairs(chatId), skey)));
+                const r = normalizeFocusRadius(radius, focusDepth(pairs, await focusSpousePairs(chatId), skey));
                 const sexMap = new Map((await personRows(chatId))
                     .map(rw => [rw.n + " " + rw.d, rw.sex ?? null]));
                 const spPairs = await focusSpousePairs(chatId);
@@ -326,7 +364,7 @@ export default async function (message, ctx) {
                     spPairs, k => sexMap.get(k) ?? null, false, mmddToday(), r, (await getSettings(chatId)).fynny)
                     || "(в радиусе нет событий)";
                 await api.sendMessage({ chat_id: chatId,
-                    text: focusHead(skey, r, rec.dd) + "\n" + body });
+                    text: focusListMessage(focusHead(skey, r, rec.dd), body) });
                 console.log("bell text:", skey, "радиус", r, "chat", chatId);
                 return;
             }
@@ -345,21 +383,20 @@ export default async function (message, ctx) {
     const gm = text.match(/^\/gedcom([1-5])?(?:@\S+)?$/);
     if (gm) {
         const radius = Number(gm[1]) || 1;
-        const rh = replyHeadOf(message.reply_to_message);
-        if (rh) {
-            const key = keyOfHead(rh);
-            const rec = await recordShownOf(chatId, key);
+        if (resolved) {
+            const rec = resolved;
             if (rec) {
                 const skey = rec.n + " " + rec.d; // показанный ключ → хранимый
-                const head = focusHead(skey, radius, rec.dd);
+                const pairs = await linkPairs(chatId);
+                const spPairs = await focusSpousePairs(chatId);
+                const r = normalizeFocusRadius(radius, focusDepth(pairs, spPairs, skey));
+                const head = focusHead(skey, r, rec.dd);
                 const hold = await api.sendMessage({ chat_id: chatId, text: head + "\n🧬⏳",
                     reply_parameters: { message_id: message.message_id, allow_sending_without_reply: true } });
                 try {
-                const pairs = await linkPairs(chatId);
-                const spPairs = await focusSpousePairs(chatId);
                 const sexMap = new Map((await personRows(chatId))
                     .map(rw => [rw.n + " " + rw.d, rw.sex ?? null]));
-                const keys = focusListKeys(pairs, spPairs, skey, radius,
+                const keys = focusListKeys(pairs, spPairs, skey, r,
                     k => sexMap.get(k) ?? null);
                 await sendGedPdf(chatId, keys, head, skey, hold.message_id);
                 } catch (e) {
@@ -367,7 +404,7 @@ export default async function (message, ctx) {
                     await api.editMessageText({ chat_id: chatId, message_id: hold.message_id,
                         text: head + "\n💥 Не удалось подготовить древо: " + e.message });
                 }
-                console.log("focus text:", skey, "радиус", radius, "chat", chatId);
+                console.log("focus text:", skey, "радиус", r, "chat", chatId);
                 return;
             }
         }
@@ -385,17 +422,14 @@ export default async function (message, ctx) {
     }
 
     // «/links» / «связи» (как в VK): роспись ВЕТВИ героя — как «-+=» на фокусе
-    // (>4000 — файлом .ged.txt); без reply (и не на триггер) — роспись древа
+    // (>4000 — файлом .ged.txt); без reply — роспись древа
     // чата. Листинг сообщений-связей не восстановлен (листинг был одноразовым)
     if (/^\/links(?:@\S+)?$/i.test(text) || text.toLowerCase() === "связи") {
         const replyTo = { message_id: message.message_id, allow_sending_without_reply: true };
-        const lrh = replyHeadOf(message.reply_to_message);
         let key = null, head = "";
-        if (lrh) {
-            const rk = keyOfHead(lrh);
-            const rec = await recordShownOf(chatId, rk);
+        if (resolved) {
+            const rec = resolved;
             if (rec) { key = rec.n + " " + rec.d; head = focusHead(key, 1, rec.dd); } // показанный ключ → хранимый
-            else key = null; // ответ не на триггер — вся роспись
         }
         const ok = await sendFlatPack(chatId, key, head, message.message_id);
         if (!ok) await api.sendMessage({ chat_id: chatId, text: key ? "ветвь пуста" : "связей пока нет",
@@ -478,12 +512,10 @@ export default async function (message, ctx) {
     if (lines0.some(l => /^[-+=]/.test(l))) {
         const tree = parseTree(text);
         if (tree.persons.length || tree.errors.length) {
-            // цитата-якорь — только сообщение пользователя (триггер), как в ВК;
-            // replyHeadOf также снимает кейкап радиуса
-            const rh0 = replyHeadOf(message.reply_to_message);
+            // The reply resolver has already validated the current hero.
             let anchor = null;
-            if (rh0) {
-                const sh = await recordShownOf(chatId, keyOfHead(rh0));
+            if (resolved) {
+                const sh = resolved;
                 if (sh) anchor = sh.n + " " + sh.d;
             }
             const rep = anchor ? await cutAndGraft(chatId, anchor, tree) : await applyTree(chatId, tree);
@@ -505,9 +537,8 @@ export default async function (message, ctx) {
     if (lines.length === 1) {
         const parsed = parseTrigger(lines[0]);
         if (parsed && !parsed.error) {
-            const rh1 = replyHeadOf(message.reply_to_message);
-            if (rh1) {
-                const sh = await recordShownOf(chatId, keyOfHead(rh1));
+            if (resolved) {
+                const sh = resolved;
                 const anchor = sh ? sh.n + " " + sh.d : "";
                 const ed = await editTrigger(chatId, anchor,
                     Object.assign({}, parsed.rec, parsed.tail ? { note: parsed.tail } : {}));

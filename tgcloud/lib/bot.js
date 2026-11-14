@@ -6,9 +6,10 @@ import { mskToday } from './astro.cjs';
 import { kinLabel, fynny } from './kinship.cjs';
 import { REL_DEFS, religiousDigest } from './religion.cjs';
 import { jubileeText, approxOut } from './text.js';
-import { findShownRecord } from './text.cjs';
+import { findShownRecord, REPLY_TARGET_ERROR } from './text.cjs';
+import { graftError } from './flat.cjs';
 import { chatFlatArtifacts, gedNoteLines, gedText, gedFictiveDates, trimImport } from './parse.cjs';
-import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText } from './tree.cjs';
+import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText, isExactEvent } from './tree.cjs';
 // фокус-список (focusListText) — канон tree.cjs (с A3): реэкспорт — точки
 // импорта handlers не менялись
 // чистые функции родословной росписи -+= — общий канон tgcloud/lib/flat.cjs
@@ -653,7 +654,7 @@ async function cutBranch(chatId, px, extraNames = []) {
 // правка ветви: цитируемый anchorKey — герой росписи tree. Молча: старая ветвь
 // срезается (cutBranch), поля героя обновляются по строке героя росписи (имя и
 // дата рождения правимы), новая ветвь прививается applyTree'ом. Цитируемый
-// не найден — роспись применяется как есть (добавление merge'ем).
+// не найден или структура небезопасна — отказ до любых записей.
 // Роспись РАДИУСА (chatFlatText по keys — .ged.txt третьего прицепа 🧬) несёт
 // героя ВНУТРИ дерева (первым корнем идёт старший предок) и открывается
 // меткой NOT_FOR_GRAFT: радиус не несёт всех потомков героя, прививка
@@ -661,26 +662,21 @@ async function cutBranch(chatId, px, extraNames = []) {
 // ответ-ошибка предлагает родословную роспись -+= тапа «-+=». Мимо якоря метка резке
 // мешает, а добавлению нет: merge росписи радиуса в чистый чат работает как прежде
 export async function cutAndGraft(chatId, anchorKey, tree, trim = false) {
-    if (tree.noGraft) // метка NOT_FOR_GRAFT первой строкой (роспись радиуса)
-        return { persons: 0, fams: 0, links: 0, errors: [], noGraft: true };
+    const error = graftError(tree, anchorKey, await personRows(chatId));
+    if (error || !(await xrefOfKey(chatId, anchorKey)))
+        return { persons: 0, fams: 0, links: 0, errors: [], graftError: error || REPLY_TARGET_ERROR };
     const px = await xrefOfKey(chatId, anchorKey);
-    if (!px) return { ...(await applyTree(chatId, trim ? trimImport(tree) : tree)), cut: 0, famsCut: 0 };
-    const heroIdx = tree.persons.findIndex(p => !p.spouseLine
-        && p.rec.n + " " + p.rec.d === anchorKey);
     const root = rootOf(tree);
-    if (trim) trimImport(tree); // hero detection uses original names; root keeps its identity
-    if (heroIdx >= 0 && root && tree.persons.indexOf(root) !== heroIdx) {
-        const rep = await applyTree(chatId, tree); // герой внутри росписи — merge без резки
-        rep.cut = 0; rep.famsCut = 0;
-        return rep;
+    if (trim) {
+        trimImport(tree);
+        const trimmedError = graftError(tree, anchorKey, (await personRows(chatId)).filter(r => r.xref !== px));
+        if (trimmedError) return { persons: 0, fams: 0, links: 0, errors: [], graftError: trimmedError };
     }
     const cut = await cutBranch(chatId, px,
         tree.persons.map(p => p.rec.n)); // свадьбы-заглушки пар росписи тоже срезаются
     if (trim && root) await db.update(indi).set({ deatPlac: null })
         .where(and(eq(indi.chatId, chatId), eq(indi.xref, px))).run();
-    if (!root) { await deleteEventCascade(chatId, anchorKey); }
-    else if (root.rec.d !== undefined) // герой без даты — заглушка не замещает запись
-        await setPersonByXref(chatId, px, Object.assign({ sex: root.sex, note: root.note }, root.rec), trim);
+    await setPersonByXref(chatId, px, Object.assign({ sex: root.sex, note: root.note }, root.rec), trim);
     const rep = await applyTree(chatId, tree);
     await restoreEdges(chatId);
     return Object.assign(rep, { cut: cut.cut, famsCut: cut.fams });
@@ -930,7 +926,7 @@ export async function todayText(chatId) {
     const [, mo, d] = mskToday();
     const mmdd = String(mo).padStart(2, "0") + "-" + String(d).padStart(2, "0");
     const rows = [...await personRows(chatId), ...await weddingRows(chatId)]
-        .filter(r => r.d.slice(5) === mmdd && !r.abt && !r.mabt);
+        .filter(r => isExactEvent(r) && r.d.slice(5) === mmdd);
     const parts = rows.map(r => jubileeText(r, ""));
     const digest = religiousDigest(await getSettings(chatId));
     if (digest) parts.push(digest);
@@ -1922,7 +1918,7 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin =
         // герой/голова, метка; полное — в файле; у ромба метка и так первая
         // строка росписи в файле), файл — ответом на него же, потом ⏳ снят
         // (✂️ остаётся)
-        const inner = cutLines(pack, 3900, prefix.length + mark.length);
+        const inner = cutLines(pack, 4000, prefix.length + mark.length + "\n✂️⏳".length, false);
         const finalText = prefix + mark + inner + "\n✂️";
         await edit(finalText + "⏳");
         // BOM — чтобы Windows-редакторы открывали как UTF-8

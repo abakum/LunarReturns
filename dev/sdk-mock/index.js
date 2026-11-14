@@ -62,6 +62,7 @@ const hook = (method, params) => {
 export const api = new Proxy({}, {
     get: (_t, method) => (params) => {
         if (process.env.TG_TOKEN) return realCall(method, params);
+        if (method === 'getMe') return Promise.resolve({ id: 999, is_bot: true });
         if (method === 'getChatMember') {
             const role = globalThis.__tgdev && globalThis.__tgdev.role;
             return Promise.resolve({ status: role === 'administrator' ? 'administrator' : 'member', user: { id: params && params.user_id } });

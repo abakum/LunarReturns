@@ -8,6 +8,19 @@ const { kinLabel } = require('./kinship.cjs');
 const { approxOut } = require('./text.cjs');
 const { newStyleDate } = require('./religion.cjs');
 
+function normalizeFocusRadius(radius, depth) {
+    return Math.min(5, Math.max(1, Number(radius) || 1), Math.max(1, depth));
+}
+
+function focusListMessage(head, body) {
+    // flat.cjs also imports tree helpers; defer access until initialization ends.
+    const { cutLines } = require('./flat.cjs');
+    const header = cutLines(head, 4000, 0, false);
+    if (header !== head) return header;
+    const shown = cutLines(body, 4000, head.length + 1, false);
+    return head + (shown ? "\n" + shown : "");
+}
+
 function focusDepth(pairs, spousePairs, key) {
     let m = 0;
     for (const d of focusGraphDist(pairs, spousePairs, key, 5).values())
@@ -197,9 +210,13 @@ function sortEvents(rows, byFullDate, mmddToday) {
     return rows.sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
 }
 
-// Both chat and focus bells exclude uncertain dates; deletion lists keep all.
+// Only the anniversary date matters; uncertain death/divorce does not hide it.
+function isExactEvent(row) {
+    return !!row.d && !row.abt && !row.mabt;
+}
+
 function eventRows(rows, byFullDate) {
-    return byFullDate ? rows : rows.filter(r => !r.abt && !r.dabt && !r.mabt);
+    return byFullDate ? rows : rows.filter(isExactEvent);
 }
 
 function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "", depth = 2, chain) {
@@ -218,7 +235,7 @@ function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate =
 // "" — событий нет; rows — готовые записи персон и свадеб (выборка БД —
 // в адаптерах ботов). byFullDate=false — круговой порядок «от сегодня»
 // (как religiousYear): ММ-ДД сегодня первым, события прошлой части года —
-// в конце; примерные даты (abt/dabt/mabt) — мимо оповещений;
+// в конце; примерные основные даты (abt/mabt) — мимо оповещений;
 // true — все события по полной дате ГГГГ-ММ-ДД (подтверждение удаления),
 // примерные остаются. Текущая дата — явно (mmddNow «ММ-ДД»), без
 // чтения времени внутри
@@ -281,4 +298,4 @@ function familyXref(rows, mx, fx, alias, date, used) {
 }
 
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
-module.exports = { familyXref, focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, eventListText, famsByGenerations };
+module.exports = { isExactEvent, normalizeFocusRadius, focusListMessage, familyXref, focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, eventListText, famsByGenerations };

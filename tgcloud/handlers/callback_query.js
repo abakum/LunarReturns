@@ -2,12 +2,13 @@ import { api, db, InputFile } from 'sdk';
 import { and, eq } from 'sdk/db';
 import { settings, gedDrops, focusView } from '../schema.js';
 import { jubileeText } from '../lib/text.js';
+import { normalizeFocusRadius, focusListMessage } from '../lib/tree.cjs';
 import { parseGedcom, parseTree, trimImport } from '../lib/parse.cjs';
 import { fileBaseOf } from '../lib/chart.cjs';
 import { sendFlatPack } from '../lib/bot.js';
 import { REL_DEFS, religiousYear } from '../lib/religion.cjs';
 import {
-    HELP, helpText, GED_TTL, relMarkup, getSettings, startMarkup, chatAdmin, jubileeMarkup, branchFlatText,
+    HELP, helpText, GED_TTL, relMarkup, getSettings, startMarkup, chatAdmin, jubileeMarkup,
     recordOf, recordByXref, sendLong,
     deleteEventCascade, replaceWithGedcom, clearChatTree,
     linkPairs, personRows, weddingRows, sendTreeBackup,
@@ -156,7 +157,7 @@ export default async function (cq, ctx) {
         const pairs = await linkPairs(chatId);
         const spPairs = await focusSpousePairs(chatId);
         const depth = Math.max(1, focusDepth(pairs, spPairs, key));
-        const r = Math.min(fvRadius, depth);
+        const r = normalizeFocusRadius(fvRadius, depth);
         return [r, pairs, spPairs, depth];
     };
 
@@ -308,8 +309,7 @@ export default async function (cq, ctx) {
                 const body = focusListText(await items(), keys, row.pkey, pairs, spPairs, sex, byFull, mmddToday(), radius, s.fynny)
                     || "(в радиусе нет событий)";
                 kb = focusMarkup(cq.message.chat, chatId, s, radius, depth, fxref);
-                text = head + "\n" + (head.length + 1 + body.length > 4000
-                    ? cutLines(body, 4000, head.length + 1, false) : body);
+                text = focusListMessage(head, body);
             } catch (e) {
                 console.error("focus list:", e);
                 text = head + "\nНе удалось подготовить список. Попробуйте ещё раз.";
@@ -337,23 +337,10 @@ export default async function (cq, ctx) {
         // первой строкой; реплай правленной росписью на цитату заменяет ветвь
         if (data === "focflat") {
             const kb = cq.message.reply_markup;
-            await api.editMessageText({ chat_id: chatId, message_id: cq.message.message_id,
-                text: head + "\n-+=⏳", reply_markup: kb }).catch(e => console.error("flat loading:", e.message));
             try {
-            const pack = await branchFlatText(chatId, row.pkey);
-            if (!pack) { await editText(head + "\n(ветвь пуста)", kb); return; }
             const fKb0 = focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth, fxref);
-            if ((head + "\n" + pack).length >= 4000) {
-                // перелив: порядок строк — герой, метка (правило — коммент
-                // у NOT_FOR_GRAFT в lib/bot.js); ВСЯ роспись — файлом ответом
-                // на это сообщение, потом ⏳ снят
-                const inner = cutLines(pack, 4000, head.length + 1 + NOT_FOR_GRAFT.length + 1);
-                await editText(head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️⏳", fKb0);
-                await tailDoc(pack, head, ".ged.txt",
-                    head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️", fKb0);
-                return;
-            }
-            await editText(head + "\n" + pack, fKb0);
+            await sendFlatPack(chatId, row.pkey, head, 0,
+                { edit: { message_id: cq.message.message_id, markup: fKb0 } });
             } catch (e) {
                 console.error("flat export:", e);
                 await editText(head + "\n💥 Не удалось подготовить ветвь. Попробуйте ещё раз.", kb);

@@ -85,6 +85,7 @@ globalThis.__VK_REPL_PORT = PORT;
 const MOD = path.join(os.tmpdir(), 'lrvk-repl-' + crypto.randomBytes(4).toString('hex') + '.cjs');
 fs.writeFileSync(MOD, patch(SRC));
 process.env.LR_NO_MAIN = '1'; // main() Not to launch — only in the repl
+process.env.VK_GROUP_ID = '99';
 process.env.LR_DB = process.env.LR_DB || path.resolve(DB_FILE); // изолированная скретч-база (иначе модуль взял бы tmpdir/lunarreturns.db общий для всех прогонов)
 const mod = await import(url.pathToFileURL(MOD));
 const T = mod.__test;
@@ -146,6 +147,12 @@ const srv = http.createServer((req, res) => {
         trace({ method, params: p });
         if (RAW) console.log('>> vk', method, JSON.stringify(p).slice(0, 160));
         try {
+            if ((method === 'messages.send' || method === 'messages.edit') && p.keyboard !== undefined) {
+                let keyboard;
+                try { keyboard = JSON.parse(p.keyboard); } catch { /* rejected below */ }
+                if (!keyboard || typeof keyboard !== 'object' || !Array.isArray(keyboard.buttons))
+                    return json({ error: { error_code: 100, error_msg: 'keyboard contains incorrect JSON' } });
+            }
             if (method === 'messages.sendMessageEventAnswer') {
                 let text = '';
                 try { text = JSON.parse(p.event_data).text || ''; } catch { /* нет текста */ }
@@ -272,8 +279,8 @@ async function dropFile(kind, file, replyNum) {
     };
     fileN++;
     const cmid = ++myCmid;
-    const replyMsg = replyNum && msgs[replyNum - 1] && !msgs[replyNum - 1].fromBot
-        ? { from_id: USER, text: msgs[replyNum - 1].text } : null;
+    const replyMsg = replyNum && msgs[replyNum - 1]
+        ? { peer_id: CHAT, from_id: msgs[replyNum - 1].fromBot ? -99 : USER, text: msgs[replyNum - 1].text } : null;
     console.log(`[${msgs.length + 1}] ты: 📎 ${doc.title}`);
     msgs.push({ cmid, fromBot: false, text: '📎 ' + doc.title, kb: null });
     try {

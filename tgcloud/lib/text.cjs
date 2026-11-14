@@ -6,6 +6,8 @@
 
 const { newStyleDate } = require('./religion.cjs');
 
+const REPLY_TARGET_ERROR = "Не удалось найти цитируемую запись в дереве этого чата. Ответьте на актуальное событие пользователя, расчёт, фокус или экспорт ветви самого бота с однозначным героем. Для всего чата отправьте команду без ответа.";
+
 const HELP = "Отправьте событие, покажу лунно-солнечные юбилеи:\n"
     + "Иван 1950-01-02 12:30 (Пермь)\n"
     + "Без времени — полдень, без зоны — МСК. Можно указать дату смерти.\n\n"
@@ -46,4 +48,28 @@ function findShownRecord(records, key) {
         || r.d === m[2].replace(/[._]/g, "-") + m[3])) || null;
 }
 
-module.exports = { HELP, helpText, approxOut, findShownRecord };
+// Only the first line is an anchor, never a person inside a list or document.
+function replyHeader(text, bot = false) {
+    const lines = String(text || "").split(/\r?\n/);
+    const focus = /^[1-5] /.test(lines[0]);
+    if (bot && !focus && !lines.some((line, i) => i > 0 && /^#\d{4}г\s/.test(line))) return null;
+    const m = lines[0].match(/^(?:[1-5] )?([^\n]+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)(?=\s|$)/);
+    return m && m[1].trim() + " " + m[2];
+}
+
+function resolveReplyRecord(records, text, bot = false, context = null) {
+    const key = replyHeader(text, bot);
+    if (!key) return null;
+    const m = key.match(/^(.+) (\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?)([?=<>~]?)$/);
+    if (!m) return null;
+    const date = m[2].replace(/[._]/g, "-") + m[3];
+    const hits = records.filter(r => r.n === m[1] && (r.n + " " + r.d === key
+        || approxOut(newStyleDate(r.d), r.abt || r.mabt || 0) === date));
+    if (hits.length !== 1) return null;
+    const rec = hits[0];
+    if (context && (context.pkey !== rec.n + " " + rec.d
+        || context.ts < Date.now() - 7 * 24 * 3600000)) return null;
+    return rec;
+}
+
+module.exports = { REPLY_TARGET_ERROR, HELP, helpText, approxOut, findShownRecord, replyHeader, resolveReplyRecord };

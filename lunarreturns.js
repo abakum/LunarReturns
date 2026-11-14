@@ -34,7 +34,7 @@ const { fynny, kinLabel } = reqLib("kinship");
 // ТГ-копия через ESM-шим; правки — только в .cjs, дословных копий больше нет.
 const {
     familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations,
-    focusListText, eventListText} = reqLib("tree");
+    focusListText, eventListText, normalizeFocusRadius, focusListMessage} = reqLib("tree");
 
 
 // ============================== ГЕДКОМ → PDF (общий модуль) ==============================
@@ -67,7 +67,8 @@ const { TZ_MS, moonNew, la, ageSuffix, mskToday} = reqLib("astro");
 // Канон примерных дат — tgcloud/lib/text.cjs (approxOut): его же импортирует
 // ТГ-копия через ESM-шим; юбилейные тексты (jubileeText) платформенные —
 // остаются в копиях (ТГ: tg-spoiler/htmlEsc, ВК: plain).
-const { HELP, helpText, approxOut, findShownRecord } = reqLib("text");
+const { REPLY_TARGET_ERROR, HELP, helpText, approxOut, findShownRecord, resolveReplyRecord } = reqLib("text");
+const { graftError } = reqLib("flat");
 
 // ============================== РОДОСЛОВНАЯ РОСПИСЬ -+= — ЧИСТЫЕ ФУНКЦИИ (общий модуль) =====
 // Канон — tgcloud/lib/flat.cjs (план .kilo/plans/20261108-canon-flat-pure-plan.md): его же импортирует
@@ -93,7 +94,7 @@ function jubileeText(rec, note, detail = false) {
     const [y, mo, d] = sd.split("-").map(Number);
     const t = new Date(Date.UTC(y, mo - 1, d, rec.h !== undefined ? rec.h : 12, rec.m !== undefined ? rec.m : 0, 0));
     const head = rec.n + " " + nsd(sd, sd !== rec.d, rec.abt || rec.mabt || 0) + (hasTime ? " " + String(rec.h).padStart(2, "0") + ":" + String(rec.m).padStart(2, "0") : "")
-        + (sdd ? " " + nsd(sdd, sdd !== rec.dd, rec.dabt || rec.mabt || 0) : "")
+        + (sdd ? " " + nsd(sdd, sdd !== rec.dd, rec.dabt || 0) : "")
         + ageSuffix(rec.n, sd, sdd)
         + (note ? "\n" + note : "");
     return head + "\n" + la(t, detail).join("\n");
@@ -688,7 +689,7 @@ function cutBranch(peerId, px, extraNames = []) {
 // правка ветви: цитируемый anchorKey — герой росписи tree. Молча: старая ветвь
 // срезается (cutBranch), поля героя обновляются по строке героя росписи (имя и
 // дата рождения правимы), новая ветвь прививается applyTree'ом. Цитируемый
-// не найден — роспись применяется как есть (добавление merge'ем).
+// не найден или структура небезопасна — отказ до любых записей.
 // Роспись РАДИУСА (chatFlatText по keys — .ged.txt третьего прицепа 🧬) несёт
 // героя ВНУТРИ дерева (первым корнем идёт старший предок) и открывается
 // меткой NOT_FOR_GRAFT: радиус не несёт всех потомков героя, прививка
@@ -696,24 +697,19 @@ function cutBranch(peerId, px, extraNames = []) {
 // ответ-ошибка предлагает родословную роспись -+= тапа «-+=». Мимо якоря метка резке
 // мешает, а добавлению нет: merge росписи радиуса в чистый чат работает как прежде
 function cutAndGraft(peerId, anchorKey, tree, trim = false) {
-    if (tree.noGraft) // метка NOT_FOR_GRAFT первой строкой (роспись радиуса)
-        return { persons: 0, fams: 0, links: 0, errors: [], noGraft: true };
+    const error = graftError(tree, anchorKey, personRows(peerId));
+    if (error || !xrefOfKey(peerId, anchorKey))
+        return { persons: 0, fams: 0, links: 0, errors: [], graftError: error || REPLY_TARGET_ERROR };
     const px = xrefOfKey(peerId, anchorKey);
-    if (!px) { const rep = applyTree(peerId, trim ? trimImport(tree) : tree); rep.cut = 0; rep.famsCut = 0; return rep; }
-    const heroIdx = tree.persons.findIndex(p => !p.spouseLine
-        && p.rec.n + " " + p.rec.d === anchorKey);
     const root = rootOf(tree);
-    if (trim) trimImport(tree);
-    if (heroIdx >= 0 && root && tree.persons.indexOf(root) !== heroIdx) {
-        const rep = applyTree(peerId, tree); // герой внутри росписи — merge без резки
-        rep.cut = 0; rep.famsCut = 0;
-        return rep;
+    if (trim) {
+        trimImport(tree);
+        const trimmedError = graftError(tree, anchorKey, personRows(peerId).filter(r => r.xref !== px));
+        if (trimmedError) return { persons: 0, fams: 0, links: 0, errors: [], graftError: trimmedError };
     }
     const cut = cutBranch(peerId, px, tree.persons.map(p => p.rec.n)); // свадьбы-заглушки пар росписи тоже срезаются
     if (trim && root) qr("UPDATE indi SET deat_plac=NULL WHERE chat=? AND xref=?", peerId, px);
-    if (root && root.rec.d !== undefined) // герой без даты — заглушка не замещает запись
-        setPersonByXref(peerId, px, Object.assign({ sex: root.sex, note: root.note }, root.rec), trim);
-    else if (!root) deleteEventCascade(peerId, anchorKey);
+    setPersonByXref(peerId, px, Object.assign({ sex: root.sex, note: root.note }, root.rec), trim);
     const rep = applyTree(peerId, tree);
     restoreEdges(peerId);
     rep.cut = cut.cut; rep.famsCut = cut.fams;
@@ -1754,12 +1750,12 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
                 }
                 console.log("ged artifacts edited:", base + ".ged", "peer", peerId);
             } else {
-                const clique = { peer_id: peerId, attachment: atts.join(","), keyboard: kb };
+                const clique = { peer_id: peerId, attachment: atts.join(","), ...(kb ? { keyboard: kb } : {}) };
                 if (origin && sent === -1) clique.conversation_message_id = origin.conversation_message_id;
                 else clique.message_id = sent;
                 await vkApi("messages.edit", clique);
                 console.log("ged edit: attachment", (Date.now() - t0) + "ms");
-                const tlex = { peer_id: peerId, attachment: atts.join(","), keyboard: kb,
+                const tlex = { peer_id: peerId, attachment: atts.join(","), ...(kb ? { keyboard: kb } : {}),
                     message: readyTxt };
                 if (origin && sent === -1) tlex.conversation_message_id = origin.conversation_message_id;
                 else tlex.message_id = sent;
@@ -2347,6 +2343,11 @@ async function handleGedDrop(peerId, doc, msgId, convMsgId, fromId) {
 // применить сразу (ветвь цитируемого срезана, роспись привита);
 // просто дроп — те же 3 кнопки «Да/Нет/Да, с резервом», что у .ged (ТГ: txtDrop)
 async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
+    const resolved = resolveReply(peerId, replyMsg);
+    if (replyMsg && !resolved) {
+        await messagesSend(peerId, REPLY_TARGET_ERROR, msgId, convMsgId);
+        return;
+    }
     const name = doc.title || "пачка.ged.txt";
     let text;
     try {
@@ -2357,16 +2358,18 @@ async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
         return;
     }
     const tree = parseTree(text);
+    if (replyMsg && resolveReply(peerId, replyMsg)?.xref !== resolved?.xref) {
+        await messagesSend(peerId, REPLY_TARGET_ERROR, msgId, convMsgId);
+        return;
+    }
     if (!tree.persons.length && !tree.errors.length) {
         await messagesSend(peerId, "💥 Не удалось разобрать файл " + name + " (ждём пачку «плоское древо»)", msgId, convMsgId);
         return;
     }
-    const rh = replyMsg && replyMsg.from_id > 0
-        ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)/) : null;
-    if (rh) {
+    if (resolved) {
         // в ответе на триггер — резка-прививка: цитируемый — герой росписи
         let anchor = null;
-        const sh = recordShownOf(peerId, rh[1].trim() + " " + rh[2]);
+        const sh = resolved;
         if (sh) anchor = sh.n + " " + sh.d;
         if (!anchor) {
             // цитата на триггера не нашлась — добавлять молча нельзя: так
@@ -2490,7 +2493,8 @@ function focusText(peerId, key, radius, bell, dd, byFull = false) {
         ? (focusListText(items, keys, key, pairs, spPairs, k => sexMap.get(k) ?? null, byFull, mmdd, radius, getSettings(peerId).fynny)
             || "(в радиусе нет событий)")
         : gedcomText(peerId, keys);
-    return focusHead(key, radius, dd) + "\n" + body;
+    const head = focusHead(key, radius, dd);
+    return bell ? focusListMessage(head, body) : head + "\n" + body;
 }
 
 async function sendFocus(peerId, key, msgId, convMsgId, fromId, dd) {
@@ -2539,18 +2543,36 @@ async function sendChatFlatArtifacts(peerId, pack, target, keyboard, log = "flat
 
 // ответ на «/» или «Начать»: справка + клавиатура по чату/роли;
 // replyMsg — msg.reply_message (ответ триггером на триггер = связь)
+function resolveReply(peerId, reply) {
+    if (!reply || !Number.isInteger(reply.from_id) || reply.from_id === 0
+        || (reply.peer_id != null && reply.peer_id !== peerId)) return null;
+    const bot = reply.from_id < 0;
+    if (bot && reply.from_id !== -groupId) return null;
+    return resolveReplyRecord([...personRows(peerId), ...weddingRows(peerId)], reply.text, bot);
+}
+
 async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, payload = "", replyMsg = null) {
+    const resolved = resolveReply(peerId, replyMsg);
+    const originalReply = replyMsg;
+    const anchorInput = String(text).split(/\r?\n/).some(l => /^\s*[-+=]/.test(l))
+        || (String(text).split(/\r?\n/).length === 1 && parseTrigger(text));
     if (process.env.LOG_UPDATES) console.log("msg from", peerId, ":", text);
     if (text.trim().startsWith("/")) console.log("команда:", JSON.stringify(text.trim()), "peer", peerId);
     if (date) markSeen(date);
+    const scopedCommand = isStart(text, payload)
+        || /^\/(?:bell[1-5]?|gedcom[1-5]?|links)(?:@\S+)?$/i.test(text.trim())
+        || text.trim().toLowerCase() === "связи";
+    if (originalReply && (scopedCommand || anchorInput) && !parseGedcom(text)) {
+        if (!resolved) {
+            await messagesSend(peerId, REPLY_TARGET_ERROR, msgId, convMsgId);
+            return;
+        }
+    }
     if (isStart(text, payload)) {
         // «/» ответом на триггер — фокус-сообщение с радиусом родни
         // (заголовок фокуса «2 Имя ГГГГ-ММ-ДД» — цифру радиуса снимаем)
-        const rh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)/) : null;
-        if (rh) {
-            const key = rh[1].trim() + " " + rh[2];
-            const rec = recordShownOf(peerId, key);
+        if (resolved) {
+            const rec = resolved;
             if (rec) {
                 await sendFocus(peerId, rec.n + " " + rec.d, msgId, convMsgId, fromId, rec.dd);
                 return;
@@ -2582,18 +2604,16 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         const radius = Number(gm[1]) || 1;
         // ответом на триггер — только текст родни выбранного радиуса, без кнопок
         // (заголовок фокуса «2 Имя ГГГГ-ММ-ДД» — цифру радиуса снимаем)
-        const grh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)/) : null;
-        if (grh) {
-            const key = grh[1].trim() + " " + grh[2];
-            const rec = recordShownOf(peerId, key);
+        if (resolved) {
+            const rec = resolved;
             if (rec) {
                 const skey = rec.n + " " + rec.d; // показанный ключ → хранимый
                 const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
-                const keys = focusListKeys(linkPairs(peerId), focusSpousePairs(peerId),
-                    skey, radius, k => sexMap.get(k) ?? null);
-                await sendGedArtifacts(peerId, keys, focusHead(skey, radius, rec.dd), msgId, convMsgId, skey);
-                console.log("focus text:", skey, "радиус", radius, "peer", peerId);
+                const pairs = linkPairs(peerId), spPairs = focusSpousePairs(peerId);
+                const r = normalizeFocusRadius(radius, focusDepth(pairs, spPairs, skey));
+                const keys = focusListKeys(pairs, spPairs, skey, r, k => sexMap.get(k) ?? null);
+                await sendGedArtifacts(peerId, keys, focusHead(skey, r, rec.dd), msgId, convMsgId, skey);
+                console.log("focus text:", skey, "радиус", r, "peer", peerId);
                 return;
             }
         }
@@ -2605,20 +2625,17 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         return;
     }
     // /bellN (в ответ на триггер): список родни в радиусе N — как тап 🔔 на
-    // фокусе; без триггера — весь список чата (как 🔔 чата), не влезает —
+    // фокусе; без reply — весь список чата (как 🔔 чата), не влезает —
     // отрезаем (целые строки)
     const bm = t.match(/^\/bell([1-5])?(?:@\S+)?$/);
     if (bm) {
         const radius = Number(bm[1]) || 1;
-        const brh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)/) : null;
-        if (brh) {
-            const key = brh[1].trim() + " " + brh[2];
-            const rec = recordShownOf(peerId, key);
+        if (resolved) {
+            const rec = resolved;
             if (rec) {
                 const skey = rec.n + " " + rec.d; // показанный ключ → хранимый
                 // как тап: радиус не глубже имеющихся связей
-                const r = Math.min(radius, Math.max(1, focusDepth(linkPairs(peerId), focusSpousePairs(peerId), skey)));
+                const r = normalizeFocusRadius(radius, focusDepth(linkPairs(peerId), focusSpousePairs(peerId), skey));
                 const txt = focusText(peerId, skey, r, true, rec.dd, false);
                 await messagesSend(peerId, txt, msgId, convMsgId);
                 console.log("bell text:", skey, "радиус", r, "peer", peerId);
@@ -2636,17 +2653,13 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         return;
     }
     // «/links» (в ТГ — кнопка 🔗 под событием): роспись ВЕТВИ героя — как тап
-    // «-+=» на фокусе (>4000 — вложением); без reply / не на триггер — роспись
+    // «-+=» на фокусе (>4000 — вложением); без reply — роспись
     // древа чата (листинг сообщений-связей не восстанавливается)
     if (t === "/links" || t === "связи") {
-        const lrh = replyMsg && replyMsg.from_id > 0
-            ? String(replyMsg.text || "").match(/^(?:\d\s+)?(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)/) : null;
         let key = null, head = "";
-        if (lrh) {
-            const rk = lrh[1].trim() + " " + lrh[2];
-            const rec = recordShownOf(peerId, rk);
+        if (resolved) {
+            const rec = resolved;
             if (rec) { key = rec.n + " " + rec.d; head = focusHead(key, 1, rec.dd); } // показанный ключ → хранимый
-            else key = null; // ответ не на триггер — вся роспись
         }
         const pack = key ? branchFlatText(peerId, key) : chatFlatText(peerId);
         if (!pack) { await messagesSend(peerId, key ? "ветвь пуста" : "связей пока нет", msgId, convMsgId); return; }
@@ -2661,7 +2674,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             // первой строкой файла (роспись радиуса прививке не подлежит)
             const sent = await messagesSend(peerId, "-+=⏳", msgId, convMsgId);
             void sendChatFlatArtifacts(peerId, pack, { message_id: sent }, null, "links");
-        } else if (pack.length >= 4000) {
+        } else if (head.length + 1 + pack.length > 4000) {
             // голова + ✂️⏳ первым сообщением (полное — в файле); ВСЯ роспись —
             // файлом асинхронно: upload долгий, ответ — сразу; файл правкой
             // приклеивается к тому же сообщению (⏳ снят, ✂️ остаётся),
@@ -2749,8 +2762,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         return;
     }
     // цитата для родословной росписи -+=: ветвь цитируемого срезана, роспись привита
-    const replyHead = replyMsg && replyMsg.from_id > 0
-        ? String(replyMsg.text || "").match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?[?=<>~]?)/) : null;
+    const replyHead = resolved;
     // сообщение-гедком → замена древа (до разбора триггеров); не пустой чат —
     // сначала автоматический резерв прежнего дерева файлом
     const g = parseGedcom(text);
@@ -2775,7 +2787,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             // в ответе на триггер — ветвь цитируемого заменяется росписью
             let anchor = null;
             if (replyHead) {
-                const sh = recordShownOf(peerId, replyHead[1].trim() + " " + replyHead[2]);
+                const sh = resolved;
                 if (sh) anchor = sh.n + " " + sh.d;
             }
             const rep = anchor ? cutAndGraft(peerId, anchor, tree) : applyTree(peerId, tree);
@@ -2795,7 +2807,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     if (lines.length === 1 && replyHead) {
         const parsed = parseTrigger(lines[0]);
         if (parsed && !parsed.error) {
-            const sh = recordShownOf(peerId, replyHead[1].trim() + " " + replyHead[2]);
+            const sh = resolved;
             const anchor = sh ? sh.n + " " + sh.d : "";
             const ed = editTrigger(peerId, anchor,
                 Object.assign({}, parsed.rec, parsed.tail ? { note: parsed.tail } : {}));
@@ -2960,7 +2972,7 @@ async function handleEvent(o) {
         const key = pkey(rec);
         const depth = focusDepth(linkPairs(peerId), focusSpousePairs(peerId), key);
         // радиус не глубже имеющихся предков (старые сообщения могут нести снятые кнопки)
-        const radius = Math.min(5, Math.max(1, Number(p.r) || 1), Math.max(1, depth));
+        const radius = normalizeFocusRadius(p.r, depth);
         await answerEvent(o.event_id || o.id, o.user_id, peerId,
             p.c === "foc" ? focusLabel(radius)
                 : (p.c === "foc:bell" ? "список " : (p.c === "foc:flat" ? "пачка ветви " : "древо ")) + focusLabel(radius));
@@ -2993,13 +3005,14 @@ async function handleEvent(o) {
             const pack = branchFlatText(peerId, key);
             if (!pack) { await editOrigin(o, head + "\n(ветвь пуста)", kb); return; }
             const txt = focusHead(key, radius, rec.dd) + "\n" + pack;
-            if (txt.length < 4000) { await editOrigin(o, txt, kb); return; }
+            if (txt.length <= 4000) { await editOrigin(o, txt, kb); return; }
             // перелив: держ = голова, метка, обрезанные целые строки росписи
             // (до ~4000) и ✂️⏳ в конце; роспись — файлом, после прицепа — тот
             // же текст со ✂️ без часов (правка текста обязательно с
             // повторным attachment — ВК сбрасывает вложения у правки без них)
             const fh = focusHead(key, radius, rec.dd);
-            const inner = cutLines(pack, 4000, fh.length + 1 + NOT_FOR_GRAFT.length + 1);
+            const inner = cutLines(pack, 4000,
+                fh.length + 1 + NOT_FOR_GRAFT.length + 1 + "\n✂️⏳".length, false);
             const holdTxt = fh + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️⏳";
             const finalTxt = fh + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️";
             await editOrigin(o, holdTxt, kb);
@@ -3043,9 +3056,7 @@ async function handleEvent(o) {
         }).catch(e => console.error("focus loading:", e.message));
         let text;
         try {
-            const txt = focusText(peerId, key, radius, bell, rec.dd, byFull);
-            text = txt.length < 4000 ? txt : head + "\n"
-                + cutLines(txt.slice(head.length + 1), 4000, head.length + 1, false);
+            text = focusText(peerId, key, radius, bell, rec.dd, byFull);
         } catch (e) {
             console.error("focus list:", e);
             text = head + "\nНе удалось подготовить список. Попробуйте ещё раз.";
@@ -3194,6 +3205,9 @@ async function handleEvent(o) {
             String(mo).padStart(2, "0") + "-" + String(dToday).padStart(2, "0"));
         if (!list) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "событий нет");
+            const current = await cmidText(peerId, o.conversation_message_id);
+            if (current !== null && current.replace(/\((fynny|trim)=[01]\)/g, '($1=0)') !== HELP)
+                await editOrigin(o, "Событий нет", await peerKeyboard(peerId, o.user_id));
             return;
         }
         // снекбар останавливает «вращение» на кнопке
@@ -3392,21 +3406,21 @@ async function dailyCheck() {
     // Даты до 1918 хранятся по старому стилю — оповещаем по новому (новый
     // ММ-ДД сдвинутой даты; декабрьский хвост ложится на январь сам собой)
     const jobs = [
-        ...qa(`SELECT chat, name, birt_d, birt_h, birt_m, deat_d FROM indi
+        ...qa(`SELECT chat, name, birt_d, birt_h, birt_m, deat_d, deat_abt FROM indi
             WHERE birt_d IS NOT NULL AND (birt_abt IS NULL OR birt_abt=0)`)
             .filter(r => newStyleDate(r.birt_d).slice(5, 10) === mmdd)
             .map(r => ({
                 chat: r.chat, key: r.name + " " + r.birt_d,
-                rec: { n: r.name, d: r.birt_d, ...(r.birt_h !== null ? { h: r.birt_h, m: r.birt_m } : {}), ...(r.deat_d ? { dd: r.deat_d } : {}) },
+                rec: { n: r.name, d: r.birt_d, ...(r.birt_h !== null ? { h: r.birt_h, m: r.birt_m } : {}), ...(r.deat_d ? { dd: r.deat_d, dabt: r.deat_abt || 0 } : {}) },
             })),
         ...qa(`SELECT f.chat, (SELECT name FROM indi i WHERE i.chat=f.chat AND i.xref=f.husb) AS hn,
             (SELECT name FROM indi i WHERE i.chat=f.chat AND i.xref=f.wife) AS wn,
-            f.marr_d, f.div_d FROM fam f WHERE f.marr_d IS NOT NULL AND (f.marr_abt IS NULL OR f.marr_abt=0)`)
+            f.marr_d, f.div_d, f.div_abt FROM fam f WHERE f.marr_d IS NOT NULL AND (f.marr_abt IS NULL OR f.marr_abt=0)`)
             .filter(r => newStyleDate(r.marr_d).slice(5, 10) === mmdd)
             .filter(r => r.hn && r.wn)
             .map(r => ({
                 chat: r.chat, key: r.hn + "+" + r.wn + " " + r.marr_d,
-                rec: { n: r.hn + "+" + r.wn, d: r.marr_d, ...(r.div_d ? { dd: r.div_d } : {}) },
+                rec: { n: r.hn + "+" + r.wn, d: r.marr_d, ...(r.div_d ? { dd: r.div_d, dabt: r.div_abt || 0 } : {}) },
             })),
     ];
     for (const j of jobs) {

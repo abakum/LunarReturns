@@ -74,10 +74,19 @@ assert.equal(cutLines("Иван 1954-05-10 (Пермь)\nМария 1960", 40),
     "Иван 1954-05-10 (Пермь)\nМария 1960");                              // 22+1+11 = 34 ≤ 40
 // Хвост после заголовка (reserved = head+1, joinReserve=false):
 const head = "Заголовок"; // 9 знаков, reserved = 10
+for (const length of [3999, 4000, 4001]) {
+    const source = "я".repeat(length);
+    assert.ok(cutLines(source, 4000, 0, false).length <= 4000);
+}
+assert.equal(cutLines("я".repeat(4000), 4000, 0, false).length, 4000);
+assert.equal(cutLines("я".repeat(4001), 4000, 0, false), "");
+assert.ok(cutLines("я\n".repeat(3000), 4000, 10, false).length + 10 <= 4000);
 assert.equal(cutLines("x".repeat(3990) + "\nyy", 4000, 10, false),
     "x".repeat(3990));                                                   // 10+3990 = 4000; 10+3990+2 > 4000
 assert.equal(cutLines("x".repeat(3988) + "\nyy", 4000, 10, false),
-    "x".repeat(3988) + "\nyy");                                          // 10+3988+2 = 4000 ≤ 4000 — без межстрочного «+1»
+    "x".repeat(3988)); // Межстрочный перевод тоже входит в бюджет.
+assert.equal(cutLines("x".repeat(3987) + "\nyy", 4000, 10, false),
+    "x".repeat(3987) + "\nyy");
 assert.equal(cutLines("x".repeat(3988) + "\nyy", 4000, 10, true),
     "x".repeat(3988));                                                   // с «+1» вторая не влезает
 // Перелив поиска (reserved = NOT_FOR_GRAFT.length + 1 = 23):
@@ -142,7 +151,7 @@ const focFlatVK = (fh, pack) => { // перелив «-+=» фокуса (lunarr
 const focBellVK = (head, txt) => { // хвост списка фокуса (lunarreturns.js:3157-3163)
     let tail = "";
     for (const l of txt.slice(head.length + 1).split("\n")) {
-        if (head.length + 1 + tail.length + l.length > 4000) break;
+        if (head.length + 1 + tail.length + (tail ? 1 : 0) + l.length > 4000) break;
         tail += (tail ? "\n" : "") + l;
     }
     return tail;

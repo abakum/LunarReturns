@@ -20,7 +20,7 @@ function jubileeText(rec, note, detail = false) {
     const [y, mo, d] = sd.split("-").map(Number);
     const t = new Date(Date.UTC(y, mo - 1, d, rec.h !== undefined ? rec.h : 12, rec.m !== undefined ? rec.m : 0, 0));
     const head = rec.n + " " + nsd(sd, sd !== rec.d, rec.abt || rec.mabt || 0) + (hasTime ? " " + String(rec.h).padStart(2, "0") + ":" + String(rec.m).padStart(2, "0") : "")
-        + (sdd ? " " + nsd(sdd, sdd !== rec.dd, rec.dabt || rec.mabt || 0) : "")
+        + (sdd ? " " + nsd(sdd, sdd !== rec.dd, rec.dabt || 0) : "")
         + ageSuffix(rec.n, sd, sdd)
         + (note ? "\n" + note : "");
     // годы до текущего включительно видны; сжатый вид — будущие юбилеи под

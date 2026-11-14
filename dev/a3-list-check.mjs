@@ -121,9 +121,39 @@ function checkCanon(tag) {
     for (const full of [false, true]) {
         const focus = tree.focusListText(mixed, keys, keys[0], [], [], () => null, full);
         assert.equal(focus, tree.eventListText(mixed, full), 'focus/chat share date filtering');
-        assert.equal(focus.split('\n').length, full ? mixed.length : 1);
+        assert.equal(focus.split('\n').length, full ? mixed.length : 18);
     }
-    assert.equal(tree.focusListText(mixed, keys, keys[0], [], [], () => null), 'Exact 2000-03-01');
+    const bell = tree.focusListText(mixed, keys, keys[0], [], [], () => null);
+    assert.ok(bell.startsWith('Exact 2000-03-01\n'));
+    assert.doesNotMatch(bell, /(?:^|\n)(?:abt|mabt)\d/);
+    for (let i = 1; i <= 17; i++) {
+        assert.ok(bell.includes('dabt' + i + ' 2000-03-01'));
+        assert.equal(tree.isExactEvent({ d: '2000-03-01', dabt: i }), true);
+        assert.equal(tree.isExactEvent({ d: '2000-03-01', abt: i }), false);
+        assert.equal(tree.isExactEvent({ d: '2000-03-01', mabt: i }), false);
+    }
+    assert.equal(tree.isExactEvent({}), false);
+    assert.equal(tree.normalizeFocusRadius(5, 2), 2);
+    assert.equal(tree.normalizeFocusRadius(0, 0), 1);
+    assert.equal(tree.normalizeFocusRadius(8, 9), 5);
+    for (let radius = 1; radius <= 5; radius++) {
+        assert.equal(tree.normalizeFocusRadius(radius, 5), radius);
+        assert.equal(tree.normalizeFocusRadius(radius, 2), Math.min(radius, 2));
+    }
+    for (const head of ['Hero', 'Иван', 'x'.repeat(4001)]) {
+        for (const body of ['a\n'.repeat(3000), 'x'.repeat(4001), '']) {
+            assert.ok(tree.focusListMessage(head, body).length <= 4000);
+        }
+    }
+    assert.equal(tree.focusListMessage('Hero', 'Exact'), 'Hero\nExact');
+    const anniversary = [
+        { n: 'Birthday', d: '1950-01-02', dd: '2020-01-01', dabt: 17 },
+        { n: 'A+B', d: '1970-03-04', dd: '1980-01-01', dabt: 5 },
+    ];
+    const anniversaryText = 'Birthday 1950-01-02 2020~\nA+B 1970-03-04 1980?';
+    assert.equal(tree.eventListText(anniversary), anniversaryText);
+    assert.equal(tree.focusListText(anniversary, anniversary.map(r => r.n + ' ' + r.d),
+        'Birthday 1950-01-02', [], [], () => null), anniversaryText);
     const E = EXPECTED.focus;
     assert.equal(tree.focusListText(items, R1_KEYS, sonKey, pairs, spousePairs, sexOf), E.r1_bell, tag + ' r1 bell');
     assert.equal(tree.focusListText(items, R1_KEYS, sonKey, pairs, spousePairs, sexOf, true), E.r1_full, tag + ' r1 full');

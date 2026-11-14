@@ -365,7 +365,7 @@ for (const parser of [VK, TGP]) {
         [{ n: 'Якорь' }, '', true],
     ]);
     assert.deepEqual(parsed.weddings.map(w => [w.rec, w.note]), [[{}, 'семья^строка'], [{}, 'односторонняя']]);
-    assert.equal(parser.parseTree('#comment\n#not for cut and graft\n-Имя# cut ^note').noGraft, false);
+    assert.equal(parser.parseTree('#comment\n#not for cut and graft\n-Имя# cut ^note').noGraft, true);
     assert.deepEqual(parser.parseTree('-Имя# cut ^note').persons[0].rec, { n: 'Имя' });
     assert.equal(parser.parseTree('-Имя ^keep# cut^lost').persons[0].note, 'keep');
 }
