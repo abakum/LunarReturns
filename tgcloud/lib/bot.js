@@ -1394,7 +1394,7 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
     const hasKeys = Array.isArray(keys) && keys.length > 0;
     const persons = (await personRows(chatId)).filter(r => !hasKeys || keys.includes(pkey(r)));
     const keySet = new Set(persons.map(r => pkey(r)));
-    let rows = persons.map(r => ({ xref: xOf.get(pkey(r)), name: r.n, birth: r.d, death: r.dd || null, sex: r.sex || null, abt: r.abt ?? 0 }));
+    let rows = persons.map(r => ({ xref: xOf.get(pkey(r)), name: r.n, birth: r.d, h: r.h, m: r.m, death: r.dd || null, sex: r.sex || null, abt: r.abt ?? 0 }));
     const stubSpouses = [];
     // якоря бездатных: год ДР датированного супруга (первой семьи по порядку)
     const stubs = (await indiRows(chatId)).filter(r => r.birtD == null && r.name !== "");
@@ -1489,7 +1489,8 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
             children: f.children.filter(c => !keySet.has(c) && bornOf.has(c)).map(c => ({
                 year: Number(bornOf.get(c).slice(0, 4)),
                 r: { xref: xOf.get(c), name: snapshot[0].find(p => p.key === xOf.get(c))?.name || c,
-                    birth: bornOf.get(c), abt: snapshot[0].find(p => p.key === xOf.get(c))?.abt ?? 0 },
+                    birth: bornOf.get(c), h: persons.find(p => pkey(p) === c)?.h, m: persons.find(p => pkey(p) === c)?.m,
+                    abt: snapshot[0].find(p => p.key === xOf.get(c))?.abt ?? 0 },
             })) });
     }
     return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages, annotationText), persons: Math.min(rows.length, CHART_MAX) };

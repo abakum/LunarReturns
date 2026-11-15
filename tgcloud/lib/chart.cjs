@@ -646,12 +646,21 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, a
     const texts = new Map();
     const annotations = Array.from({ length: pages }, () => []);
     if (annotationText) {
+        const annotationDate = "D:" + new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "") + "Z";
         const normal = add("<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << >> /Length 0 >>\nstream\n\nendstream");
         const textOf = new Map();
         for (const p of m.annotationRegions) {
             if (!textOf.has(p.r)) textOf.set(p.r, annotationText(p.r)?.replace(/\^+$/gm, "").replace(/\^/g, "\n"));
             const text = textOf.get(p.r);
             if (!text) continue;
+            const birth = p.r.birth != null ? approxOut(p.r.birth, p.r.abt ?? 0) : "";
+            const heading = p.r.name + (birth ? " " + birth : "");
+            const dateParts = birth.match(/^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?/);
+            // Birth times are stored in Moscow time (UTC+3), including historical dates.
+            const instant = dateParts ? new Date(dateParts[1] + "-" + (dateParts[2] || "01")
+                + "-" + (dateParts[3] || "01") + "T00:00:00Z") : null;
+            if (instant) instant.setUTCMinutes((p.r.h ?? 12) * 60 + (p.r.h == null ? 0 : p.r.m ?? 0) - 180);
+            const date = instant ? "D:" + instant.toISOString().slice(0, 19).replace(/[-:T]/g, "") + "Z" : annotationDate;
             let contents = texts.get(text);
             if (contents == null) { contents = add(pdfString(text)); texts.set(text, contents); }
             // Connections can cross several page bands, unlike person rows.
@@ -663,7 +672,8 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, a
                 const id = add("<< /Type /Annot /Subtype /Square /P " + (3 + 2 * page) + " 0 R"
                     + " /Rect [" + n(s * p.x) + " " + n(bottom) + " " + n(s * (p.x + p.w)) + " " + n(top) + "]"
                     + " /Border [0 0 0] /BS << /W 0 >> /F 0"
-                    + " /T " + pdfString(p.r.name + (p.r.birth != null ? " " + approxOut(p.r.birth, p.r.abt ?? 0) : ""))
+                    + " /T " + pdfString(heading)
+                    + " /M (" + date + ")"
                     + " /Contents " + contents + " 0 R"
                     + " /AP << /N " + normal + " 0 R >> >>");
                 annotations[page].push(id + " 0 R");

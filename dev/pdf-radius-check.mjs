@@ -103,6 +103,15 @@ function checkAnnotations(pdf, expectedCount) {
             const bytes = Buffer.from(contents.slice(5, -1), 'hex');
             const text = bytes.swap16().toString('utf16le');
             assert.ok(text.length);
+            const date = body.match(/\/M \((D:\d{14}Z)\)/);
+            assert.ok(date, 'explicit UTC dates prevent epoch fallback in PDF.js');
+            assert.doesNotMatch(body, /\/CreationDate\b/);
+            const heading = Buffer.from(body.match(/\/T <FEFF([a-f0-9]+)>/)[1], 'hex').swap16().toString('utf16le');
+            const birth = heading.match(/ (\d{4})(?:-(\d{2}))?(?:-(\d{2}))?[?=<>~]?$/);
+            const expectedDate = birth ? birth[1] + (birth[2] || '01') + (birth[3] || '01')
+                : new Date().toISOString().slice(0, 10).replaceAll('-', '');
+            if (!birth || date[1].slice(10) === '090000Z') assert.equal(date[1].slice(2, 10), expectedDate);
+            if (birth) assert.match(date[1].slice(10), /^\d{6}Z$/);
             assert.ok(!text.includes('#not for cut and graft'));
             const ap = body.match(/\/AP << \/N (\d+) 0 R >>/);
             assert.match(objects.get(+ap[1]), /\/Length 0/);
@@ -122,6 +131,22 @@ function checkAnnotations(pdf, expectedCount) {
     return annots;
 }
 // Every page repeats the axis; the final one follows the last person row.
+for (const [h, m, expected] of [[null, null, '20000101090000'], [12, 34, '20000101093400'],
+    [0, 0, '19991231210000'], [2, 45, '19991231234500'], [23, 59, '20000101205900']]) {
+    const pdf = chartPdf('Clock', [{ name: 'Clock', birth: '2000-01-01', h, m }], [], chartFont(), null, null, () => 'Shared');
+    assert.equal(pdf.match(/\/M \(D:(\d{14})Z\)/)[1], expected);
+    assert.doesNotMatch(pdf, /\/CreationDate\b/);
+}
+{
+    const rows = [
+        { name: 'Exact', birth: '1963-09-27' },
+        { name: 'Approximate', birth: '1963-09-27', abt: 3 },
+        { name: 'Month', birth: '1963-09-27', abt: 1 },
+        { name: 'Year', birth: '1963-09-27', abt: 2 },
+        { name: 'Dateless', birth: null, anchor: 1963 },
+    ];
+    checkAnnotations(chartPdf('Annotation dates', rows, [], chartFont(), null, null, () => 'Shared'), rows.length);
+}
 for (const count of [1, 44, 45, 100]) {
     const rows = Array.from({ length: count }, (_, i) => ({
         name: 'Person' + i, birth: '1960-01-01', death: '2030-01-01', sex: 'M',
@@ -184,7 +209,8 @@ for (const count of [1, 44, 45, 100]) {
     assert.ok(annots > 1, 'long connection split between pages');
     const checked = checkAnnotations(pdf, annots);
     assert.equal(calls, 1000, 'each retained person computes annotation once, including connected child');
-    assert.equal(new Set(checked.map(([, b]) => b.match(/\/Contents (\d+) 0 R/)[1])).size, 1);
+    assert.equal(new Set(checked.map(([, b]) => b.match(/\/Contents (\d+) 0 R/)[1])).size, 1,
+        'identical contents shared across different headings and page regions');
     const id = checked[0][1].match(/\/Contents (\d+) 0 R/)[1];
     const encoded = pdf.match(new RegExp('\\n' + id + ' 0 obj\\n<FEFF([a-f0-9]+)>'))[1];
     assert.equal(Buffer.from(encoded, 'hex').swap16().toString('utf16le'), annotation);
