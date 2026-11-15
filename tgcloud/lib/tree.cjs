@@ -5,7 +5,7 @@
 // (формат/фильтр/круговой MM-DD порядок колокольчика); строки выборки БД
 // остаются в адаптерах ботов (план .kilo/plans/20261108-canon-pure-a3-plan.md).
 const { kinLabel } = require('./kinship.cjs');
-const { approxOut } = require('./text.cjs');
+const { eventDate } = require('./text.cjs');
 const { newStyleDate } = require('./religion.cjs');
 
 function normalizeFocusRadius(radius, depth) {
@@ -222,8 +222,8 @@ function eventRows(rows, byFullDate) {
 function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "", depth = 2, chain) {
     const set = new Set(keys);
     const map = rs => rs
-        .map(r => r.n + " " + approxOut(newStyleDate(r.d), r.abt || r.mabt || 0)
-            + (r.dd ? " " + approxOut(newStyleDate(r.dd), r.dabt || 0) : "")
+        .map(r => r.n + " " + eventDate(r.d, r.abt || r.mabt || 0)
+            + (r.dd ? " " + eventDate(r.dd, r.dabt || 0) : "")
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "")
             + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d, depth, chain); return l ? " " + l : ""; })())
         .join("\n");
@@ -241,8 +241,8 @@ function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate =
 // чтения времени внутри
 function eventListText(rows, byFullDate = false, mmddNow = "") {
     const map = rs => rs
-        .map(r => r.n + " " + approxOut(newStyleDate(r.d), r.abt || r.mabt || 0)
-            + (r.dd !== undefined ? " " + approxOut(newStyleDate(r.dd), r.dabt || 0) : "")
+        .map(r => r.n + " " + eventDate(r.d, r.abt || r.mabt || 0)
+            + (r.dd !== undefined ? " " + eventDate(r.dd, r.dabt || 0) : "")
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : ""))
         .join("\n");
     return map(sortEvents(eventRows(rows, byFullDate), byFullDate, mmddNow));

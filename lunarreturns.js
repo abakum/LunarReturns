@@ -67,7 +67,7 @@ const { TZ_MS, moonNew, la, ageSuffix, mskToday} = reqLib("astro");
 // Канон примерных дат — tgcloud/lib/text.cjs (approxOut): его же импортирует
 // ТГ-копия через ESM-шим; юбилейные тексты (jubileeText) платформенные —
 // остаются в копиях (ТГ: tg-spoiler/htmlEsc, ВК: plain).
-const { REPLY_TARGET_ERROR, HELP, helpText, approxOut, findShownRecord, resolveReplyRecord } = reqLib("text");
+const { REPLY_TARGET_ERROR, HELP, helpText, approxOut, eventDate, findShownRecord, resolveReplyRecord } = reqLib("text");
 const { graftError } = reqLib("flat");
 
 // ============================== РОДОСЛОВНАЯ РОСПИСЬ -+= — ЧИСТЫЕ ФУНКЦИИ (общий модуль) =====
@@ -88,13 +88,10 @@ function jubileeText(rec, note, detail = false) {
     // скопипащенная шапка-триггер разбирается как новый стиль (см.
     // parseDateGroups) и находит ту же запись, а не плодит дубль
     const sd = newStyleDate(rec.d), sdd = rec.dd ? newStyleDate(rec.dd) : rec.dd;
-    // `_` — только у полных дат (урезанные «1624-04» остаются с `-`: день
-    // скрыт, конверсия при вводе невозможна и не нужна — год-месяц совпадают)
-    const nsd = (iso, marked, abt) => { const s = approxOut(iso, abt); return marked && s.length === 10 ? s.replace(/-/g, "_") : s; };
     const [y, mo, d] = sd.split("-").map(Number);
     const t = new Date(Date.UTC(y, mo - 1, d, rec.h !== undefined ? rec.h : 12, rec.m !== undefined ? rec.m : 0, 0));
-    const head = rec.n + " " + nsd(sd, sd !== rec.d, rec.abt || rec.mabt || 0) + (hasTime ? " " + String(rec.h).padStart(2, "0") + ":" + String(rec.m).padStart(2, "0") : "")
-        + (sdd ? " " + nsd(sdd, sdd !== rec.dd, rec.dabt || 0) : "")
+    const head = rec.n + " " + eventDate(rec.d, rec.abt || rec.mabt || 0) + (hasTime ? " " + String(rec.h).padStart(2, "0") + ":" + String(rec.m).padStart(2, "0") : "")
+        + (sdd ? " " + eventDate(rec.dd, rec.dabt || 0) : "")
         + ageSuffix(rec.n, sd, sdd)
         + (note ? "\n" + note : "");
     return head + "\n" + la(t, detail).join("\n");

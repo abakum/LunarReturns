@@ -40,6 +40,12 @@ function approxOut(d, abt) {
     return d.slice(0, 10 - g * 3) + (ABT_MARK[q] || "");
 }
 
+// Mark converted full dates so copying a displayed event preserves its key.
+function eventDate(d, abt = 0) {
+    const shown = newStyleDate(d), text = approxOut(shown, abt);
+    return shown !== d && abt % 3 === 0 ? text.replace(/-/g, "_") : text;
+}
+
 // Exact-key lookup stays in the adapters, before this displayed-form fallback.
 function findShownRecord(records, key) {
     const m = key.match(/^(.+?)\s+(\d{4}(?:[-._]\d{2}(?:[-._]\d{2})?)?)([?=<>~]?)\s*$/);
@@ -72,4 +78,4 @@ function resolveReplyRecord(records, text, bot = false, context = null) {
     return rec;
 }
 
-module.exports = { REPLY_TARGET_ERROR, HELP, helpText, approxOut, findShownRecord, replyHeader, resolveReplyRecord };
+module.exports = { REPLY_TARGET_ERROR, HELP, helpText, approxOut, eventDate, findShownRecord, replyHeader, resolveReplyRecord };

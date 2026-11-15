@@ -772,7 +772,7 @@ for (const r of OS_RECS) {
 cmp('newStyle bell полный', VK.upcomingEvents(OS_CH, true), await TG.upcomingText(OS_CH, true));
 cmp('newStyle bell круговой', VK.upcomingEvents(OS_CH, false, '07-01'), await TG.upcomingText(OS_CH, false, '07-01'));
 const osBell = VK.upcomingEvents(OS_CH, true);
-for (const s of ['Агафья 1663-07-24 1681-07-24', 'Фёдор 1900-01-12', 'Столетний 1234~', 'Совет 1918-02-01'])
+for (const s of osWanted)
     if (!osBell.includes(s))
         { failed++; console.log('✗ bell/новый стиль: нет «' + s + '»\n  ' + osBell); }
 // ⚠️ примерные по-прежнему скрыты из 🔔-веток (список оповещений)
@@ -845,8 +845,9 @@ for (const mabt of [12, 13, 14]) {
 // та же запись (дубля нет), dd и свадьба — по тому же правилу
 {
     const before = [VK.personRows(OS_CH).length, (await TG.personRows(OS_CH)).length];
-    VK.upsertPerson(OS_CH, VK.parseTrigger('Агафья 1663_07_24 1681_07_24').rec);
-    await TG.upsertPerson(OS_CH, TGP.parseTrigger('Агафья 1663_07_24 1681_07_24').rec);
+    const copied = osBell.split('\n').find(line => line.startsWith('Агафья '));
+    VK.upsertPerson(OS_CH, VK.parseTrigger(copied).rec);
+    await TG.upsertPerson(OS_CH, TGP.parseTrigger(copied).rec);
     const after = [VK.personRows(OS_CH).length, (await TG.personRows(OS_CH)).length];
     if (before[0] !== after[0] || before[1] !== after[1])
         { failed++; console.log('✗ `_`-шапка как триггер создала дубль: ' + before + ' → ' + after); }

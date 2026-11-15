@@ -89,11 +89,11 @@ const EXPECTED = {
         empty_full: '',
     },
     events: {
-        full: 'Столетний 1234~\nАгафья 1663-07-24 1681-07-24\nФёдор 1900-01-12\nВисокосный 1904-02-29\nСовет 1918-02-01\nПоздний 1960-01-10\nРанний 1960-01-10 06:30\nАнна+Пётр 1985~',
-        bell: 'Поздний 1960-01-10\nРанний 1960-01-10 06:30\nФёдор 1900-01-12\nСовет 1918-02-01\nВисокосный 1904-02-29\nАгафья 1663-07-24 1681-07-24',
-        bell_0115: 'Совет 1918-02-01\nВисокосный 1904-02-29\nАгафья 1663-07-24 1681-07-24\nПоздний 1960-01-10\nРанний 1960-01-10 06:30\nФёдор 1900-01-12',
-        bell_1215: 'Поздний 1960-01-10\nРанний 1960-01-10 06:30\nФёдор 1900-01-12\nСовет 1918-02-01\nВисокосный 1904-02-29\nАгафья 1663-07-24 1681-07-24',
-        bell_0229: 'Високосный 1904-02-29\nАгафья 1663-07-24 1681-07-24\nПоздний 1960-01-10\nРанний 1960-01-10 06:30\nФёдор 1900-01-12\nСовет 1918-02-01',
+        full: 'Столетний 1234~\nАгафья 1663_07_24 1681_07_24\nФёдор 1900_01_12\nВисокосный 1904_02_29\nСовет 1918-02-01\nПоздний 1960-01-10\nРанний 1960-01-10 06:30\nАнна+Пётр 1985~',
+        bell: 'Поздний 1960-01-10\nРанний 1960-01-10 06:30\nФёдор 1900_01_12\nСовет 1918-02-01\nВисокосный 1904_02_29\nАгафья 1663_07_24 1681_07_24',
+        bell_0115: 'Совет 1918-02-01\nВисокосный 1904_02_29\nАгафья 1663_07_24 1681_07_24\nПоздний 1960-01-10\nРанний 1960-01-10 06:30\nФёдор 1900_01_12',
+        bell_1215: 'Поздний 1960-01-10\nРанний 1960-01-10 06:30\nФёдор 1900_01_12\nСовет 1918-02-01\nВисокосный 1904_02_29\nАгафья 1663_07_24 1681_07_24',
+        bell_0229: 'Високосный 1904_02_29\nАгафья 1663_07_24 1681_07_24\nПоздний 1960-01-10\nРанний 1960-01-10 06:30\nФёдор 1900_01_12\nСовет 1918-02-01',
         empty: '',
         empty_bell: '',
     },
@@ -112,7 +112,20 @@ function checkCanon(tag) {
     assert.equal(tree.eventListText(tied, false, '03-01'), 'Second 2000-03-01\nFirst 2000-03-01');
     const old = [{ n: 'Old', d: '1900-01-01', dd: '1901-01-01', abt: 3 }];
     assert.equal(tree.focusListText(old, ['Old 1900-01-01'], 'Old 1900-01-01', [], [], () => null), '');
-    assert.equal(tree.focusListText(old, ['Old 1900-01-01'], 'Old 1900-01-01', [], [], () => null, true), 'Old 1900-01-13? 1901-01-14');
+    assert.equal(tree.focusListText(old, ['Old 1900-01-01'], 'Old 1900-01-01', [], [], () => null, true), 'Old 1900_01_13? 1901_01_14');
+    const { parseTrigger } = require(path.join(ROOT, 'tgcloud/lib/parse.cjs'));
+    for (const row of [...persons, ...Array.from({ length: 18 }, (_, abt) =>
+        ({ n: 'Approx', d: '1900-01-01', dd: '1901-01-01', abt, dabt: abt }))]) {
+        const key = row.n + ' ' + row.d;
+        for (const line of [tree.eventListText([row], true),
+            tree.focusListText([row], [key], key, [], [], () => null, true)]) {
+            const parsed = parseTrigger(line).rec;
+            // Truncated dates deliberately omit day/month; full dates must round-trip.
+            if (!(row.abt % 3)) assert.equal(parsed.d, row.d, line);
+            if (row.dd && !(row.dabt % 3)) assert.equal(parsed.dd, row.dd, line);
+            assert.equal(parsed.abt || 0, row.abt || 0, line);
+        }
+    }
     const exact = { n: 'Exact', d: '2000-03-01' };
     const uncertain = ['abt', 'dabt', 'mabt'].flatMap(field =>
         Array.from({ length: 17 }, (_, i) => ({ n: field + (i + 1), d: '2000-03-01', [field]: i + 1 })));
