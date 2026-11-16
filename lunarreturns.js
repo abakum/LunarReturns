@@ -34,7 +34,7 @@ const { fynny, kinLabel } = reqLib("kinship");
 // ТГ-копия через ESM-шим; правки — только в .cjs, дословных копий больше нет.
 const {
     familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations,
-    focusListText, focusSearch, searchRadius, eventListText, normalizeFocusRadius, focusListMessage} = reqLib("tree");
+    focusListText, focusSearch, searchChain, searchRadius, searchProgressHead, searchKinshipPossible, eventListText, normalizeFocusRadius, focusListMessage} = reqLib("tree");
 
 
 // ============================== ГЕДКОМ → PDF (общий модуль) ==============================
@@ -2719,18 +2719,46 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             await messagesSend(peerId, REPLY_TARGET_ERROR, msgId, convMsgId);
             return;
         }
-        const chain = replySearch ? getSettings(peerId).fynny : false;
+        const chain = searchChain(q, replySearch ? getSettings(peerId).fynny : false);
         const radius = searchRadius(q, chain);
-        const hits = replySearch
-            ? focusSearch(personRows(peerId), weddingRows(peerId), linkPairs(peerId),
-                focusSpousePairs(peerId), resolved.n + " " + resolved.d, q, chain, radius)
-            : flatSearch(chatFlatText(peerId), q);
+        if (replySearch && !searchKinshipPossible(q, chain)) {
+            await messagesSend(peerId, "Нет такой родственной связи", msgId, convMsgId);
+            return;
+        }
+        if (replySearch) {
+            const head = searchProgressHead(radius, chain, q);
+            const sent = await messagesSend(peerId, head + "\n⏳", msgId, convMsgId);
+            try {
+                const hits = focusSearch(personRows(peerId), weddingRows(peerId), linkPairs(peerId),
+                    focusSpousePairs(peerId), resolved.n + " " + resolved.d, q, chain, radius);
+                const found = hits.join("\n");
+                const prefix = head + "\n" + NOT_FOR_GRAFT;
+                if (found && prefix.length + 1 + found.length >= 4000) {
+                    const inner = cutLines(found, 4000, prefix.length + 1 + "\n✂️⏳".length);
+                    const body = prefix + (inner ? "\n" + inner : "");
+                    const holdTxt = body + "\n✂️⏳", finalTxt = body + "\n✂️";
+                    await vkApi("messages.edit", { peer_id: peerId, message_id: sent, message: holdTxt });
+                    await holdAttach(peerId, "search", sent, holdTxt, finalTxt,
+                        fileBaseOf(searchHead(q, hits.length)) + ".txt", "\uFEFF" + prefix + "\n" + found,
+                        null, head, msgId, convMsgId);
+                } else {
+                    await vkApi("messages.edit", { peer_id: peerId, message_id: sent,
+                        message: found ? prefix + "\n" + found : head + "\nНичего не найдено" });
+                }
+            } catch (e) {
+                console.error("reply search:", e);
+                await vkApi("messages.edit", { peer_id: peerId, message_id: sent,
+                    message: head + "\nНе удалось выполнить поиск" });
+            }
+            return;
+        }
+        const hits = flatSearch(chatFlatText(peerId), q);
         if (hits.length) {
             // ровно одно попадание, резолвящееся в персону, — сжатый юбилей
             // с клавиатурой-юбилеем (триггера нет — реплаить не на что, новое
             // сообщение); нерезолвимое (свадьба, заглушка, тёзки) —
             // списком/файлом как прежде
-            if (!replySearch && hits.length === 1) {
+            if (hits.length === 1) {
                 const key = flatHitKey(hits[0], personRows(peerId));
                 const rec = key ? recordOf(peerId, key) : null;
                 if (rec) {
@@ -2763,7 +2791,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             }
             return;
         }
-        await messagesSend(peerId, "Ничего не найдено" + (replySearch ? " в радиусе " + radius : ""), msgId, convMsgId);
+        await messagesSend(peerId, "Ничего не найдено", msgId, convMsgId);
         return;
     }
     // цитата для родословной росписи -+=: ветвь цитируемого срезана, роспись привита

@@ -147,6 +147,20 @@ for (const [h, m, expected] of [[null, null, '20000101090000'], [12, 34, '200001
     ];
     checkAnnotations(chartPdf('Annotation dates', rows, [], chartFont(), null, null, () => 'Shared'), rows.length);
 }
+{
+    const rows = ['M', 'F', null].map((sex, i) => ({
+        name: 'Sex' + i, birth: '1960-01-01', death: '2000-01-01', sex,
+    }));
+    const bars = chartModel('Outline', rows, []).draws.filter(d => d.k === 'rrect');
+    assert.equal(bars.filter(b => b.fill).length, 2);
+    const neutral = bars.find(b => b.stroke);
+    assert.equal(neutral.stroke, '#000000');
+    assert.equal(neutral.fill, undefined);
+    assert.equal(neutral.lineWidth, 1);
+    const pdf = chartPdf('Outline', rows, [], chartFont());
+    assert.ok(pdf.includes('1 w 0 0 0 RG'), 'neutral bar uses black outline');
+    assert.ok(pdf.includes(' c h S'), 'rounded outline strokes without filling');
+}
 for (const count of [1, 44, 45, 100]) {
     const rows = Array.from({ length: count }, (_, i) => ({
         name: 'Person' + i, birth: '1960-01-01', death: '2030-01-01', sex: 'M',

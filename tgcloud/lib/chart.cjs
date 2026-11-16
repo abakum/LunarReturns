@@ -58,10 +58,10 @@ const TITLE_H = 34;          // поле заголовка
 const ROW_H = 16;            // высота строки персоны
 const PLOT_W = 950;          // ширина поля графика
 const BAR_H = 11;            // высота бара жизни
-// бар жизни — серый: мужчины темнее, женщины светлее, без пола — средний
+// бар жизни: мужчины темнее, женщины светлее, без пола — чёрный контур
 const BAR_M = "#5f6b76";
 const BAR_F = "#9aa5b0";
-const BAR_N = "#7f8c8d";
+const BAR_N = "#000000";
 // связи — цвета спектра, все семь различимы на глаз: второй синий #0082c8
 // заменён на мадженту — рядом в один год (шаг толщины линии) не спутать
 const FAM_COLORS = ["#911eb4", "#e0cc33", "#e6194b", "#ff9d45", "#3584cc", "#3cb44b", "#f032e6"];
@@ -411,7 +411,8 @@ function chartModel(title, rows, links, rel = null, marriages = null,
         // имя героя чарта — жирным
         draws.push({ k: "text", x: x1 - 6, y: cy + 3.5, s: p.r.name, size: 10, fill: "#111111", anchor: "end", bold: rel != null && p.key === rel.hero });
         p.bar = { x: x1, y: cy - BAR_H / 2, w: Math.max(2, x2 - x1), h: BAR_H };
-        draws.push({ k: "rrect", ...p.bar, r: 2, fill: bar });
+        draws.push({ k: "rrect", ...p.bar, r: 2,
+            ...(p.r.sex === "M" || p.r.sex === "F" ? { fill: bar } : { stroke: bar, lineWidth: 1 }) });
         if (p.dy !== null && p.r.birth != null && (p.r.abt ?? 0) < 15) // известная смерть — N прожитых лет за баром (у фиктивной ДР abt>=15, EST — не пишем)
             draws.push({ k: "text", x: x2 + 4, y: cy + 3.5, s: String(p.dy - p.yr), size: 10, fill: bar });
     }
@@ -561,7 +562,7 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, a
         } else if (d.k === "rrect") {   // бар со скруглёнными углами
             const r = Math.min(d.r, d.w / 2, d.h / 2), k = 0.55228 * r;
             const R = n(d.x + d.w), L = n(d.x), T = n(d.y), B = n(d.y + d.h);
-            ops.push(col(d.fill) + " rg",
+            ops.push(d.stroke ? n(d.lineWidth ?? 1) + " w " + col(d.stroke) + " RG" : col(d.fill) + " rg",
                 n(d.x + r) + " " + T + " m " + n(d.x + d.w - r) + " " + T + " l "
                 + n(d.x + d.w - r + k) + " " + T + " " + R + " " + n(d.y + r - k) + " " + R + " " + n(d.y + r) + " c "
                 + R + " " + n(d.y + d.h - r) + " l "
@@ -569,7 +570,7 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, a
                 + n(d.x + r) + " " + B + " l "
                 + n(d.x + r - k) + " " + B + " " + L + " " + n(d.y + d.h - r + k) + " " + L + " " + n(d.y + d.h - r) + " c "
                 + L + " " + n(d.y + r) + " l "
-                + L + " " + n(d.y + r - k) + " " + n(d.x + r - k) + " " + T + " " + n(d.x + r) + " " + T + " c h f");
+                + L + " " + n(d.y + r - k) + " " + n(d.x + r - k) + " " + T + " " + n(d.x + r) + " " + T + " c h " + (d.stroke ? "S" : "f"));
         } else if (d.k === "line") {
             ops.push(n(d.w) + " w " + col(d.stroke) + " RG "
                 + n(d.x1) + " " + n(d.y1) + " m " + n(d.x2) + " " + n(d.y2) + " l S");

@@ -4,7 +4,7 @@ import { gedDrops, focusView, settings } from '../schema.js';
 import { parseTrigger, parseGedcom, gedStats, parseTree } from '../lib/parse.cjs';
 import { fileBaseOf } from '../lib/chart.cjs';
 import { jubileeText } from '../lib/text.js';
-import { normalizeFocusRadius, focusListMessage, focusSearch, searchRadius } from '../lib/tree.cjs';
+import { normalizeFocusRadius, focusListMessage, focusSearch, searchChain, searchRadius, searchProgressHead, searchKinshipPossible } from '../lib/tree.cjs';
 import { REPLY_TARGET_ERROR, resolveReplyRecord } from '../lib/text.cjs';
 import {
     helpText, startMarkup, chatAdmin, getSettings, todayText, jubileeMarkup, sendLong,
@@ -463,18 +463,47 @@ export default async function (message, ctx) {
                 return;
             }
         }
-        const chain = replySearch ? (await getSettings(chatId)).fynny : false;
+        const chain = searchChain(text, replySearch ? (await getSettings(chatId)).fynny : false);
         const radius = searchRadius(text, chain);
-        const hits = replySearch
-            ? focusSearch(await personRows(chatId), await weddingRows(chatId),
-                await linkPairs(chatId), await focusSpousePairs(chatId),
-                resolved.n + " " + resolved.d, text, chain, radius)
-            : flatSearch(await chatFlatText(chatId), text);
+        if (replySearch && !searchKinshipPossible(text, chain)) {
+            await api.sendMessage({ chat_id: chatId, text: "Нет такой родственной связи",
+                reply_parameters: { message_id: message.message_id, allow_sending_without_reply: true } });
+            return;
+        }
+        if (replySearch) {
+            const head = searchProgressHead(radius, chain, text);
+            const first = await api.sendMessage({ chat_id: chatId, text: head + "\n⏳",
+                reply_parameters: { message_id: message.message_id, allow_sending_without_reply: true } });
+            try {
+                const hits = focusSearch(await personRows(chatId), await weddingRows(chatId),
+                    await linkPairs(chatId), await focusSpousePairs(chatId),
+                    resolved.n + " " + resolved.d, text, chain, radius);
+                const found = hits.join("\n");
+                const prefix = head + "\n" + NOT_FOR_GRAFT;
+                if (found && prefix.length + 1 + found.length >= 4000) {
+                    const inner = cutLines(found, 4000, prefix.length + 1 + "\n✂️⏳".length);
+                    const body = prefix + (inner ? "\n" + inner : "");
+                    const holdTxt = body + "\n✂️⏳", finalTxt = body + "\n✂️";
+                    await api.editMessageText({ chat_id: chatId, message_id: first.message_id, text: holdTxt });
+                    await holdReply(chatId, first, holdTxt, finalTxt,
+                        prefix + "\n" + found, fileBaseOf(searchHead(text, hits.length)) + ".txt");
+                } else {
+                    await api.editMessageText({ chat_id: chatId, message_id: first.message_id,
+                        text: found ? prefix + "\n" + found : head + "\nНичего не найдено" });
+                }
+            } catch (e) {
+                console.error("reply search:", e);
+                await api.editMessageText({ chat_id: chatId, message_id: first.message_id,
+                    text: head + "\nНе удалось выполнить поиск" });
+            }
+            return;
+        }
+        const hits = flatSearch(await chatFlatText(chatId), text);
         if (hits.length) {
             // ровно одно попадание, резолвящееся в персону, — сжатый юбилей
             // с единой клавиатурой, реплаем на запрос; нерезолвимое (свадьба,
             // заглушка, тёзки) — списком
-            if (!replySearch && hits.length === 1) {
+            if (hits.length === 1) {
                 const key = flatHitKey(hits[0], await personRows(chatId));
                 const rec = key ? await recordOf(chatId, key) : null;
                 if (rec && rec.xref) { // резолвится в персону (xref есть)
@@ -509,8 +538,7 @@ export default async function (message, ctx) {
             console.log("flat search:", JSON.stringify(text), "->", hits.length, "строк, чат", chatId);
             return;
         }
-        await api.sendMessage({ chat_id: chatId, text: "Ничего не найдено"
-            + (replySearch ? " в радиусе " + radius : "") });
+        await api.sendMessage({ chat_id: chatId, text: "Ничего не найдено" });
         return;
     }
 

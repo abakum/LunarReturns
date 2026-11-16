@@ -231,44 +231,82 @@ function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate =
         || (r.n.includes("+") && focusHasPair(r.n, keys))), byFullDate, mmddToday));
 }
 
+// A weight of one denotes the chain alphabet; larger weights are short labels.
+function searchWordDepth(word) {
+    if (/^(?:сын|сына|дочь|дочери|дочка|дочки|отец|отца|мать|матери|брат|брата|сестра|сестры|муж|мужа|жена|жены|супруг|супруга|супруги|родитель|родителя|ребенок|ребенка|сиблинг|сиблинга)$/.test(word)) return 1;
+    if (/^прародител[ья]$/.test(word)) return 2;
+    const [, pra, count, base] = word.match(/^(?:(пра)(\d*))?(.+)$/);
+    let depth = /^(?:дядя|дяди|тетя|тети|племянник|племянника|племянница|племянницы|дед|деда|дедушка|дедушки|бабушка|бабушки|внук|внука|внучка|внучки)$/.test(base) ? 2
+        // Short labels also cover half-sibling paths, one step longer.
+        : /^(?:внучатый|внучатая|внучатого|внучатой)$/.test(base) ? 2
+        : /^(?:двоюродный|двоюродная|двоюродного|двоюродной)$/.test(base) ? 2
+        : /^(?:троюродный|троюродная|троюродного|троюродной)$/.test(base) ? 4
+        : /^(?:четвероюродный|четвероюродная|четвероюродного|четвероюродной)$/.test(base) ? 6 : 0;
+    if (depth && pra) depth += count ? Number(count) : 1;
+    return depth;
+}
+
+function searchWords(query) {
+    return String(query).split('#', 1)[0].replace(/^\/[ \t]*[-+=]*/, "")
+        .toLowerCase().replace(/ё/g, "е").match(/[\p{L}\p{N}_]+/gu) || [];
+}
+
+function searchChain(query, chain = false) {
+    const depths = searchWords(query).map(searchWordDepth);
+    if (depths.some(d => d > 1)) return false;
+    return depths.length && depths.every(d => d === 1) ? true : !!chain;
+}
+
+function searchProgressHead(radius, chain, query) {
+    const { rangeLevel } = require('./chart.cjs');
+    return query + "\n" + rangeLevel(radius) + " fynny=" + Number(!!chain);
+}
+
+// Only reject known contradictions, never unknown names or partial words.
+function searchKinshipPossible(query, chain = searchChain(query)) {
+    const words = searchWords(query);
+    if (!words.length || !words.every(w => searchWordDepth(w))) return true;
+    const female = /^(?:мать|матери|дочь|дочери|дочка|дочки|сестра|сестры|жена|жены|тетя|тети|племянница|племянницы|(?:пра\d*)?бабушк[аи]|(?:пра\d*)?внучк[аи])$/;
+    const male = /^(?:отец|отца|сын|сына|брат|брата|муж|мужа|дядя|дяди|племянник|племянника|(?:пра\d*)?дед(?:а|ушка|ушки)?|(?:пра\d*)?внук(?:а)?)$/;
+    const ancestor = /^(?:отец|отца|мать|матери|родитель|родителя|прародитель|прародителя|(?:пра\d*)?дед(?:а|ушка|ушки)?|(?:пра\d*)?бабушк[аи])$/;
+    const descendant = /^(?:сын|сына|дочь|дочери|дочка|дочки|ребенок|ребенка|(?:пра\d*)?внук(?:а)?|(?:пра\d*)?внучк[аи])$/;
+    for (let i = 0; i + 1 < words.length; i++) {
+        const a = words[i];
+        let j = i + 1;
+        while (j + 1 < words.length && /родн|внучат/.test(words[j])) j++;
+        const b = words[j];
+        if (/^(?:жена|жены)$/.test(a) && female.test(b)) return false;
+        if (/^(?:муж|мужа)$/.test(a) && male.test(b)) return false;
+        if (!chain && ((ancestor.test(a) && ancestor.test(b))
+            || (descendant.test(a) && descendant.test(b))
+            || (/^племянни(?:к|ка|ца|цы)$/.test(a) && ancestor.test(b)))) return false;
+    }
+    return true;
+}
+
 // Infer without traversing the tree; an explicit comment overrides the heuristic.
 function searchRadius(query, chain = false) {
-    const [text, comment = ""] = String(query).split('#');
+    const [, comment = ""] = String(query).split('#');
     const explicit = comment.trim().match(/^\d+$/);
     if (explicit) return Math.min(9, Math.max(1, Number(explicit[0])));
-    const words = text.toLowerCase().replace(/ё/g, "е").match(/[а-я]+\d*[а-я]*/g) || [];
-    let radius = 0;
-    for (const word of words) {
-        if (/^(?:сын|сына|дочь|дочери|дочка|дочки|отец|отца|мать|матери|брат|брата|сестра|сестры|муж|мужа|жена|жены|супруг|супруга|супруги|родитель|родителя|ребенок|ребенка|сиблинг|сиблинга)$/.test(word)) {
-            radius++;
-        } else if (!chain) {
-            if (/^прародител[ья]$/.test(word)) {
-                radius += 2;
-                continue;
-            }
-            const [, pra, count, base] = word.match(/^(?:(пра)(\d*))?(.+)$/);
-            let depth = /^(?:дядя|дяди|тетя|тети|племянник|племянника|племянница|племянницы|дед|деда|дедушка|дедушки|бабушка|бабушки|внук|внука|внучка|внучки)$/.test(base) ? 2
-                // Short labels also cover half-sibling paths, one step longer.
-                : /^(?:внучатый|внучатая|внучатого|внучатой)$/.test(base) ? 2
-                : /^(?:двоюродный|двоюродная|двоюродного|двоюродной)$/.test(base) ? 2
-                : /^(?:троюродный|троюродная|троюродного|троюродной)$/.test(base) ? 4
-                : /^(?:четвероюродный|четвероюродная|четвероюродного|четвероюродной)$/.test(base) ? 6 : 0;
-            if (depth && pra) depth += count ? Number(count) : 1;
-            radius += depth;
-        }
-    }
+    chain = searchChain(query, chain);
+    const radius = searchWords(query).reduce((sum, word) => {
+        const depth = searchWordDepth(word);
+        return sum + (chain && depth !== 1 ? 0 : depth);
+    }, 0);
     return normalizeFocusRadius(radius, 5);
 }
 
 // Search the complete selected-radius list, not a truncated bell message.
 function focusSearch(persons, weddings, pairs, spousePairs, key, query, chain, radius = searchRadius(query, chain)) {
     const { flatSearch } = require('./flat.cjs');
+    chain = searchChain(query, chain);
     const sexMap = new Map(persons.map(r => [r.n + " " + r.d, r.sex ?? null]));
     const sexOf = k => sexMap.get(k) ?? null;
     const keys = focusListKeys(pairs, spousePairs, key, radius, sexOf, true);
     const list = focusListText([...persons, ...weddings], keys, key,
         pairs, spousePairs, sexOf, true, "", radius, chain);
-    if (/^\/#[1-9]$/.test(String(query))) return list ? list.split("\n") : [];
+    if (/^\/[ \t]*#[1-9]$/.test(String(query))) return list ? list.split("\n") : [];
     return flatSearch(list, query);
 }
 
@@ -339,4 +377,4 @@ function familyXref(rows, mx, fx, alias, date, used) {
 }
 
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
-module.exports = { isExactEvent, normalizeFocusRadius, focusListMessage, familyXref, focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, searchRadius, focusSearch, eventListText, famsByGenerations };
+module.exports = { isExactEvent, normalizeFocusRadius, focusListMessage, familyXref, focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, searchKinshipPossible, searchProgressHead, searchChain, searchRadius, focusSearch, eventListText, famsByGenerations };

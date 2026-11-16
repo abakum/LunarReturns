@@ -30,6 +30,7 @@ function run(platform, tag, commands) {
         [platform === 'tg' ? 'dev/repl.mjs' : 'dev/vk-repl.mjs', '--fresh',
             ...(platform === 'tg' ? ['--private'] : [])],
         { cwd: root, env: { ...process.env, TMPDIR: tmp, LR_DEV_DB: base + '.json', LR_DB: base + '.db',
+            LR_VK_TRACE: base + '.trace.jsonl',
             LR_VKOFF: String(12000 + process.pid % 20000 + sequence) },
         input: commands.join('\n') + '\n', encoding: 'utf8', timeout: 180000, maxBuffer: 16 * 1024 * 1024 });
     const log = (result.stdout || '') + (result.stderr || '');
@@ -38,7 +39,7 @@ function run(platform, tag, commands) {
     assert.equal(result.status, 0, base + '.log\n' + log);
     assert.doesNotMatch(log, /ERROR:|TypeError|ReferenceError|ECONNREFUSED|EADDRINUSE/, base + '.log');
     const entries = [...log.matchAll(/\[(\d+)\] (ты:|sendMessage:[^\n]*|текст →)\n((?:    [^\n]*\n)*)/g)]
-        .map(m => ({ id: m[1], user: m[2] === 'ты:', body: m[3],
+        .map(m => ({ id: m[1], user: m[2] === 'ты:', edited: m[2] === 'текст →', body: m[3],
             text: m[3].split('\n').filter(l => l.startsWith('    ')).map(l => l.slice(4))
                 .filter(l => !/^\[\d+\.\d+\] /.test(l) && l !== 'клавиатура →').join('\n').trimEnd() }));
     let data;
@@ -60,7 +61,31 @@ function response(result, query, occurrence = 0) {
     const out = [];
     for (let i = hits[occurrence] + 1; i < result.entries.length && !result.entries[i].user; i++) out.push(result.entries[i]);
     assert.ok(out.length, 'Missing response ' + query + '\n' + result.log);
-    return out;
+    // Keep raw output for UI assertions; content assertions ignore only the progress metadata.
+    return [...new Set(out.map(e => e.id))].map(id => {
+        const versions = out.filter(e => e.id === id);
+        const first = versions[0], final = versions.at(-1);
+        if (/ fynny=[01]\n⏳$/.test(first.text)) {
+            assert.equal(first.edited, false, query + ': progress is a new message');
+            assert.ok(versions.length >= 2, query + ': missing final edit');
+            assert.ok(versions.slice(1).every(e => e.edited), query + ': update the same message');
+            assert.equal(final.id, first.id, query + ': final ID');
+            assert.doesNotMatch(final.text, /⏳/, query + ': final clock removed');
+            assert.ok(final.text.startsWith(first.text.slice(0, -1)), query + ': retain header');
+        }
+        return { ...final, rawText: final.text, initial: first, versions,
+            text: final.text.replace(/^[\s\S]*?\n[^\n]+ fynny=[01]\n/, '') };
+    });
+}
+
+function progress(result, query, radius, chain, occurrence = 0) {
+    const final = response(result, query, occurrence)[0];
+    const range = radius === 1 ? 'родители-дети' : radius === 2 ? 'деды-внуки'
+        : radius === 3 ? 'прадеды-правнуки' : `пра${radius - 2}деды-пра${radius - 2}внуки`;
+    const head = query + '\n' + range + ' fynny=' + chain;
+    assert.equal(final.initial.text, head + '\n⏳', query + ': initial range and effective mode');
+    assert.equal(final.rawText, head + '\n' + final.text, query + ': actual final full text');
+    return final;
 }
 
 function button(log, label) {
@@ -93,7 +118,9 @@ for (const platform of ['tg', 'vk']) {
     assert.match(scoped('/Father+').text, /Father\+Mother 1979~/);
     assert.match(scoped('/Sister').text, /Sister 1984-04-04 сестра/);
     for (const q of ['/BrotherOutside', '/missingzz', '/#comment', '/bellamy', '/startrek', '/ bell'])
-        assert.equal(scoped(q).text, 'Ничего не найдено в радиусе 1', platform + ': scoped ' + q);
+        assert.equal(scoped(q).text, 'Ничего не найдено', platform + ': scoped ' + q);
+    for (const q of searches)
+        progress(searched, q, 1, q === '/ брат' ? 1 : 0, ['/missingzz', '/BrotherOutside'].includes(q) ? 1 : 0);
     const empty = response(searched, '/missingzz')[0];
     assert.equal(empty.text, 'Ничего не найдено');
     assert.doesNotMatch(empty.body, /\[\d+\.\d+\]/);
@@ -105,21 +132,36 @@ for (const platform of ['tg', 'vk']) {
         const adaptiveBaseline = run(platform, 'adaptive-baseline-' + chain, adaptiveSetup);
         const target = adaptiveBaseline.entries.find(e => e.user && e.text === 'Hero 1980-03-03');
         assert.ok(target, adaptiveBaseline.log);
-        const kinQuery = chain ? '/ брат отца' : '/ дядя';
-        const queries = [kinQuery, kinQuery + ' #1', '/unknown#2', '/Uncle', '/Uncle #2', '/Uncle#2', '/Unc#2',
-            '/unknown#0', '/unknown#9', '/#1', '/#2', '/#9', '/ #2'];
+        const kinQueries = ['/ брат отца', '/ дядя'];
+        const queries = [...kinQueries.flatMap(q => [q, q + '#1', q + '#2', q + '#ignored']), '/ брат',
+            '/unknown#2', '/Uncle', '/Uncle #2', '/Uncle#2', '/Unc#2',
+            '/unknown#0', '/unknown#9', '/#1', '/#2', '/#9', '/ #2',
+            '/ бабушка матери', '/ жена тёти', '/ племянница матери'];
         const adaptive = run(platform, 'adaptive-search-' + chain,
             [...adaptiveSetup, ...queries.map(q => '>' + target.id + ' ' + q)]);
         const context = platform + ': fynny' + chain;
+        for (const q of ['/ бабушка матери', '/ жена тёти', '/ племянница матери']) {
+            const rejected = response(adaptive, q)[0];
+            assert.equal(rejected.text, 'Нет такой родственной связи', context);
+            assert.doesNotMatch(rejected.initial.text, /⏳|fynny=/, context + ': rejected before list');
+        }
         const uncle = marker + '\nUncle 1954-05-05 ' + (chain ? 'брат отца' : 'дядя');
-        assert.equal(response(adaptive, kinQuery)[0].text, uncle, context + ': inferred R2');
+        for (const q of kinQueries) {
+            const expected = marker + '\nUncle 1954-05-05 ' + (q === '/ дядя' ? 'дядя' : 'брат отца');
+            for (const suffix of ['', '#2', '#ignored'])
+                assert.equal(response(adaptive, q + suffix)[0].text, expected, context + ': automatic labels ' + q + suffix);
+            assert.equal(response(adaptive, q + '#1')[0].text, 'Ничего не найдено',
+                context + ': explicit R1 excludes uncle ' + q);
+        }
+        assert.equal(response(adaptive, '/ брат')[0].text, marker + '\nBrother 1982-04-04 брат',
+            context + ': sibling chain search');
         assert.equal(response(adaptive, '/Uncle #2')[0].text, uncle, context + ': explicit R2');
         assert.equal(response(adaptive, '/Uncle#2')[0].text, uncle, context + ': compact explicit R2');
         assert.equal(response(adaptive, '/Unc#2')[0].text, uncle, context + ': compact prefix explicit R2');
-        for (const q of [kinQuery + ' #1', '/Uncle', '/unknown#0'])
-            assert.equal(response(adaptive, q)[0].text, 'Ничего не найдено в радиусе 1', context + ': ' + q);
-        assert.equal(response(adaptive, '/unknown#2')[0].text, 'Ничего не найдено в радиусе 2', context);
-        assert.equal(response(adaptive, '/unknown#9')[0].text, 'Ничего не найдено в радиусе 9', context);
+        for (const q of ['/Uncle', '/unknown#0'])
+            assert.equal(response(adaptive, q)[0].text, 'Ничего не найдено', context + ': ' + q);
+        assert.equal(response(adaptive, '/unknown#2')[0].text, 'Ничего не найдено', context);
+        assert.equal(response(adaptive, '/unknown#9')[0].text, 'Ничего не найдено', context);
         const allOne = response(adaptive, '/#1')[0].text;
         const allTwo = response(adaptive, '/#2')[0].text;
         assert.ok(allOne.startsWith(marker + '\n'), context);
@@ -128,7 +170,14 @@ for (const platform of ['tg', 'vk']) {
         assert.ok(allTwo.includes(uncle.slice(marker.length + 1)), context);
         assert.match(allTwo, /Father\+Mother 1979~/);
         assert.match(response(adaptive, '/#9')[0].text, /Grandfather/);
-        assert.equal(response(adaptive, '/ #2')[0].text, 'Ничего не найдено в радиусе 2', context);
+        assert.equal(response(adaptive, '/ #2')[0].text, allTwo, context + ': spaced full list');
+        for (const q of queries) {
+            if (['/ бабушка матери', '/ жена тёти', '/ племянница матери'].includes(q)) continue;
+            const explicit = q.match(/#([0-9]+)$/);
+            const radius = explicit ? Math.max(1, Number(explicit[1])) : kinQueries.some(k => q.startsWith(k)) ? 2 : 1;
+            const mode = q.startsWith('/ брат') ? 1 : q.startsWith('/ дядя') ? 0 : chain;
+            progress(adaptive, q, radius, mode);
+        }
         for (const q of queries)
             assert.doesNotMatch(response(adaptive, q)[0].body, /\[\d+\.\d+\]/, context + ': plain search result');
         assert.deepEqual(adaptive.data, adaptiveBaseline.data,
@@ -188,6 +237,48 @@ for (const platform of ['tg', 'vk']) {
     assert.match(response(romanovSearch, '/Алексей #5')[0].text, /Алексей Алексеевич Романов/);
     assert.match(response(romanovSearch, '/ брат')[0].text, /брат/);
     assert.deepEqual(romanovSearch.data, romanov.data, 'Romanov reply search preserves imported tree');
-    console.log(platform + ': actual-handler adaptive radius (fynny0/1), errors, commands, no mutation, ordinary edit, Romanov radius/bell OK');
+
+    const children = Array.from({ length: 100 }, (_, i) => 'Child' + String(i).padStart(3, '0') + ' Long Name For Complete Reply Search Overflow');
+    const ged = path.join(tmp, platform + '-children.ged');
+    fs.writeFileSync(ged, ['0 HEAD', '1 SOUR ReplySearchCheck', '1 GEDC', '2 VERS 5.5.1', '1 CHAR UTF-8',
+        '0 @I1@ INDI', '1 NAME OverflowHero', '1 SEX M', '1 BIRT', '2 DATE 1 JAN 1950', '1 FAMS @F1@',
+        ...children.flatMap((name, i) => [`0 @I${i + 2}@ INDI`, '1 NAME ' + name, '1 SEX M',
+            '1 BIRT', '2 DATE 1 JAN 1980', '1 FAMC @F1@']),
+        '0 @F1@ FAM', '1 HUSB @I1@', ...children.map((_, i) => `1 CHIL @I${i + 2}@`), '0 TRLR', ''].join('\n'));
+    const overflowSetup = ['!ged ' + ged, '/2 2', '/fynny0', 'OverflowHero 1950-01-01'];
+    const overflowBaseline = run(platform, 'overflow-baseline', overflowSetup);
+    const overflowHero = overflowBaseline.entries.find(e => e.user && e.text === 'OverflowHero 1950-01-01');
+    assert.ok(overflowHero, overflowBaseline.log);
+    const overflow = run(platform, 'overflow', [...overflowSetup, '>' + overflowHero.id + ' /#1']);
+    const full = progress(overflow, '/#1', 1, 0);
+    assert.ok(full.rawText.length <= 4000, platform + ': bounded final text');
+    assert.match(full.rawText, /✂️/);
+    assert.ok(full.versions.some(e => e.edited && /✂️⏳/.test(e.text)), platform + ': upload progress');
+    assert.ok(full.versions.every(e => e.text.length <= 4000), platform + ': bounded intermediate text');
+    let artifact;
+    if (platform === 'tg') {
+        const docs = [...overflow.log.matchAll(/\[\d+\] sendDocument: [^\n]+\.txt \([^\n]+\)\n    → ([^\n]+)/g)];
+        assert.equal(docs.length, 1, overflow.log);
+        artifact = fs.readFileSync(docs[0][1], 'utf8');
+    } else {
+        const trace = fs.readFileSync(overflow.base + '.trace.jsonl', 'utf8').trim().split('\n').map(l => JSON.parse(l));
+        const uploads = trace.filter(e => e.method === 'upload' && /filename="[^"\r\n]+\.txt"/.test(e.body));
+        assert.equal(uploads.length, 1, overflow.log);
+        const multipart = Buffer.from(uploads[0].base64, 'base64').toString('utf8');
+        artifact = multipart.slice(multipart.indexOf('\r\n\r\n') + 4, multipart.lastIndexOf('\r\n--'));
+        assert.match(full.rawText, /📎 вложение/, platform + ': attachment on the same message');
+    }
+    artifact = artifact.replace(/^\uFEFF/, '');
+    assert.ok(artifact.startsWith('/#1\nродители-дети fynny=0\n' + marker + '\n'), platform + ': full file header');
+    assert.doesNotMatch(artifact, /⏳|✂️/);
+    const rows = artifact.split('\n').slice(3);
+    assert.equal(rows.length, children.length + 1, platform + ': complete list including hero');
+    for (const name of children) assert.equal(rows.filter(row => row === name + ' 1980-01-01 сын').length, 1, name);
+    assert.ok(rows.some(row => row.startsWith('OverflowHero 1950-01-01')), platform + ': hero in full list');
+    const shown = full.rawText.split('\n').slice(3).filter(row => !/✂️|📎/.test(row));
+    assert.ok(shown.length > 0 && shown.length < rows.length, platform + ': truncated preview');
+    assert.deepEqual(shown, rows.slice(0, shown.length), platform + ': only complete rows in preview');
+    assert.deepEqual(overflow.data, overflowBaseline.data, platform + ': overflow search preserves tree');
+    console.log(platform + ': reply progress/final IDs, automatic labels and R1/R2/R9 (fynny0/1), errors, commands, no mutation, ordinary edit, Romanov radius/bell, full overflow artifact OK');
 }
 console.log('Reply search REPL logs and isolated DBs: ' + tmp);
