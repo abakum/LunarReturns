@@ -4,7 +4,7 @@ import { gedDrops, focusView, settings } from '../schema.js';
 import { parseTrigger, parseGedcom, gedStats, parseTree } from '../lib/parse.cjs';
 import { fileBaseOf } from '../lib/chart.cjs';
 import { jubileeText } from '../lib/text.js';
-import { normalizeFocusRadius, focusListMessage } from '../lib/tree.cjs';
+import { normalizeFocusRadius, focusListMessage, focusSearch } from '../lib/tree.cjs';
 import { REPLY_TARGET_ERROR, resolveReplyRecord } from '../lib/text.cjs';
 import {
     helpText, startMarkup, chatAdmin, getSettings, todayText, jubileeMarkup, sendLong,
@@ -270,7 +270,7 @@ export default async function (message, ctx) {
     if (!text) return;
 
     // в группах команда приходит с упоминанием бота: /start@botname
-    const cmd = (text.match(/^\/[a-z_]+/i) || [""])[0].toLowerCase();
+    const start = /^\/start(?:@[a-z0-9_]+)?$/i.test(text);
 
     const tm = text.match(/^\/trim([01])(?:@[a-z0-9_]+)?$/i);
     if (tm) {
@@ -297,7 +297,7 @@ export default async function (message, ctx) {
         return;
     }
 
-    const scopedCommand = cmd === "/start" || text === "/"
+    const scopedCommand = start || text === "/"
         || /^\/(?:bell[1-5]?|gedcom[1-5]?|links)(?:@\S+)?$/i.test(text)
         || text.toLowerCase() === "связи";
     const anchorInput = text.split(/\r?\n/).some(l => /^\s*[-+=]/.test(l))
@@ -311,7 +311,7 @@ export default async function (message, ctx) {
         }
     }
 
-    if (cmd === "/start" || text === "/") {
+    if (start || text === "/") {
         // «/» ответом на триггер — фокус-сообщение с радиусом родни
         if (resolved) {
             const rec = resolved;
@@ -331,7 +331,7 @@ export default async function (message, ctx) {
     }
 
     // /today и /today@имя_бота (пишут и планировщики вроде Crondule)
-    if (text === "/today" || text.startsWith("/today@")) {
+    if (/^\/today(?:@[a-z0-9_]+)?$/i.test(text)) {
         const body = await todayText(chatId);
         // как в VK: нечего показать — молчание (тело содержит jubileeText,
         // HTML со спойлерами; дайджест — простой текст)
@@ -380,7 +380,7 @@ export default async function (message, ctx) {
 
     // гедком-древо чата (то же выводит кнопка 🧬); ответом на триггер — только
     // текст родни выбранного радиуса (/gedcom2 = 2), без кнопок
-    const gm = text.match(/^\/gedcom([1-5])?(?:@\S+)?$/);
+    const gm = text.match(/^\/gedcom([1-5])?(?:@\S+)?$/i);
     if (gm) {
         const radius = Number(gm[1]) || 1;
         if (resolved) {
@@ -453,14 +453,26 @@ export default async function (message, ctx) {
 
     // /Иван — префиксный поиск по родословной росписи -+= (/-Пётр — только
     // мужчины глубины 0, /--Иван — глубины 1, /=… — женщины); "/ текст" —
-    // подстрока. Пусто — справка. (логика — flatSearch в lib/bot.js)
+    // подстрока. В reply — события родни героя радиуса 5, включая неточные даты.
     if (text.startsWith("/")) {
-        const hits = flatSearch(await chatFlatText(chatId), text);
+        const replySearch = !!message.reply_to_message;
+        if (replySearch) {
+            resolved ||= await resolveReply(chatId, message.reply_to_message);
+            if (!resolved || !resolved.xref || resolved.n.includes("+")) {
+                await api.sendMessage({ chat_id: chatId, text: REPLY_TARGET_ERROR });
+                return;
+            }
+        }
+        const hits = replySearch
+            ? focusSearch(await personRows(chatId), await weddingRows(chatId),
+                await linkPairs(chatId), await focusSpousePairs(chatId),
+                resolved.n + " " + resolved.d, text, (await getSettings(chatId)).fynny)
+            : flatSearch(await chatFlatText(chatId), text);
         if (hits.length) {
             // ровно одно попадание, резолвящееся в персону, — сжатый юбилей
             // с единой клавиатурой, реплаем на запрос; нерезолвимое (свадьба,
             // заглушка, тёзки) — списком
-            if (hits.length === 1) {
+            if (!replySearch && hits.length === 1) {
                 const key = flatHitKey(hits[0], await personRows(chatId));
                 const rec = key ? await recordOf(chatId, key) : null;
                 if (rec && rec.xref) { // резолвится в персону (xref есть)
@@ -495,11 +507,7 @@ export default async function (message, ctx) {
             console.log("flat search:", JSON.stringify(text), "->", hits.length, "строк, чат", chatId);
             return;
         }
-        const admin = await chatAdmin(message.chat, message.from?.id);
-        await api.sendMessage({
-            chat_id: chatId, text: helpText(await getSettings(chatId)),
-            reply_markup: startMarkup(message.chat, admin, chatId, await getSettings(chatId)),
-        });
+        await api.sendMessage({ chat_id: chatId, text: "Ничего не найдено" });
         return;
     }
 

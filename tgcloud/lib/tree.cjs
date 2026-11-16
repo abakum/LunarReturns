@@ -231,6 +231,16 @@ function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate =
         || (r.n.includes("+") && focusHasPair(r.n, keys))), byFullDate, mmddToday));
 }
 
+// Search the complete radius-five list, not a truncated bell message.
+function focusSearch(persons, weddings, pairs, spousePairs, key, query, chain) {
+    const { flatSearch } = require('./flat.cjs');
+    const sexMap = new Map(persons.map(r => [r.n + " " + r.d, r.sex ?? null]));
+    const sexOf = k => sexMap.get(k) ?? null;
+    const keys = focusListKeys(pairs, spousePairs, key, 5, sexOf, true);
+    return flatSearch(focusListText([...persons, ...weddings], keys, key,
+        pairs, spousePairs, sexOf, true, "", 5, chain), query);
+}
+
 // список колокольчика «Имя ГГГГ-ММ-ДД[ ГГГГ-ММ-ДД смерти][ ЧЧ:ММ]»;
 // "" — событий нет; rows — готовые записи персон и свадеб (выборка БД —
 // в адаптерах ботов). byFullDate=false — круговой порядок «от сегодня»
@@ -298,4 +308,4 @@ function familyXref(rows, mx, fx, alias, date, used) {
 }
 
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
-module.exports = { isExactEvent, normalizeFocusRadius, focusListMessage, familyXref, focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, eventListText, famsByGenerations };
+module.exports = { isExactEvent, normalizeFocusRadius, focusListMessage, familyXref, focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, focusSearch, eventListText, famsByGenerations };

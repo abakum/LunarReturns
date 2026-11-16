@@ -180,6 +180,47 @@ function checkCanon(tag) {
     assert.equal(tree.focusListText(items, R2_KEYS, sonKey, pairs, spousePairs, sexOf, false, '01-15'), E.r2_0115, tag + ' r2 от 01-15');
     assert.equal(tree.focusListText(items, ['Никого 2000-01-01'], sonKey, pairs, spousePairs, sexOf), E.empty, tag + ' пустой фокус');
     assert.equal(tree.focusListText([], [], sonKey, pairs, spousePairs, sexOf, true), E.empty_full, tag + ' пустые items');
+
+    const relatives = items.filter(r => !r.n.includes('+')).map(r => ({
+        ...r, sex: sexOf(r.n + ' ' + r.d),
+        ...(r.n === 'Дочь' ? { abt: 17 } : {}),
+    }));
+    const weddings = items.filter(r => r.n.includes('+')).map(r => ({ ...r, mabt: 17 }));
+    const search = (query, chain = false) => tree.focusSearch(relatives, weddings,
+        pairs, spousePairs, sonKey, query, chain);
+    assert.deepEqual(search('/доч'), ['Дочь 1982~ 04:05 сестра']);
+    assert.deepEqual(search('/ сестра'), ['Дочь 1982~ 04:05 сестра']);
+    assert.deepEqual(search('/сестра'), []);
+    assert.deepEqual(search('/Чужой'), []);
+    assert.deepEqual(search('/Неизвестный'), []);
+    assert.deepEqual(search('/ #comment'), []);
+    assert.deepEqual(search('/Дочь #boundary'), ['Дочь 1982~ 04:05 сестра']);
+    assert.deepEqual(search('/Отец+'), ['Отец+Мать 1979~ 1990-01-01']);
+    assert.deepEqual(search('/ сестра', true), ['Тётя 1957-04-04 сестра отца', 'Дочь 1982~ 04:05 сестра']);
+    assert.deepEqual(search('/ 19'), [
+        'Дед 1930-01-01 дедушка', 'Тесть 1931-12-12 муж тёти',
+        'Бабка 1932-02-02 2000-03-03 бабушка', 'Отец 1955-03-03 отец',
+        'Мать 1956-05-05 мать', 'Тётя 1957-04-04 тётя',
+        'Отец+Мать 1979~ 1990-01-01', 'Сын 1980-06-06', 'Дочь 1982~ 04:05 сестра',
+    ]);
+    const generations = Array.from({ length: 7 }, (_, i) =>
+        ({ n: 'Ancestor' + i, d: `${2000 - i * 20}-01-01`, sex: 'M', abt: 17 }));
+    const ancestors = generations.slice(1).map((r, i) =>
+        [r.n + ' ' + r.d, generations[i].n + ' ' + generations[i].d]);
+    const ancestorHits = tree.focusSearch(generations, [], ancestors, [],
+        'Ancestor0 2000-01-01', '/Ancestor', false);
+    assert.equal(ancestorHits.length, 6);
+    assert.ok(ancestorHits[0].startsWith('Ancestor5 '));
+    assert.ok(!ancestorHits.some(l => l.startsWith('Ancestor6 ')));
+    const large = Array.from({ length: 180 }, (_, i) =>
+        ({ n: 'Child' + String(i).padStart(3, '0'), d: '2000-01-01', sex: 'M' }));
+    const largePersons = [{ n: 'Hero', d: '1970-01-01', sex: 'M' }, ...large];
+    const largePairs = large.map(r => ['Hero 1970-01-01', r.n + ' ' + r.d]);
+    const snapshot = JSON.stringify([largePersons, largePairs]);
+    assert.ok(tree.focusSearch(largePersons, [], largePairs, [], 'Hero 1970-01-01', '/Child').join('\n').length > 4000);
+    assert.deepEqual(tree.focusSearch(largePersons, [], largePairs, [], 'Hero 1970-01-01', '/Child179'),
+        ['Child179 2000-01-01 сын']);
+    assert.equal(JSON.stringify([largePersons, largePairs]), snapshot);
 }
 
 // ============================== адаптеры (прямой запуск) ==============================

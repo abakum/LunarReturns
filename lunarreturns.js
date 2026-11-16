@@ -34,7 +34,7 @@ const { fynny, kinLabel } = reqLib("kinship");
 // ТГ-копия через ESM-шим; правки — только в .cjs, дословных копий больше нет.
 const {
     familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations,
-    focusListText, eventListText, normalizeFocusRadius, focusListMessage} = reqLib("tree");
+    focusListText, focusSearch, eventListText, normalizeFocusRadius, focusListMessage} = reqLib("tree");
 
 
 // ============================== ГЕДКОМ → PDF (общий модуль) ==============================
@@ -2277,7 +2277,7 @@ async function holdAttach(peerId, log, sent, holdTxt, finalTxt, name, content,
 
 // «Начать» (payload {"command":"start"}) работает как «/»
 const isStart = (text, payload) => {
-    if (text.trim() === "/") return true;
+    if (text.trim() === "/" || /^\/start(?:@[a-z0-9_]+)?$/i.test(text.trim())) return true;
     if (payload && typeof payload === "object") return payload.command === "start";
     return payload === "start";
 };
@@ -2653,7 +2653,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     // «/links» (в ТГ — кнопка 🔗 под событием): роспись ВЕТВИ героя — как тап
     // «-+=» на фокусе (>4000 — вложением); без reply — роспись
     // древа чата (листинг сообщений-связей не восстанавливается)
-    if (t === "/links" || t === "связи") {
+    if (/^\/links(?:@\S+)?$/i.test(t) || t === "связи") {
         let key = null, head = "";
         if (resolved) {
             const rec = resolved;
@@ -2711,16 +2711,24 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     }
     // /Иван — префиксный поиск по родословной росписи -+= (/-Пётр — только
     // мужчины глубины 0, /--Иван — глубины 1, /=… — женщины); "/ текст" —
-    // подстрока. Пусто — справка. (ТГ: handlers/message.js; логика — flatSearch)
+    // подстрока. В reply — события родни героя радиуса 5, включая неточные даты.
     if (text.trim().startsWith("/")) {
         const q = text.trim();
-        const hits = flatSearch(chatFlatText(peerId), q);
+        const replySearch = !!originalReply;
+        if (replySearch && (!resolved || !resolved.xref || resolved.n.includes("+"))) {
+            await messagesSend(peerId, REPLY_TARGET_ERROR, msgId, convMsgId);
+            return;
+        }
+        const hits = replySearch
+            ? focusSearch(personRows(peerId), weddingRows(peerId), linkPairs(peerId),
+                focusSpousePairs(peerId), resolved.n + " " + resolved.d, q, getSettings(peerId).fynny)
+            : flatSearch(chatFlatText(peerId), q);
         if (hits.length) {
             // ровно одно попадание, резолвящееся в персону, — сжатый юбилей
             // с клавиатурой-юбилеем (триггера нет — реплаить не на что, новое
             // сообщение); нерезолвимое (свадьба, заглушка, тёзки) —
             // списком/файлом как прежде
-            if (hits.length === 1) {
+            if (!replySearch && hits.length === 1) {
                 const key = flatHitKey(hits[0], personRows(peerId));
                 const rec = key ? recordOf(peerId, key) : null;
                 if (rec) {
@@ -2753,10 +2761,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             }
             return;
         }
-        let kb;
-        if (peerId < 2000000000) kb = relKeyboard(peerId);
-        else kb = (await isChatAdmin(peerId, fromId)) ? ownerKeyboard() : bellKeyboard();
-        await messagesSend(peerId, helpText(getSettings(peerId)), msgId, convMsgId, kb);
+        await messagesSend(peerId, "Ничего не найдено", msgId, convMsgId);
         return;
     }
     // цитата для родословной росписи -+=: ветвь цитируемого срезана, роспись привита
