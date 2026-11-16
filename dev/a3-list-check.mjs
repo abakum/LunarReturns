@@ -196,19 +196,36 @@ function checkCanon(tag) {
     assert.deepEqual(search('/ #comment'), []);
     assert.deepEqual(search('/Дочь #boundary'), ['Дочь 1982~ 04:05 сестра']);
     assert.deepEqual(search('/Отец+'), ['Отец+Мать 1979~ 1990-01-01']);
-    assert.deepEqual(search('/ сестра', true), ['Тётя 1957-04-04 сестра отца', 'Дочь 1982~ 04:05 сестра']);
-    assert.deepEqual(search('/ 19'), [
+    assert.deepEqual(search('/ сестра', true), ['Дочь 1982~ 04:05 сестра']);
+    assert.deepEqual(search('/ сестра отца', true), ['Тётя 1957-04-04 сестра отца']);
+    assert.deepEqual(search('/ сестра#2', true), ['Тётя 1957-04-04 сестра отца', 'Дочь 1982~ 04:05 сестра']);
+    assert.deepEqual(search('/ тётя'), ['Тётя 1957-04-04 тётя']);
+    assert.deepEqual(search('/ тётя#1'), []);
+    assert.deepEqual(search('/  тётя#2'), ['Тётя 1957-04-04 тётя']);
+    assert.deepEqual(search('/Тётя'), ['Тётя 1957-04-04 тётя']);
+    assert.deepEqual(search('/Тётя#2'), ['Тётя 1957-04-04 тётя']);
+    assert.deepEqual(search('/ 19#5'), [
         'Дед 1930-01-01 дедушка', 'Тесть 1931-12-12 муж тёти',
         'Бабка 1932-02-02 2000-03-03 бабушка', 'Отец 1955-03-03 отец',
         'Мать 1956-05-05 мать', 'Тётя 1957-04-04 тётя',
         'Отец+Мать 1979~ 1990-01-01', 'Сын 1980-06-06', 'Дочь 1982~ 04:05 сестра',
     ]);
+    assert.deepEqual(search('/#5'), search('/ 19#5'));
+    for (const chain of [false, true]) for (let radius = 1; radius <= 9; radius++) {
+        const keys = tree.focusListKeys(pairs, spousePairs, sonKey, radius, sexOf, true);
+        const expected = tree.focusListText([...relatives, ...weddings], keys, sonKey,
+            pairs, spousePairs, sexOf, true, '', radius, chain).split('\n');
+        assert.deepEqual(search('/#' + radius, chain), expected);
+    }
+    for (const query of ['/ #2', '/#comment', '/#', '/#0', '/#10'])
+        assert.deepEqual(search(query), []);
+    assert.deepEqual(tree.focusSearch([], [], [], [], sonKey, '/#2'), []);
     const generations = Array.from({ length: 7 }, (_, i) =>
         ({ n: 'Ancestor' + i, d: `${2000 - i * 20}-01-01`, sex: 'M', abt: 17 }));
     const ancestors = generations.slice(1).map((r, i) =>
         [r.n + ' ' + r.d, generations[i].n + ' ' + generations[i].d]);
     const ancestorHits = tree.focusSearch(generations, [], ancestors, [],
-        'Ancestor0 2000-01-01', '/Ancestor', false);
+        'Ancestor0 2000-01-01', '/Ancestor#5', false);
     assert.equal(ancestorHits.length, 6);
     assert.ok(ancestorHits[0].startsWith('Ancestor5 '));
     assert.ok(!ancestorHits.some(l => l.startsWith('Ancestor6 ')));
@@ -218,9 +235,56 @@ function checkCanon(tag) {
     const largePairs = large.map(r => ['Hero 1970-01-01', r.n + ' ' + r.d]);
     const snapshot = JSON.stringify([largePersons, largePairs]);
     assert.ok(tree.focusSearch(largePersons, [], largePairs, [], 'Hero 1970-01-01', '/Child').join('\n').length > 4000);
+    assert.equal(tree.focusSearch(largePersons, [], largePairs, [], 'Hero 1970-01-01', '/#1').length, 181);
     assert.deepEqual(tree.focusSearch(largePersons, [], largePairs, [], 'Hero 1970-01-01', '/Child179'),
         ['Child179 2000-01-01 сын']);
     assert.equal(JSON.stringify([largePersons, largePairs]), snapshot);
+    for (const chain of [false, true]) {
+        for (const [query, radius] of [
+            ['/Иван', 1], ['/ брат', 1], ['/ брат отца', 2], ['/ жена брата отца', 3],
+            ['/ дочь матери жены', 3], ['/ сын сестры матери жены брата отца', 5],
+            ['/ отец матери#1', 1], ['/неизвестно#2', 2], ['/ брат#5', 5],
+            ['/#comment', 1], ['/ брат#отец матери', 1], ['/ брат # 2 ', 2],
+            ['/ брат#99', 9], ['/ брат#0', 1], ['/ БРАТ ОТЦА', 2],
+            ['/ мать ребёнка', 2], ['/ супруг сиблинга', 2], ['/ муж дочки', 2],
+            ['/Отецкий Материн', 1], ['/ отец, мать', 2], ['/ брат#comment сестра', 1],
+        ]) assert.equal(tree.searchRadius(query, chain), radius, `${query}, chain=${chain}`);
+    }
+    for (const [label, radius] of [
+        ['дядя', 2], ['тётя', 2], ['дедушка', 2], ['бабушки', 2], ['внук', 2],
+        ['племянница', 2], ['прародитель', 2], ['прародителя', 2], ['прадед', 3], ['пра2бабушки', 4],
+        ['правнук', 3], ['пра3внучка', 5], ['двоюродный брат', 3],
+        ['двоюродного дяди', 4], ['троюродная сестра', 5],
+        ['внучатый племянник', 4], ['правнучатая племянница', 5],
+        ['внучатого племянника', 4], ['внучатой племянницы', 4],
+        ['жена внука', 3], ['дядя жены', 3], ['двоюродная сестра бабушки', 5],
+    ]) assert.equal(tree.searchRadius('/ ' + label), radius, label);
+    assert.equal(tree.searchRadius('/ дядя', true), 1);
+    assert.equal(tree.searchRadius('/ двоюродный брат', true), 1);
+    const distant = Array.from({ length: 10 }, (_, i) =>
+        ({ n: 'Distant' + i, d: `${2000 - i * 20}-01-01`, sex: 'M' }));
+    const distantPairs = distant.slice(1).map((r, i) =>
+        [r.n + ' ' + r.d, distant[i].n + ' ' + distant[i].d]);
+    for (const chain of [false, true]) for (let radius = 6; radius <= 9; radius++) {
+        const query = '/Distant' + radius;
+        const searchDistant = r => tree.focusSearch(distant, [], distantPairs, [],
+            'Distant0 2000-01-01', query + '#' + r, chain);
+        assert.equal(tree.searchRadius(query + '#' + radius, chain), radius);
+        assert.equal(searchDistant(radius - 1).length, 0);
+        assert.equal(searchDistant(radius).length, 1);
+    }
+    const halfRows = ['Hero', 'Sibling', 'Nephew', 'Grandnephew', 'Father', 'Mother', 'OtherMother']
+        .map(n => ({ n, d: '2000-01-01', sex: 'M' }));
+    const halfPairs = [['Father', 'Hero'], ['Mother', 'Hero'],
+        ['Father', 'Sibling'], ['OtherMother', 'Sibling'],
+        ['Sibling', 'Nephew'], ['Nephew', 'Grandnephew']]
+        .map(pair => pair.map(n => n + ' 2000-01-01'));
+    const halfSearch = query => tree.focusSearch(halfRows, [], halfPairs, [],
+        'Hero 2000-01-01', query, false);
+    assert.deepEqual(halfSearch('/ внучатый племянник#3'), []);
+    assert.deepEqual(halfSearch('/ внучатый племянник'),
+        ['Grandnephew 2000-01-01 внучатый племянник']);
+    assert.deepEqual(halfSearch('/ внучатый племянник'), halfSearch('/ внучатый племянник#4'));
 }
 
 // ============================== адаптеры (прямой запуск) ==============================

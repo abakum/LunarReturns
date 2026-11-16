@@ -231,14 +231,45 @@ function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate =
         || (r.n.includes("+") && focusHasPair(r.n, keys))), byFullDate, mmddToday));
 }
 
-// Search the complete radius-five list, not a truncated bell message.
-function focusSearch(persons, weddings, pairs, spousePairs, key, query, chain) {
+// Infer without traversing the tree; an explicit comment overrides the heuristic.
+function searchRadius(query, chain = false) {
+    const [text, comment = ""] = String(query).split('#');
+    const explicit = comment.trim().match(/^\d+$/);
+    if (explicit) return Math.min(9, Math.max(1, Number(explicit[0])));
+    const words = text.toLowerCase().replace(/ё/g, "е").match(/[а-я]+\d*[а-я]*/g) || [];
+    let radius = 0;
+    for (const word of words) {
+        if (/^(?:сын|сына|дочь|дочери|дочка|дочки|отец|отца|мать|матери|брат|брата|сестра|сестры|муж|мужа|жена|жены|супруг|супруга|супруги|родитель|родителя|ребенок|ребенка|сиблинг|сиблинга)$/.test(word)) {
+            radius++;
+        } else if (!chain) {
+            if (/^прародител[ья]$/.test(word)) {
+                radius += 2;
+                continue;
+            }
+            const [, pra, count, base] = word.match(/^(?:(пра)(\d*))?(.+)$/);
+            let depth = /^(?:дядя|дяди|тетя|тети|племянник|племянника|племянница|племянницы|дед|деда|дедушка|дедушки|бабушка|бабушки|внук|внука|внучка|внучки)$/.test(base) ? 2
+                // Short labels also cover half-sibling paths, one step longer.
+                : /^(?:внучатый|внучатая|внучатого|внучатой)$/.test(base) ? 2
+                : /^(?:двоюродный|двоюродная|двоюродного|двоюродной)$/.test(base) ? 2
+                : /^(?:троюродный|троюродная|троюродного|троюродной)$/.test(base) ? 4
+                : /^(?:четвероюродный|четвероюродная|четвероюродного|четвероюродной)$/.test(base) ? 6 : 0;
+            if (depth && pra) depth += count ? Number(count) : 1;
+            radius += depth;
+        }
+    }
+    return normalizeFocusRadius(radius, 5);
+}
+
+// Search the complete selected-radius list, not a truncated bell message.
+function focusSearch(persons, weddings, pairs, spousePairs, key, query, chain, radius = searchRadius(query, chain)) {
     const { flatSearch } = require('./flat.cjs');
     const sexMap = new Map(persons.map(r => [r.n + " " + r.d, r.sex ?? null]));
     const sexOf = k => sexMap.get(k) ?? null;
-    const keys = focusListKeys(pairs, spousePairs, key, 5, sexOf, true);
-    return flatSearch(focusListText([...persons, ...weddings], keys, key,
-        pairs, spousePairs, sexOf, true, "", 5, chain), query);
+    const keys = focusListKeys(pairs, spousePairs, key, radius, sexOf, true);
+    const list = focusListText([...persons, ...weddings], keys, key,
+        pairs, spousePairs, sexOf, true, "", radius, chain);
+    if (/^\/#[1-9]$/.test(String(query))) return list ? list.split("\n") : [];
+    return flatSearch(list, query);
 }
 
 // список колокольчика «Имя ГГГГ-ММ-ДД[ ГГГГ-ММ-ДД смерти][ ЧЧ:ММ]»;
@@ -308,4 +339,4 @@ function familyXref(rows, mx, fx, alias, date, used) {
 }
 
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
-module.exports = { isExactEvent, normalizeFocusRadius, focusListMessage, familyXref, focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, focusSearch, eventListText, famsByGenerations };
+module.exports = { isExactEvent, normalizeFocusRadius, focusListMessage, familyXref, focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, searchRadius, focusSearch, eventListText, famsByGenerations };

@@ -17,6 +17,12 @@ const family = [
     '--Hero 1980-03-03', '--Brother 1982~ 2020~', '==Sister 1984-04-04',
     '-BrotherOutside 1986-05-05', '-bellamy 1990-01-01', '-startrek 1991-01-01',
 ].join('\\n');
+const extendedFamily = [
+    '-Grandfather 1920-01-01', '+1949~', 'Grandmother 1922-02-02',
+    '--Father 1950-01-01', '++1979~', 'Mother 1952-02-02',
+    '---Hero 1980-03-03', '---Brother 1982-04-04',
+    '--Uncle 1954-05-05',
+].join('\\n');
 
 function run(platform, tag, commands) {
     const base = path.join(tmp, `${platform}-${++sequence}-${tag}`);
@@ -87,12 +93,47 @@ for (const platform of ['tg', 'vk']) {
     assert.match(scoped('/Father+').text, /Father\+Mother 1979~/);
     assert.match(scoped('/Sister').text, /Sister 1984-04-04 сестра/);
     for (const q of ['/BrotherOutside', '/missingzz', '/#comment', '/bellamy', '/startrek', '/ bell'])
-        assert.equal(scoped(q).text, 'Ничего не найдено', platform + ': scoped ' + q);
+        assert.equal(scoped(q).text, 'Ничего не найдено в радиусе 1', platform + ': scoped ' + q);
     const empty = response(searched, '/missingzz')[0];
     assert.equal(empty.text, 'Ничего не найдено');
     assert.doesNotMatch(empty.body, /\[\d+\.\d+\]/);
     assert.match(response(searched, '/BrotherOutside')[0].text, /BrotherOutside 1986-05-05/);
     assert.match(response(searched, '/BrotherOutside')[0].body, /\[\d+\.\d+\]/, 'Global single match retains card buttons');
+
+    for (const chain of [0, 1]) {
+        const adaptiveSetup = [extendedFamily, '/fynny' + chain, 'Hero 1980-03-03'];
+        const adaptiveBaseline = run(platform, 'adaptive-baseline-' + chain, adaptiveSetup);
+        const target = adaptiveBaseline.entries.find(e => e.user && e.text === 'Hero 1980-03-03');
+        assert.ok(target, adaptiveBaseline.log);
+        const kinQuery = chain ? '/ брат отца' : '/ дядя';
+        const queries = [kinQuery, kinQuery + ' #1', '/unknown#2', '/Uncle', '/Uncle #2', '/Uncle#2', '/Unc#2',
+            '/unknown#0', '/unknown#9', '/#1', '/#2', '/#9', '/ #2'];
+        const adaptive = run(platform, 'adaptive-search-' + chain,
+            [...adaptiveSetup, ...queries.map(q => '>' + target.id + ' ' + q)]);
+        const context = platform + ': fynny' + chain;
+        const uncle = marker + '\nUncle 1954-05-05 ' + (chain ? 'брат отца' : 'дядя');
+        assert.equal(response(adaptive, kinQuery)[0].text, uncle, context + ': inferred R2');
+        assert.equal(response(adaptive, '/Uncle #2')[0].text, uncle, context + ': explicit R2');
+        assert.equal(response(adaptive, '/Uncle#2')[0].text, uncle, context + ': compact explicit R2');
+        assert.equal(response(adaptive, '/Unc#2')[0].text, uncle, context + ': compact prefix explicit R2');
+        for (const q of [kinQuery + ' #1', '/Uncle', '/unknown#0'])
+            assert.equal(response(adaptive, q)[0].text, 'Ничего не найдено в радиусе 1', context + ': ' + q);
+        assert.equal(response(adaptive, '/unknown#2')[0].text, 'Ничего не найдено в радиусе 2', context);
+        assert.equal(response(adaptive, '/unknown#9')[0].text, 'Ничего не найдено в радиусе 9', context);
+        const allOne = response(adaptive, '/#1')[0].text;
+        const allTwo = response(adaptive, '/#2')[0].text;
+        assert.ok(allOne.startsWith(marker + '\n'), context);
+        assert.match(allOne, /Hero 1980-03-03/);
+        assert.doesNotMatch(allOne, /Uncle/);
+        assert.ok(allTwo.includes(uncle.slice(marker.length + 1)), context);
+        assert.match(allTwo, /Father\+Mother 1979~/);
+        assert.match(response(adaptive, '/#9')[0].text, /Grandfather/);
+        assert.equal(response(adaptive, '/ #2')[0].text, 'Ничего не найдено в радиусе 2', context);
+        for (const q of queries)
+            assert.doesNotMatch(response(adaptive, q)[0].body, /\[\d+\.\d+\]/, context + ': plain search result');
+        assert.deepEqual(adaptive.data, adaptiveBaseline.data,
+            context + ': adaptive searches preserve people, families, links and settings');
+    }
 
     const ordinary = run(platform, 'ordinary', [...setup, '/bellamy', '/startrek', '/ bell',
         reply + 'HeroRenamed 1980-03-03', '/HeroRenamed']);
@@ -142,11 +183,11 @@ for (const platform of ['tg', 'vk']) {
     romanov = run(platform, 'romanov-bell', romanovCommands);
     assert.match(romanov.entries.at(-1).text, /Алексей/);
     const romanovHero = romanov.entries.find(e => e.user && e.text === 'Алексей Алексеевич Романов 1654-02-05');
-    romanovCommands.push('>' + romanovHero.id + ' /Алексей', '>' + romanovHero.id + ' / брат');
+    romanovCommands.push('>' + romanovHero.id + ' /Алексей #5', '>' + romanovHero.id + ' / брат');
     const romanovSearch = run(platform, 'romanov-search', romanovCommands);
-    assert.match(response(romanovSearch, '/Алексей', 1)[0].text, /Алексей Алексеевич Романов/);
+    assert.match(response(romanovSearch, '/Алексей #5')[0].text, /Алексей Алексеевич Романов/);
     assert.match(response(romanovSearch, '/ брат')[0].text, /брат/);
     assert.deepEqual(romanovSearch.data, romanov.data, 'Romanov reply search preserves imported tree');
-    console.log(platform + ': actual-handler search, errors, commands, no mutation, ordinary edit, Romanov radius/bell OK');
+    console.log(platform + ': actual-handler adaptive radius (fynny0/1), errors, commands, no mutation, ordinary edit, Romanov radius/bell OK');
 }
 console.log('Reply search REPL logs and isolated DBs: ' + tmp);

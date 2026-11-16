@@ -4,7 +4,7 @@ import { gedDrops, focusView, settings } from '../schema.js';
 import { parseTrigger, parseGedcom, gedStats, parseTree } from '../lib/parse.cjs';
 import { fileBaseOf } from '../lib/chart.cjs';
 import { jubileeText } from '../lib/text.js';
-import { normalizeFocusRadius, focusListMessage, focusSearch } from '../lib/tree.cjs';
+import { normalizeFocusRadius, focusListMessage, focusSearch, searchRadius } from '../lib/tree.cjs';
 import { REPLY_TARGET_ERROR, resolveReplyRecord } from '../lib/text.cjs';
 import {
     helpText, startMarkup, chatAdmin, getSettings, todayText, jubileeMarkup, sendLong,
@@ -453,7 +453,7 @@ export default async function (message, ctx) {
 
     // /Иван — префиксный поиск по родословной росписи -+= (/-Пётр — только
     // мужчины глубины 0, /--Иван — глубины 1, /=… — женщины); "/ текст" —
-    // подстрока. В reply — события родни героя радиуса 5, включая неточные даты.
+    // подстрока. В reply — события родни героя, включая неточные даты.
     if (text.startsWith("/")) {
         const replySearch = !!message.reply_to_message;
         if (replySearch) {
@@ -463,10 +463,12 @@ export default async function (message, ctx) {
                 return;
             }
         }
+        const chain = replySearch ? (await getSettings(chatId)).fynny : false;
+        const radius = searchRadius(text, chain);
         const hits = replySearch
             ? focusSearch(await personRows(chatId), await weddingRows(chatId),
                 await linkPairs(chatId), await focusSpousePairs(chatId),
-                resolved.n + " " + resolved.d, text, (await getSettings(chatId)).fynny)
+                resolved.n + " " + resolved.d, text, chain, radius)
             : flatSearch(await chatFlatText(chatId), text);
         if (hits.length) {
             // ровно одно попадание, резолвящееся в персону, — сжатый юбилей
@@ -507,7 +509,8 @@ export default async function (message, ctx) {
             console.log("flat search:", JSON.stringify(text), "->", hits.length, "строк, чат", chatId);
             return;
         }
-        await api.sendMessage({ chat_id: chatId, text: "Ничего не найдено" });
+        await api.sendMessage({ chat_id: chatId, text: "Ничего не найдено"
+            + (replySearch ? " в радиусе " + radius : "") });
         return;
     }
 
