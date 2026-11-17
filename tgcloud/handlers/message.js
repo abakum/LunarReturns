@@ -5,7 +5,7 @@ import { parseTrigger, parseGedcom, gedStats, parseTree } from '../lib/parse.cjs
 import { fileBaseOf } from '../lib/chart.cjs';
 import { parseSearchQuery } from '../lib/flat.cjs';
 import { jubileeText } from '../lib/text.js';
-import { normalizeFocusRadius, focusListMessage, focusSearch, searchChain, searchRadius, searchProgressHead, searchKinshipPossible } from '../lib/tree.cjs';
+import { normalizeFocusRadius, focusListMessage, focusSearch, searchChain, searchRadius, searchProgressHead, prepareReplySearch } from '../lib/tree.cjs';
 import { REPLY_TARGET_ERROR, resolveReplyRecord } from '../lib/text.cjs';
 import {
     helpText, startMarkup, chatAdmin, getSettings, todayText, jubileeMarkup, sendLong,
@@ -471,15 +471,18 @@ export default async function (message, ctx) {
                 return;
             }
         }
-        const chain = searchChain(parsed, replySearch ? (await getSettings(chatId)).fynny : false);
-        const radius = searchRadius(parsed, chain);
-        if (replySearch && !searchKinshipPossible(parsed, chain)) {
-            await api.sendMessage({ chat_id: chatId, text: "Нет такой родственной связи",
+        const plan = replySearch ? prepareReplySearch(parsed, (await getSettings(chatId)).fynny) : null;
+        const chain = plan?.chain ?? searchChain(parsed, false);
+        const radius = plan?.radius ?? searchRadius(parsed, chain);
+        if (plan?.error) {
+            await api.sendMessage({ chat_id: chatId, text: plan.error,
                 reply_parameters: { message_id: message.message_id, allow_sending_without_reply: true } });
             return;
         }
         if (replySearch) {
-            const head = searchProgressHead(radius, chain, parsed);
+            const fullHead = searchProgressHead(radius, chain, parsed, plan.decomposition);
+            const head = fullHead.length > 2500
+                ? searchProgressHead(radius, chain, parsed) + '\nПолное разложение — в файле.' : fullHead;
             if (head.length + NOT_FOR_GRAFT.length + 40 > 4000) {
                 await api.sendMessage({ chat_id: chatId, text: "Ошибка поискового запроса: слишком длинный заголовок" });
                 return;
@@ -489,16 +492,16 @@ export default async function (message, ctx) {
             try {
                 const hits = focusSearch(await personRows(chatId), await weddingRows(chatId),
                     await linkPairs(chatId), await focusSpousePairs(chatId),
-                    resolved.n + " " + resolved.d, parsed, chain, radius);
+                    resolved.n + " " + resolved.d, plan.query, chain, radius);
                 const found = hits.join("\n");
                 const prefix = head + "\n" + NOT_FOR_GRAFT;
-                if (found && prefix.length + 1 + found.length >= 4000) {
+                if (fullHead !== head || (found && prefix.length + 1 + found.length >= 4000)) {
                     const inner = cutLines(found, 4000, prefix.length + 1 + "\n✂️⏳".length);
                     const body = prefix + (inner ? "\n" + inner : "");
                     const holdTxt = body + "\n✂️⏳", finalTxt = body + "\n✂️";
                     await api.editMessageText({ chat_id: chatId, message_id: first.message_id, text: holdTxt });
                     await holdReply(chatId, first, holdTxt, finalTxt,
-                        prefix + "\n" + found, fileBaseOf(searchHead(text, hits.length)) + ".txt");
+                        fullHead + '\n' + NOT_FOR_GRAFT + "\n" + (found || 'Ничего не найдено'), fileBaseOf(searchHead(text, hits.length)) + ".txt");
                 } else {
                     await api.editMessageText({ chat_id: chatId, message_id: first.message_id,
                         text: found ? prefix + "\n" + found : head + "\nНичего не найдено" });

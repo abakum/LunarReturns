@@ -23,6 +23,31 @@ const extendedFamily = [
     '---Hero 1980-03-03', '---Brother 1982-04-04',
     '--Uncle 1954-05-05',
 ].join('\\n');
+const expansionGed = path.join(tmp, 'expansion.ged');
+const expansionPeople = [
+    ['GreatGrandmother', 'F', '1900', null, 'F0'],
+    ['Grandfather', 'M', '1920', null, 'F1'],
+    ['Grandmother', 'F', '1922', 'F0', 'F1'],
+    ['Father', 'M', '1950', 'F1', 'F2'], ['Mother', 'F', '1952', null, 'F2'],
+    ['Hero', 'M', '1980', 'F2', 'F3'], ['Brother', 'M', '1982', 'F2'],
+    ['Sister', 'F', '1984', 'F2'], ['UnknownSibling', null, '1986', 'F2'],
+    ['HeroWife', 'F', '1981', null, 'F3'],
+    ['Son', 'M', '2000', 'F3', 'F4'], ['Daughter', 'F', '2002', 'F3', 'F5'],
+    ['UnknownChild', null, '2004', 'F3', 'F6'],
+    ['SonWife', 'F', '2001', null, 'F4'], ['DaughterHusband', 'M', '2001', null, 'F5'],
+    ['UnknownPartner', null, '2005', null, 'F6'],
+    ['Uncle', 'M', '1954', 'F1'],
+];
+fs.writeFileSync(expansionGed, ['0 HEAD', '1 SOUR ReplySearchExpansion', '1 GEDC', '2 VERS 5.5.1', '1 CHAR UTF-8',
+    ...expansionPeople.flatMap(([name, sex, year, child, spouse], i) => [`0 @I${i + 1}@ INDI`, '1 NAME ' + name,
+        ...(sex ? ['1 SEX ' + sex] : []), '1 BIRT', '2 DATE 1 JAN ' + year,
+        ...(child ? ['1 FAMC @' + child + '@'] : []), ...(spouse ? ['1 FAMS @' + spouse + '@'] : [])]),
+    ...[
+        ['F0', null, 1, [3]], ['F1', 2, 3, [4, 17]], ['F2', 4, 5, [6, 7, 8, 9]],
+        ['F3', 6, 10, [11, 12, 13]], ['F4', 11, 14, []], ['F5', 15, 12, []], ['F6', 13, 16, []],
+    ].flatMap(([id, husband, wife, children]) => ['0 @' + id + '@ FAM',
+        ...(husband ? ['1 HUSB @I' + husband + '@'] : []), ...(wife ? ['1 WIFE @I' + wife + '@'] : []),
+        ...children.map(i => '1 CHIL @I' + i + '@')]), '0 TRLR', ''].join('\n'));
 
 function run(platform, tag, commands) {
     const base = path.join(tmp, `${platform}-${++sequence}-${tag}`);
@@ -66,7 +91,7 @@ function response(result, query, occurrence = 0) {
     return [...new Set(out.map(e => e.id))].map(id => {
         const versions = out.filter(e => e.id === id);
         const first = versions[0], final = versions.at(-1);
-        const hasProgress = /#[1-9] \/fynny[01]\n⏳$/.test(first.text);
+        const hasProgress = /#[1-9] \/fynny[01](?:\n[\s\S]*)?\n⏳$/.test(first.text);
         if (hasProgress) {
             assert.equal(first.edited, false, query + ': progress is a new message');
             assert.ok(versions.length >= 2, query + ': missing final edit');
@@ -88,8 +113,10 @@ function progress(result, query, radius, chain, occurrence = 0) {
     const hash = lines[last].indexOf('#');
     lines[last] = (hash < 0 ? lines[last] : lines[last].slice(0, hash)) + '#' + radius + ' /fynny' + chain;
     const head = lines.slice(0, last + 1).join('\n');
-    assert.equal(final.initial.text, head + '\n⏳', query + ': initial range and effective mode');
-    assert.equal(final.rawText, head + '\n' + final.text, query + ': actual final full text');
+    assert.ok(final.initial.text === head + '\n⏳' || final.initial.text.startsWith(head + '\n\n')
+        || final.initial.text.startsWith(head + '\nПолное разложение'), query + ': initial range and effective mode');
+    assert.ok(final.initial.text.endsWith('\n⏳'), query + ': initial clock');
+    assert.equal(final.rawText, final.initial.text.slice(0, -1) + final.text, query + ': actual final full text');
     return final;
 }
 
@@ -145,10 +172,14 @@ for (const platform of ['tg', 'vk']) {
         const adaptive = run(platform, 'adaptive-search-' + chain,
             [...adaptiveSetup, ...queries.map(q => '>' + target.id + ' ' + q)]);
         const context = platform + ': fynny' + chain;
-        for (const q of ['/ бабушка матери', '/ жена тёти', '/ племянница матери']) {
+        for (const q of ['/ жена тёти']) {
             const rejected = response(adaptive, q)[0];
-            assert.equal(rejected.text, 'Нет такой родственной связи', context);
+            assert.match(rejected.text, /^Нет такой родственной связи/, context);
             assert.doesNotMatch(rejected.initial.text, /⏳|fynny=/, context + ': rejected before list');
+            assert.ok(rejected.text.length <= 4000, context + ': bounded diagnostic');
+        }
+        for (const q of ['/ бабушка матери', '/ племянница матери']) {
+            assert.equal(progress(adaptive, q, 3, 1).text, 'Ничего не найдено', context + ': repaired ' + q);
         }
         const uncle = marker + '\nUncle 1954-05-05 ' + (chain ? 'брат отца' : 'дядя');
         for (const q of kinQueries) {
@@ -187,6 +218,66 @@ for (const platform of ['tg', 'vk']) {
             assert.doesNotMatch(response(adaptive, q)[0].body, /\[\d+\.\d+\]/, context + ': plain search result');
         assert.deepEqual(adaptive.data, adaptiveBaseline.data,
             context + ': adaptive searches preserve people, families, links and settings');
+    }
+
+    for (const chain of [0, 1]) {
+        const expansionSetup = ['!ged ' + expansionGed, '/2 2', '/fynny' + chain,
+            'Father 1950-01-01', 'Hero 1980-01-01'];
+        const expansionBaseline = run(platform, 'expansion-baseline-' + chain, expansionSetup);
+        const target = expansionBaseline.entries.find(e => e.user && e.text === 'Hero 1980-01-01');
+        const father = expansionBaseline.entries.find(e => e.user && e.text === 'Father 1950-01-01');
+        assert.ok(target && father, expansionBaseline.log);
+        const cases = [
+            { q: '/ ребёнок ребёнка ребёнка ребёнка', r: 4, empty: true },
+            { q: '/ двоюродный дед\\n| двоюродная бабушка', r: 3, mode: 0, empty: true },
+            { q: '/ двоюродный дед\\n| двоюродная бабушка#4', r: 4, mode: 0, empty: true },
+            { q: '/ сиблинг родителя родителя', r: 3, empty: true },
+            { q: '/ родитель', r: 1, yes: [/Father 1950-01-01 отец/, /Mother 1952-01-01 мать/], no: /Grandfather/ },
+            { q: '/ ребёнок', r: 1, yes: [/Son 2000-01-01 сын/, /Daughter 2002-01-01 дочь/, /UnknownChild 2004-01-01 ребёнок/] },
+            { q: '/ сиблинг', r: 1, yes: [/Brother 1982-01-01 брат/, /Sister 1984-01-01 сестра/, /UnknownSibling 1986-01-01 сиблинг/] },
+            { q: '/ супруг ребёнка', r: 2, yes: [/SonWife 2001-01-01 жена сына/, /DaughterHusband 2001-01-01 муж дочки/, /UnknownPartner 2005-01-01 супруг ребёнка/] },
+            { q: '/ бабушка отца', r: 3, yes: [/GreatGrandmother \S+ мать матери отца/] },
+            { q: '/ прародитель', r: 2, yes: [/Grandfather/, /Grandmother/], no: /GreatGrandmother/ },
+            { q: '/ прародитель#1', r: 1, empty: true },
+            { q: '/ родитель\\n| дядя', r: 2,
+                yes: [/Father 1950-01-01 отец/, /Mother 1952-01-01 мать/, /Uncle 1954-01-01 брат отца/], no: /Hero 1980/ },
+            { q: '/#2\\n/ родитель', r: 2, yes: [/Father/, /Mother/], no: /Hero 1980/ },
+            { q: '/#2\\n! родитель', r: 2, yes: [/Hero 1980/], no: /Father 1950|Mother 1952/ },
+            { q: '/ребёнок', r: 1, mode: 1, empty: true },
+            { q: '/Иван ребёнок', r: 1, mode: chain, empty: true },
+            { q: '/ ребёнок Иван', r: 1, mode: chain, empty: true },
+        ];
+        const diagnostic = '/ родитель\\n| двоюрод';
+        const longDiagnostic = '/ родитель\\n| жена тёти' + ' матери'.repeat(180);
+        const childQuery = '/ ребёнок#1';
+        const expansion = run(platform, 'expansion-' + chain, [...expansionSetup,
+            ...cases.map(c => '>' + target.id + ' ' + c.q),
+            '>' + father.id + ' ' + childQuery,
+            '>' + target.id + ' ' + diagnostic, '>' + target.id + ' ' + longDiagnostic,
+            '/ родитель', '/ сиблинг', '/ супруг ребёнка']);
+        for (const c of cases) {
+            const out = progress(expansion, c.q, c.r, c.mode ?? 1);
+            if (c.empty) assert.equal(out.text, 'Ничего не найдено', platform + ': ' + c.q);
+            for (const pattern of c.yes || []) assert.match(out.text, pattern, platform + ': ' + c.q);
+            if (c.no) assert.doesNotMatch(out.text, c.no, platform + ': ' + c.q);
+            assert.doesNotMatch(out.body, /\[\d+\.\d+\]/, platform + ': expansion is a plain list');
+        }
+        const children = progress(expansion, childQuery, 1, 1);
+        for (const name of ['Hero', 'Brother', 'Sister', 'UnknownSibling']) assert.match(children.text, new RegExp(name));
+        for (const q of [diagnostic, longDiagnostic]) {
+            const out = response(expansion, q)[0];
+            assert.match(out.text, /^(?:Нет такой родственной связи|Не удалось разобрать родственную связь)/,
+                platform + ': mixed/invalid chain');
+            assert.doesNotMatch(out.initial.text, /⏳|\/fynny[01]/, platform + ': diagnostic before progress');
+            assert.ok(out.versions.every(e => e.text.length <= 4000), platform + ': bounded expansion diagnostic');
+        }
+        for (const q of ['/ родитель', '/ сиблинг', '/ супруг ребёнка']) {
+            const out = response(expansion, q, 1)[0];
+            assert.equal(out.text, 'Ничего не найдено', platform + ': global remains literal ' + q);
+            assert.doesNotMatch(out.initial.text, /⏳|\/fynny[01]/);
+        }
+        assert.deepEqual(expansion.data, expansionBaseline.data,
+            platform + ': expansions, diagnostics and literals never mutate domain/settings');
     }
 
     const multilineCases = [
@@ -231,7 +322,10 @@ for (const platform of ['tg', 'vk']) {
         const cases = [
             { q: '/ брат\\n| сестра#2', r: 2, mode: 1, yes: /Brother/ },
             { q: '/ дядя\\n| брат отца', r: 2, mode: 0, yes: /Uncle 1954-05-05 дядя/, no: /брат отца/ },
-            { q: '/Uncle\\n! троюродный', r: 4, mode: 0, yes: /Uncle/ },
+            { q: '/ двоюродный', r: 3, mode: 0, empty: true },
+            { q: '/ двоюродный брат', r: 3, mode: 0, empty: true },
+            { q: '/ двоюродный#2', r: 2, mode: 0, empty: true },
+            { q: '/Uncle\\n! троюродный', r: 5, mode: 0, yes: /Uncle/ },
             { q: '/Uncle\\n! троюродный брат', r: 5, mode: 0, yes: /Uncle/ },
             { q: '/ брат\\n| брат отца', r: 2, mode: 1, yes: /Uncle 1954-05-05 брат отца/ },
             { q: '/Uncle#1\\n|Brother#2\\n!missingzz#ignored', r: 2, mode: chain, yes: /Uncle/, no: /Grandfather/ },
@@ -240,8 +334,10 @@ for (const platform of ['tg', 'vk']) {
             { q: '/#2 /fynny' + (1 - chain) + '\\n!Brother', r: 2, mode: chain, yes: /Uncle/, no: /Brother/ },
             { q: '/Uncle#2 /fynny' + (1 - chain), r: 2, mode: chain, yes: /Uncle/ },
             { q: '/#2 /fynny' + (1 - chain), r: 2, mode: chain, yes: /Grandfather/ },
+            { q: '/Brother\\n| бабушка матери', r: 3, mode: 1, yes: /Brother/ },
+            { q: '/ бабушка матери\\n|Brother', r: 3, mode: 1, yes: /Brother/ },
         ];
-        const impossible = ['/Brother\\n| бабушка матери', '/Brother\\n! жена тёти', '/ бабушка матери\\n|Brother'];
+        const impossible = ['/Brother\\n! жена тёти'];
         const checked = run(platform, 'multiline-modes-' + chain, [...multiSetup,
             ...cases.map(c => '>' + target.id + ' ' + c.q),
             ...impossible.map(q => '>' + target.id + ' ' + q)]);
@@ -254,7 +350,7 @@ for (const platform of ['tg', 'vk']) {
         }
         for (const q of impossible) {
             const out = response(checked, q)[0];
-            assert.equal(out.text, 'Нет такой родственной связи', platform + ': impossible branch ' + q);
+            assert.match(out.text, /^Нет такой родственной связи/, platform + ': impossible branch ' + q);
             assert.doesNotMatch(out.initial.text, /⏳|\/fynny[01]/, q + ': reject before progress');
         }
         assert.deepEqual(checked.data, multiBaseline.data, platform + ': common mode/compact metadata never changes settings');
@@ -358,13 +454,14 @@ for (const platform of ['tg', 'vk']) {
         assert.match(full.rawText, /📎 вложение/, platform + ': attachment on the same message');
     }
     artifact = artifact.replace(/^\uFEFF/, '');
-    assert.ok(artifact.startsWith('/#1\n!missingzz#1 /fynny0\n' + marker + '\n'), platform + ': full file header');
+    assert.ok(artifact.startsWith('/#1\n!missingzz#1 /fynny0\n'), platform + ': full file header');
+    assert.ok(artifact.includes('\n' + marker + '\n'), platform + ': file protection marker');
     assert.doesNotMatch(artifact, /⏳|✂️/);
-    const rows = artifact.split('\n').slice(3);
+    const rows = artifact.split('\n' + marker + '\n')[1].split('\n');
     assert.equal(rows.length, children.length + 1, platform + ': complete list including hero');
     for (const name of children) assert.equal(rows.filter(row => row === name + ' 1980-01-01 сын').length, 1, name);
     assert.ok(rows.some(row => row.startsWith('OverflowHero 1950-01-01')), platform + ': hero in full list');
-    const shown = full.rawText.split('\n').slice(3).filter(row => !/✂️|📎/.test(row));
+    const shown = full.rawText.split('\n' + marker + '\n')[1].split('\n').filter(row => !/✂️|📎/.test(row));
     assert.ok(shown.length > 0 && shown.length < rows.length, platform + ': truncated preview');
     assert.deepEqual(shown, rows.slice(0, shown.length), platform + ': only complete rows in preview');
     assert.deepEqual(overflow.data, overflowBaseline.data, platform + ': overflow search preserves tree');

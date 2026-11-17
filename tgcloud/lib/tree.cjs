@@ -261,12 +261,12 @@ function searchChain(query, chain = false) {
     return depths.length && depths.every(d => d === 1) ? true : !!chain;
 }
 
-function searchProgressHead(radius, chain, query) {
+function searchProgressHead(radius, chain, query, decomposition) {
     const parsed = searchConditions(query);
     const last = parsed.conditions.at(-1);
     const lines = parsed.lines.slice(0, last.line);
     lines[last.line - 1] = last.raw.split('#', 1)[0] + "#" + radius + " /fynny" + Number(!!chain);
-    return lines.join("\n");
+    return lines.join("\n") + (decomposition ? '\n\n' + decomposition : '');
 }
 
 // Only reject known contradictions, never unknown names or partial words.
@@ -300,17 +300,75 @@ function searchRadius(query, chain = false) {
     const parsed = searchConditions(query);
     if (parsed.radii.length) return Math.max(...parsed.radii);
     chain = searchChain(query, chain);
-    const radius = Math.max(1, ...parsed.conditions.map(c => searchWords(c.needle).reduce((sum, word) => {
-        const depth = searchWordDepth(word);
-        return sum + (chain && depth !== 1 ? 0 : depth);
-    }, 0)));
+    const radius = Math.max(1, ...parsed.conditions.map(c => {
+        const words = searchWords(c.needle);
+        let depth = words.reduce((sum, word) => {
+            const weight = searchWordDepth(word);
+            return sum + (chain && weight !== 1 ? 0 : weight);
+        }, 0);
+        // A cousin grandparent is a sibling of an ancestor, not an extra cousin branch.
+        if (!chain) for (let i = 0; i + 1 < words.length; i++) {
+            if (/^двоюрод(?:ный|ная|ного|ной)$/.test(words[i])
+                && /^(?:пра\d*)?(?:дед|деда|дедушка|дедушки|бабушка|бабушки)$/.test(words[i + 1])) depth--;
+        }
+        // A degree adjective alone still implies a sibling: "двоюродный [брат]".
+        return depth + (!chain && /^(?:двоюрод|троюрод|четвероюрод)(?:ный|ная|ного|ной)$/.test(words.at(-1) || "") ? 1 : 0);
+    }));
     return normalizeFocusRadius(radius, 5);
+}
+
+function prepareReplySearch(query, chatChain = false) {
+    const { compileKinship, kinshipFragment } = require('./search-kinship.cjs');
+    const parsed = searchConditions(query);
+    const chain = searchChain(parsed, chatChain);
+    const compiled = parsed.conditions.map(c => c.sub && !c.mark && c.needle
+        ? compileKinship(c.needle) : null);
+    const expand = compiled.some((p, i) => p?.known && (p.neutral
+        || !searchKinshipWordsPossible(parsed.conditions[i].needle, chain)));
+    if (!expand) return { query: parsed, chain, radius: searchRadius(parsed, chain),
+        decomposition: '',
+        error: parsed.conditions.every(c => !c.sub || searchKinshipWordsPossible(c.needle, chain))
+            ? null : 'Нет такой родственной связи' };
+    const previews = [];
+    let error = null;
+    const conditions = parsed.conditions.map((c, i) => {
+        const p = compiled[i];
+        if (p?.known) {
+            previews.push('Строка ' + c.line + ': ' + c.needle + '\n'
+                + (p.preview.length ? p.preview.join('\n') : p.parsed.join(' → '))
+                + (p.previewTruncated ? '\n(варианты сокращены)' : ''));
+            if (!p.valid) error ||= 'Нет такой родственной связи: строка ' + c.line + ': ' + c.needle
+                + (p.error ? '\n' + p.error : '');
+            return { ...c, test: p.test };
+        }
+        previews.push('Строка ' + c.line + ': ' + c.raw + '\n(без преобразования)');
+        if (c.sub && kinshipFragment(c.needle))
+            error ||= 'Не удалось разобрать родственную связь: строка ' + c.line + ': ' + c.needle;
+        return c;
+    });
+    const radius = parsed.radii.length ? Math.max(...parsed.radii)
+        : normalizeFocusRadius(Math.max(1, ...compiled.map((p, i) => p?.known && p.valid
+            ? p.depth : searchRadius({ ...parsed, conditions: [parsed.conditions[i]], radii: [] }, true))), 5);
+    if (error) {
+        const detail = previews.join('\n');
+        error += detail ? '\nРазобрано:\n' + (detail.length > 2500 ? detail.slice(0, 2500) + '\n(разбор сокращён)' : detail) : '';
+        if (error.length > 3500) error = error.slice(0, 3450) + '\n(разбор сокращён)';
+    }
+    let detail = '';
+    try { detail = parsed.conditions.map((c, i) => {
+        const p = compiled[i];
+        if (!p?.valid) return c.raw;
+        return p.allVariants().map((variant, j) => (c.op === '!' ? '!' : j ? '|' : c.op) + ' ' + variant).join('\n');
+    }).filter(Boolean).join('\n\n'); }
+    catch (e) { error ||= e.message; }
+    const decomposition = detail;
+    return { query: { ...parsed, conditions, expanded: true }, chain: true, radius, error, decomposition };
 }
 
 // Search the complete selected-radius list, not a truncated bell message.
 function focusSearch(persons, weddings, pairs, spousePairs, key, query, chain, radius = searchRadius(query, chain)) {
     const { flatSearch } = require('./flat.cjs');
-    chain = searchChain(query, chain);
+    if (!query?.expanded) chain = searchChain(query, chain);
     const sexMap = new Map(persons.map(r => [r.n + " " + r.d, r.sex ?? null]));
     const sexOf = k => sexMap.get(k) ?? null;
     const keys = focusListKeys(pairs, spousePairs, key, radius, sexOf, true);
@@ -386,4 +444,4 @@ function familyXref(rows, mx, fx, alias, date, used) {
 }
 
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
-module.exports = { isExactEvent, normalizeFocusRadius, focusListMessage, familyXref, focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, searchKinshipPossible, searchProgressHead, searchChain, searchRadius, focusSearch, eventListText, famsByGenerations };
+module.exports = { isExactEvent, normalizeFocusRadius, focusListMessage, familyXref, focusDepth, focusKeys, focusGraphDist, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, focusListText, prepareReplySearch, searchKinshipPossible, searchProgressHead, searchChain, searchRadius, focusSearch, eventListText, famsByGenerations };

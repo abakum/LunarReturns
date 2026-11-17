@@ -337,12 +337,12 @@ function flatSearch(flat, query, fullList = false) {
     // Track each original occurrence and whether a non-prefix match selected it.
     const selected = new Map();
     for (let n = 0; n < conditions.length; n++) {
-        const { op, sub, mark, needle, full } = conditions[n];
+        const { op, sub, mark, needle, full, test } = conditions[n];
         const matches = new Set();
         for (let i = 0; i < lines.length; i++) {
             const lmark = (lines[i].match(/^([-+=])\1*/) || [""])[0];
             const body = lines[i].slice(lmark.length).toLowerCase();
-            if (full ? fullList : (!needle && !mark ? false
+            if (test ? test(body) : full ? fullList : (!needle && !mark ? false
                 : mark ? lmark === mark && (!needle || body.startsWith(needle))
                     : sub ? body.includes(needle) : body.startsWith(needle))) matches.add(i);
         }

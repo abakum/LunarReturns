@@ -34,7 +34,7 @@ const { fynny, kinLabel } = reqLib("kinship");
 // ТГ-копия через ESM-шим; правки — только в .cjs, дословных копий больше нет.
 const {
     familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations,
-    focusListText, focusSearch, searchChain, searchRadius, searchProgressHead, searchKinshipPossible, eventListText, normalizeFocusRadius, focusListMessage} = reqLib("tree");
+    focusListText, focusSearch, searchChain, searchRadius, searchProgressHead, prepareReplySearch, eventListText, normalizeFocusRadius, focusListMessage} = reqLib("tree");
 
 
 // ============================== ГЕДКОМ → PDF (общий модуль) ==============================
@@ -2726,14 +2726,17 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             await messagesSend(peerId, REPLY_TARGET_ERROR, msgId, convMsgId);
             return;
         }
-        const chain = searchChain(parsed, replySearch ? getSettings(peerId).fynny : false);
-        const radius = searchRadius(parsed, chain);
-        if (replySearch && !searchKinshipPossible(parsed, chain)) {
-            await messagesSend(peerId, "Нет такой родственной связи", msgId, convMsgId);
+        const plan = replySearch ? prepareReplySearch(parsed, getSettings(peerId).fynny) : null;
+        const chain = plan?.chain ?? searchChain(parsed, false);
+        const radius = plan?.radius ?? searchRadius(parsed, chain);
+        if (plan?.error) {
+            await messagesSend(peerId, plan.error, msgId, convMsgId);
             return;
         }
         if (replySearch) {
-            const head = searchProgressHead(radius, chain, parsed);
+            const fullHead = searchProgressHead(radius, chain, parsed, plan.decomposition);
+            const head = fullHead.length > 2500
+                ? searchProgressHead(radius, chain, parsed) + '\nПолное разложение — в файле.' : fullHead;
             if (head.length + NOT_FOR_GRAFT.length + 40 > 4000) {
                 await messagesSend(peerId, "Ошибка поискового запроса: слишком длинный заголовок", msgId, convMsgId);
                 return;
@@ -2741,16 +2744,16 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             const sent = await messagesSend(peerId, head + "\n⏳", msgId, convMsgId);
             try {
                 const hits = focusSearch(personRows(peerId), weddingRows(peerId), linkPairs(peerId),
-                    focusSpousePairs(peerId), resolved.n + " " + resolved.d, parsed, chain, radius);
+                    focusSpousePairs(peerId), resolved.n + " " + resolved.d, plan.query, chain, radius);
                 const found = hits.join("\n");
                 const prefix = head + "\n" + NOT_FOR_GRAFT;
-                if (found && prefix.length + 1 + found.length >= 4000) {
+                if (fullHead !== head || (found && prefix.length + 1 + found.length >= 4000)) {
                     const inner = cutLines(found, 4000, prefix.length + 1 + "\n✂️⏳".length);
                     const body = prefix + (inner ? "\n" + inner : "");
                     const holdTxt = body + "\n✂️⏳", finalTxt = body + "\n✂️";
                     await vkApi("messages.edit", { peer_id: peerId, message_id: sent, message: holdTxt });
                     await holdAttach(peerId, "search", sent, holdTxt, finalTxt,
-                        fileBaseOf(searchHead(q, hits.length)) + ".txt", "\uFEFF" + prefix + "\n" + found,
+                        fileBaseOf(searchHead(q, hits.length)) + ".txt", "\uFEFF" + fullHead + '\n' + NOT_FOR_GRAFT + "\n" + (found || 'Ничего не найдено'),
                         null, head, msgId, convMsgId);
                 } else {
                     await vkApi("messages.edit", { peer_id: peerId, message_id: sent,
