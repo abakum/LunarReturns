@@ -68,7 +68,7 @@ const { TZ_MS, moonNew, la, ageSuffix, mskToday} = reqLib("astro");
 // ТГ-копия через ESM-шим; юбилейные тексты (jubileeText) платформенные —
 // остаются в копиях (ТГ: tg-spoiler/htmlEsc, ВК: plain).
 const { REPLY_TARGET_ERROR, HELP, helpText, approxOut, eventDate, findShownRecord, resolveReplyRecord } = reqLib("text");
-const { graftError } = reqLib("flat");
+const { graftError, parseSearchQuery } = reqLib("flat");
 
 // ============================== РОДОСЛОВНАЯ РОСПИСЬ -+= — ЧИСТЫЕ ФУНКЦИИ (общий модуль) =====
 // Канон — tgcloud/lib/flat.cjs (план .kilo/plans/20261108-canon-flat-pure-plan.md): его же импортирует
@@ -2552,8 +2552,9 @@ function resolveReply(peerId, reply) {
 async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, payload = "", replyMsg = null) {
     const resolved = resolveReply(peerId, replyMsg);
     const originalReply = replyMsg;
-    const anchorInput = String(text).split(/\r?\n/).some(l => /^\s*[-+=]/.test(l))
-        || (String(text).split(/\r?\n/).length === 1 && parseTrigger(text));
+    const searchInput = /^\//.test(String(text).trim().split(/\r?\n/).find(l => l.trim() && !l.trimStart().startsWith('#')) || "");
+    const anchorInput = !searchInput && (String(text).split(/\r?\n/).some(l => /^\s*[-+=]/.test(l))
+        || (String(text).split(/\r?\n/).length === 1 && parseTrigger(text)));
     if (process.env.LOG_UPDATES) console.log("msg from", peerId, ":", text);
     if (text.trim().startsWith("/")) console.log("команда:", JSON.stringify(text.trim()), "peer", peerId);
     if (date) markSeen(date);
@@ -2712,25 +2713,35 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     // /Иван — префиксный поиск по родословной росписи -+= (/-Пётр — только
     // мужчины глубины 0, /--Иван — глубины 1, /=… — женщины); "/ текст" —
     // подстрока. В reply — события родни героя, включая неточные даты.
-    if (text.trim().startsWith("/")) {
+    if (searchInput) {
         const q = text.trim();
+        let parsed;
+        try { parsed = parseSearchQuery(q); }
+        catch (e) {
+            await messagesSend(peerId, e.message, msgId, convMsgId);
+            return;
+        }
         const replySearch = !!originalReply;
         if (replySearch && (!resolved || !resolved.xref || resolved.n.includes("+"))) {
             await messagesSend(peerId, REPLY_TARGET_ERROR, msgId, convMsgId);
             return;
         }
-        const chain = searchChain(q, replySearch ? getSettings(peerId).fynny : false);
-        const radius = searchRadius(q, chain);
-        if (replySearch && !searchKinshipPossible(q, chain)) {
+        const chain = searchChain(parsed, replySearch ? getSettings(peerId).fynny : false);
+        const radius = searchRadius(parsed, chain);
+        if (replySearch && !searchKinshipPossible(parsed, chain)) {
             await messagesSend(peerId, "Нет такой родственной связи", msgId, convMsgId);
             return;
         }
         if (replySearch) {
-            const head = searchProgressHead(radius, chain, q);
+            const head = searchProgressHead(radius, chain, parsed);
+            if (head.length + NOT_FOR_GRAFT.length + 40 > 4000) {
+                await messagesSend(peerId, "Ошибка поискового запроса: слишком длинный заголовок", msgId, convMsgId);
+                return;
+            }
             const sent = await messagesSend(peerId, head + "\n⏳", msgId, convMsgId);
             try {
                 const hits = focusSearch(personRows(peerId), weddingRows(peerId), linkPairs(peerId),
-                    focusSpousePairs(peerId), resolved.n + " " + resolved.d, q, chain, radius);
+                    focusSpousePairs(peerId), resolved.n + " " + resolved.d, parsed, chain, radius);
                 const found = hits.join("\n");
                 const prefix = head + "\n" + NOT_FOR_GRAFT;
                 if (found && prefix.length + 1 + found.length >= 4000) {
@@ -2752,7 +2763,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             }
             return;
         }
-        const hits = flatSearch(chatFlatText(peerId), q);
+        const hits = flatSearch(chatFlatText(peerId), parsed);
         if (hits.length) {
             // ровно одно попадание, резолвящееся в персону, — сжатый юбилей
             // с клавиатурой-юбилеем (триггера нет — реплаить не на что, новое

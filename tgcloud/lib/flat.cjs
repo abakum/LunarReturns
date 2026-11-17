@@ -304,25 +304,66 @@ function flatTreeText(persons, fams, canonical = false) {
 // должна совпасть с серией строки); "/ текст" — подстрока в строке без
 // маркера; "/-", "/==", "/++" — все строки с такой серией маркеров (все
 // мужчины/женщины/свадьбы уровня). Регистр не учитывается
-function flatSearch(flat, query) {
-    const raw = String(query);
-    const q = raw.split('#', 1)[0].replace(/^\//, "");
-    const sub = q.startsWith(" ");
-    const mark = (q.match(/^([-+=])\1*/) || [""])[0];
-    const text = sub ? q.slice(1) : q.slice(mark.length);
-    const needle = (raw.includes('#') ? text.trimStart() : text.trim()).toLowerCase();
-    if (!needle && !mark) return [];
-    const hits = String(flat).split(/\r?\n/).filter(line => {
-        const lmark = (line.match(/^([-+=])\1*/) || [""])[0];
-        const body = line.slice(lmark.length).toLowerCase();
-        if (mark) return lmark === mark && (!needle || body.startsWith(needle));
-        return sub ? body.includes(needle) : body.startsWith(needle);
-    });
-    if (sub || mark) return hits;
+function parseSearchQuery(query) {
+    if (query && typeof query === "object" && Array.isArray(query.conditions)) return query;
+    const lines = String(query).split(/\r?\n/), conditions = [], radii = [];
+    const fail = (line, message) => { throw new Error("Ошибка поискового запроса: строка " + line + ": " + message); };
+    for (let i = 0; i < lines.length; i++) {
+        const raw = lines[i], hash = raw.indexOf('#');
+        const part = hash < 0 ? raw : raw.slice(0, hash);
+        const comment = hash < 0 ? null : raw.slice(hash + 1);
+        if (comment !== null && /^\d+(?:\s+\/fynny[01])?$/.test(comment.trim()))
+            radii.push(Math.max(1, Math.min(9, Number(comment.trim().split(/\s/)[0]))));
+        if (!part.trim()) continue;
+        const op = part[0];
+        if (!"/|!".includes(op)) fail(i + 1, "условие должно начинаться с /, | или !");
+        if (!conditions.length && op !== '/') fail(i + 1, "первое условие должно начинаться с /");
+        const q = part.slice(1), sub = q.startsWith(" ");
+        const mark = (q.match(/^([-+=])\1*/) || [""])[0];
+        const text = sub ? q.slice(1) : q.slice(mark.length);
+        const needle = (comment !== null ? text.trimStart() : text.trim()).toLowerCase();
+        const full = !conditions.length && !needle && !mark && comment !== null
+            && /^[1-9](?:\s+\/fynny[01])?$/.test(comment.trim());
+        conditions.push({ op, sub, mark, needle, comment, line: i + 1, raw, full });
+    }
+    if (conditions.length > 1) for (const c of conditions)
+        if (!c.needle && !c.mark && !c.full) fail(c.line, "пустое условие");
+    return { conditions, radii, lines };
+}
+
+function flatSearch(flat, query, fullList = false) {
+    const { conditions } = parseSearchQuery(query);
+    const lines = flat ? String(flat).split(/\r?\n/) : [];
+    // Track each original occurrence and whether a non-prefix match selected it.
+    const selected = new Map();
+    for (let n = 0; n < conditions.length; n++) {
+        const { op, sub, mark, needle, full } = conditions[n];
+        const matches = new Set();
+        for (let i = 0; i < lines.length; i++) {
+            const lmark = (lines[i].match(/^([-+=])\1*/) || [""])[0];
+            const body = lines[i].slice(lmark.length).toLowerCase();
+            if (full ? fullList : (!needle && !mark ? false
+                : mark ? lmark === mark && (!needle || body.startsWith(needle))
+                    : sub ? body.includes(needle) : body.startsWith(needle))) matches.add(i);
+        }
+        if (op === '!') {
+            for (const i of matches) selected.delete(i);
+        } else if (n === 0 || op === '|') {
+            for (const i of matches) selected.set(i, !!(selected.get(i) || sub || mark || full));
+        } else {
+            for (const i of selected.keys()) {
+                if (!matches.has(i)) selected.delete(i);
+                else if (sub || mark || full) selected.set(i, true);
+            }
+        }
+    }
+    const hits = lines.filter((_, i) => selected.has(i));
     // Префиксный поиск: одна персона теперь рисуется дважды — под свадьбой
     // (без маркера) и строкой с маркером у родителей. Показываем только
     // строку с маркером; bare-строку — лишь если с маркером не нашлось
-    return hits.filter(line => {
+    return lines.filter((line, i) => {
+        if (!selected.has(i)) return false;
+        if (selected.get(i)) return true;
         const lm = (line.match(/^([-+=])\1*/) || [""])[0];
         if (lm) return true;
         const body = line.toLowerCase();
@@ -457,4 +498,4 @@ function cutLines(text, budget, reserved = 0, joinReserve = true) {
     return acc;
 }
 
-module.exports = { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, searchHead, cutLines, datePlusYears, treeReport, rootOf, graftError, createFlatAnnotationText };
+module.exports = { flatTreeText, subsetBranch, parseSearchQuery, flatSearch, flatHitPerson, flatHitKey, searchHead, cutLines, datePlusYears, treeReport, rootOf, graftError, createFlatAnnotationText };

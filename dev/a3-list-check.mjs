@@ -263,10 +263,39 @@ function checkCanon(tag) {
     ]) assert.equal(tree.searchRadius('/ ' + label), radius, label);
     assert.equal(tree.searchRadius('/ дядя', true), 2);
     assert.equal(tree.searchRadius('/ двоюродный брат', true), 3);
-    assert.equal(tree.searchProgressHead(1, false, '/#1'), '/#1\nродители-дети fynny=0');
-    assert.equal(tree.searchProgressHead(2, true, '/ брат отца'), '/ брат отца\nдеды-внуки fynny=1');
-    assert.equal(tree.searchProgressHead(9, false, '/#9'), '/#9\nпра7деды-пра7внуки fynny=0');
-    assert.equal(tree.searchProgressHead(3, false, '/ двоюрод#3'), '/ двоюрод#3\nпрадеды-правнуки fynny=0');
+    assert.equal(tree.searchProgressHead(1, false, '/#1'), '/#1 /fynny0');
+    assert.equal(tree.searchProgressHead(2, true, '/ брат отца'), '/ брат отца#2 /fynny1');
+    assert.equal(tree.searchProgressHead(9, false, '/#9'), '/#9 /fynny0');
+    assert.equal(tree.searchProgressHead(3, false, '/ двоюрод#3'), '/ двоюрод#3 /fynny0');
+    assert.equal(tree.searchProgressHead(4, false, '/ брат#2\n| сестра #old\n# trailing\n'),
+        '/ брат#2\n| сестра #4 /fynny0');
+    for (const chatChain of [false, true]) {
+        const cases = [
+            ['/ брат\n| сестра', 1, true],
+            ['/ брат\n! троюродный', 4, false],
+            ['/ брат\n! троюродный брат', 5, false],
+            ['/ брат отца\n| дядя', 2, false],
+            ['/ Иван#2\n| Мария#4\n! троюродный брат', 4, false],
+            ['/ брат отца#1\n| сестра', 1, true],
+            ['/ Иван#2 /fynny0\n| Мария#3 /fynny1', 3, chatChain],
+            ['/#6 /fynny0', 6, chatChain],
+        ];
+        for (const [query, radius, mode] of cases) {
+            assert.equal(tree.searchChain(query, chatChain), mode, query);
+            assert.equal(tree.searchRadius(query, chatChain), radius, query);
+        }
+        assert.deepEqual(search('/Дочь\n|Сын\n!Сын', chatChain), search('/Дочь', chatChain));
+        assert.deepEqual(search('/#2\n! Тётя', chatChain),
+            search('/#2', false).filter(l => !l.includes('Тётя')));
+        assert.deepEqual(search('/ тётя\n| сестра отца', chatChain), ['Тётя 1957-04-04 тётя']);
+        assert.equal(tree.searchKinshipPossible('/ брат\n| бабушка матери', false), false);
+        assert.equal(tree.searchKinshipPossible('/ брат\n! жена тёти', true), false);
+        assert.equal(tree.searchKinshipPossible('/ мать\n/ мать', true), true);
+        const header = tree.searchProgressHead(3, chatChain, '/Дочь#1\n|Сын#old');
+        assert.equal(tree.searchRadius(header, !chatChain), 3);
+        assert.deepEqual(search(header, chatChain), search('/Дочь#3\n|Сын', chatChain));
+        assert.equal(tree.searchChain('/Иван#2 /fynny0', chatChain), chatChain);
+    }
     for (const query of ['/ бабушка матери', '/ жена тёти', '/ муж дяди',
         '/ жена двоюродной сестры#9', '/ внук сына', '/ племянница матери',
         '/ племянник отца', '/ жена племянницы матери']) {

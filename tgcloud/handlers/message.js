@@ -3,6 +3,7 @@ import { eq } from 'sdk/db';
 import { gedDrops, focusView, settings } from '../schema.js';
 import { parseTrigger, parseGedcom, gedStats, parseTree } from '../lib/parse.cjs';
 import { fileBaseOf } from '../lib/chart.cjs';
+import { parseSearchQuery } from '../lib/flat.cjs';
 import { jubileeText } from '../lib/text.js';
 import { normalizeFocusRadius, focusListMessage, focusSearch, searchChain, searchRadius, searchProgressHead, searchKinshipPossible } from '../lib/tree.cjs';
 import { REPLY_TARGET_ERROR, resolveReplyRecord } from '../lib/text.cjs';
@@ -300,8 +301,9 @@ export default async function (message, ctx) {
     const scopedCommand = start || text === "/"
         || /^\/(?:bell[1-5]?|gedcom[1-5]?|links)(?:@\S+)?$/i.test(text)
         || text.toLowerCase() === "связи";
-    const anchorInput = text.split(/\r?\n/).some(l => /^\s*[-+=]/.test(l))
-        || (text.split(/\r?\n/).length === 1 && parseTrigger(text));
+    const searchInput = /^\//.test(text.split(/\r?\n/).find(l => l.trim() && !l.trimStart().startsWith('#')) || "");
+    const anchorInput = !searchInput && (text.split(/\r?\n/).some(l => /^\s*[-+=]/.test(l))
+        || (text.split(/\r?\n/).length === 1 && parseTrigger(text)));
     let resolved = null;
     if (message.reply_to_message && (scopedCommand || anchorInput) && !parseGedcom(text)) {
         resolved = await resolveReply(chatId, message.reply_to_message);
@@ -454,7 +456,13 @@ export default async function (message, ctx) {
     // /Иван — префиксный поиск по родословной росписи -+= (/-Пётр — только
     // мужчины глубины 0, /--Иван — глубины 1, /=… — женщины); "/ текст" —
     // подстрока. В reply — события родни героя, включая неточные даты.
-    if (text.startsWith("/")) {
+    if (searchInput) {
+        let parsed;
+        try { parsed = parseSearchQuery(text); }
+        catch (e) {
+            await api.sendMessage({ chat_id: chatId, text: e.message });
+            return;
+        }
         const replySearch = !!message.reply_to_message;
         if (replySearch) {
             resolved ||= await resolveReply(chatId, message.reply_to_message);
@@ -463,21 +471,25 @@ export default async function (message, ctx) {
                 return;
             }
         }
-        const chain = searchChain(text, replySearch ? (await getSettings(chatId)).fynny : false);
-        const radius = searchRadius(text, chain);
-        if (replySearch && !searchKinshipPossible(text, chain)) {
+        const chain = searchChain(parsed, replySearch ? (await getSettings(chatId)).fynny : false);
+        const radius = searchRadius(parsed, chain);
+        if (replySearch && !searchKinshipPossible(parsed, chain)) {
             await api.sendMessage({ chat_id: chatId, text: "Нет такой родственной связи",
                 reply_parameters: { message_id: message.message_id, allow_sending_without_reply: true } });
             return;
         }
         if (replySearch) {
-            const head = searchProgressHead(radius, chain, text);
+            const head = searchProgressHead(radius, chain, parsed);
+            if (head.length + NOT_FOR_GRAFT.length + 40 > 4000) {
+                await api.sendMessage({ chat_id: chatId, text: "Ошибка поискового запроса: слишком длинный заголовок" });
+                return;
+            }
             const first = await api.sendMessage({ chat_id: chatId, text: head + "\n⏳",
                 reply_parameters: { message_id: message.message_id, allow_sending_without_reply: true } });
             try {
                 const hits = focusSearch(await personRows(chatId), await weddingRows(chatId),
                     await linkPairs(chatId), await focusSpousePairs(chatId),
-                    resolved.n + " " + resolved.d, text, chain, radius);
+                    resolved.n + " " + resolved.d, parsed, chain, radius);
                 const found = hits.join("\n");
                 const prefix = head + "\n" + NOT_FOR_GRAFT;
                 if (found && prefix.length + 1 + found.length >= 4000) {
@@ -498,7 +510,7 @@ export default async function (message, ctx) {
             }
             return;
         }
-        const hits = flatSearch(await chatFlatText(chatId), text);
+        const hits = flatSearch(await chatFlatText(chatId), parsed);
         if (hits.length) {
             // ровно одно попадание, резолвящееся в персону, — сжатый юбилей
             // с единой клавиатурой, реплаем на запрос; нерезолвимое (свадьба,

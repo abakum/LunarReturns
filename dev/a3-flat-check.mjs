@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 // с дословными бюджетами вызывающих мест. Ожидания захардкожены вручную;
 // фрозен-реплики циклов ВК (дословно до A3) сверяются с каноном flat.cjs.
 const require = createRequire(import.meta.url);
-const { searchHead, cutLines, flatSearch } = require('../tgcloud/lib/flat.cjs');
+const { searchHead, cutLines, flatSearch, parseSearchQuery } = require('../tgcloud/lib/flat.cjs');
 const peters = '-Пётр I 1672-06-09\n-Пётр II 1715-10-23\n-Пётр Иванов 1980-01-01';
 assert.deepEqual(flatSearch(peters, '/Пётр I #foo bar'), ['-Пётр I 1672-06-09']);
 assert.equal(flatSearch(peters, '/Пётр I').length, 2);
@@ -15,6 +15,66 @@ assert.deepEqual(flatSearch(peters, '/-Пётр I #comment'), ['-Пётр I 1672
 assert.deepEqual(flatSearch(peters, '/ Пётр I #comment'), ['-Пётр I 1672-06-09']);
 assert.deepEqual(flatSearch(peters, '/#comment'), []);
 assert.deepEqual(flatSearch(peters, '/ #comment'), []);
+assert.deepEqual(flatSearch(peters, '/'), []);
+const queryLines = ['# introductory comment', '', '/ Пётр I #2', '|--Анна#12 /fynny1', '! II#plain', '  #0', ''];
+const parsed = parseSearchQuery(queryLines.join('\r\n'));
+assert.deepEqual(parsed.lines, queryLines);
+assert.deepEqual(parsed.radii, [2, 9, 1]);
+assert.deepEqual(parsed.conditions, [
+    { op: '/', sub: true, mark: '', needle: 'пётр i ', comment: '2', line: 3, raw: queryLines[2], full: false },
+    { op: '|', sub: false, mark: '--', needle: 'анна', comment: '12 /fynny1', line: 4, raw: queryLines[3], full: false },
+    { op: '!', sub: true, mark: '', needle: 'ii', comment: 'plain', line: 5, raw: queryLines[4], full: false },
+]);
+assert.strictEqual(parseSearchQuery(parsed), parsed);
+assert.deepEqual(flatSearch(peters, parseSearchQuery('/Пётр I #foo')), ['-Пётр I 1672-06-09']);
+assert.deepEqual(parseSearchQuery('/Имя#2 extra\n|Другое#3 /fynny2\n!Иное#4 /fynny0 tail').radii, []);
+assert.deepEqual(parseSearchQuery('/Имя#999999999999999999999999\n|Другое#00').radii, [9, 1]);
+
+// Sequential operations always match against original occurrences, then retain original order.
+const composed = ['-Иван Петров 1980', '=Анна Сидорова 1982', '--Иван Сидоров 2000',
+    '-Пётр Петров 1970', '-Иван Петров 1980', '+2000-01-01', 'Literal & | ! ( )'];
+const compositionFlat = composed.join('\r\n');
+assert.deepEqual(flatSearch(compositionFlat, '/ Иван\n/ Петров'), [composed[0], composed[4]]);
+assert.deepEqual(flatSearch(compositionFlat, '/ Иван\n/ Петров\n| Сидоров'), composed.slice(0, 3).concat(composed[4]));
+assert.deepEqual(flatSearch(compositionFlat, '/ Петров\n| Сидоров\n!Иван'), [composed[1], composed[3]]);
+assert.deepEqual(flatSearch(compositionFlat, '/Иван\n|Иван\n|Анна'), composed.slice(0, 3).concat(composed[4]));
+assert.deepEqual(flatSearch(compositionFlat, '/Пётр\n!Пётр\n|Иван'), [composed[0], composed[2], composed[4]]);
+assert.deepEqual(flatSearch(compositionFlat, '/Иван\n|-\n!--'), [composed[0], composed[3], composed[4]]);
+assert.deepEqual(flatSearch(compositionFlat, '/+\n|='), [composed[1], composed[5]]);
+assert.deepEqual(flatSearch(compositionFlat, '/ & | ! ( )'), [composed[6]]);
+assert.deepEqual(flatSearch(compositionFlat, '#ignore\r\n\r\n/Иван\r\n #again\r\n! Сидоров'), [composed[0], composed[4]]);
+assert.deepEqual(flatSearch(peters, '/Пётр I #2\n|Пётр II #3'), peters.split('\n').slice(0, 2));
+assert.deepEqual(flatSearch(peters, '/Пётр I  #2\n|Пётр II #3'), [peters.split('\n')[1]]);
+
+// Only an initial empty slash with exact legacy R1-R9 syntax means full list.
+for (const q of ['/#1', '/ #9', '/#6 /fynny0', '/ #6 /fynny1']) {
+    assert.equal(parseSearchQuery(q).conditions[0].full, true);
+    assert.deepEqual(flatSearch(peters, q), []);
+    assert.deepEqual(flatSearch(peters, q, true), peters.split('\n'));
+    assert.deepEqual(flatSearch(peters, q + '\n! II', true), [peters.split('\n')[0], peters.split('\n')[2]]);
+}
+for (const q of ['/#0', '/#10', '/#01', '/#comment', '/ #comment', '/#6 extra']) {
+    assert.equal(parseSearchQuery(q).conditions[0].full, false);
+    assert.deepEqual(flatSearch(peters, q, true), []);
+}
+assert.deepEqual(parseSearchQuery('\n#comment\n  #2\n').conditions, []);
+assert.deepEqual(flatSearch(peters, '\n#comment\n'), []);
+for (const [q, line] of [
+    ['|Иван', 1], ['!Иван', 1], [' #comment\ntext', 2], ['/Иван\n text', 2],
+    ['/Иван\n/', 2], ['/Иван\n| #2', 2], ['/Иван\n!#3', 2],
+    ['/#comment\n/Иван', 1], ['/\n/Иван', 1], ['/#1\n/#2', 2],
+    ['/Иван\n\n#comment\n/#2', 4], ['/Иван\n/start\ninvalid', 3],
+]) assert.throws(() => parseSearchQuery(q), error => error instanceof Error
+    && error.message.startsWith('Ошибка поискового запроса: строка ' + line + ': '), q);
+
+// Prefix duplicate suppression happens after composition, never before filters.
+const duplicateFlat = 'Иван 1980\n--Иван 1980\nИван 1980\n=Анна 1981';
+assert.deepEqual(flatSearch(duplicateFlat, '/Иван'), ['--Иван 1980']);
+assert.deepEqual(flatSearch(duplicateFlat, '/Иван\n!--'), ['Иван 1980', 'Иван 1980']);
+assert.deepEqual(flatSearch(duplicateFlat, '/Иван\n| Иван'), duplicateFlat.split('\n').slice(0, 3));
+assert.deepEqual(flatSearch(duplicateFlat, '/ Иван\n/Иван'), duplicateFlat.split('\n').slice(0, 3));
+assert.deepEqual(flatSearch(duplicateFlat, '/Иван\n|='), ['--Иван 1980', '=Анна 1981']);
+assert.deepEqual(flatSearch(duplicateFlat, '/#2\n/Иван', true), duplicateFlat.split('\n').slice(0, 3));
 assert.equal(searchHead('/Пётр I #foo bar', 1), 'Найдено 1 строк начинающихся с Пётр I');
 const NOT_FOR_GRAFT = "#not for cut and graft";
 

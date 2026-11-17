@@ -247,23 +247,34 @@ function searchWordDepth(word) {
 }
 
 function searchWords(query) {
-    return String(query).split('#', 1)[0].replace(/^\/[ \t]*[-+=]*/, "")
-        .toLowerCase().replace(/ё/g, "е").match(/[\p{L}\p{N}_]+/gu) || [];
+    return String(query).toLowerCase().replace(/ё/g, "е").match(/[\p{L}\p{N}_]+/gu) || [];
+}
+
+function searchConditions(query) {
+    const { parseSearchQuery } = require('./flat.cjs');
+    return parseSearchQuery(query);
 }
 
 function searchChain(query, chain = false) {
-    const depths = searchWords(query).map(searchWordDepth);
+    const depths = searchConditions(query).conditions.flatMap(c => searchWords(c.needle)).map(searchWordDepth);
     if (depths.some(d => d > 1)) return false;
     return depths.length && depths.every(d => d === 1) ? true : !!chain;
 }
 
 function searchProgressHead(radius, chain, query) {
-    const { rangeLevel } = require('./chart.cjs');
-    return query + "\n" + rangeLevel(radius) + " fynny=" + Number(!!chain);
+    const parsed = searchConditions(query);
+    const last = parsed.conditions.at(-1);
+    const lines = parsed.lines.slice(0, last.line);
+    lines[last.line - 1] = last.raw.split('#', 1)[0] + "#" + radius + " /fynny" + Number(!!chain);
+    return lines.join("\n");
 }
 
 // Only reject known contradictions, never unknown names or partial words.
 function searchKinshipPossible(query, chain = searchChain(query)) {
+    return searchConditions(query).conditions.every(c => searchKinshipWordsPossible(c.needle, chain));
+}
+
+function searchKinshipWordsPossible(query, chain) {
     const words = searchWords(query);
     if (!words.length || !words.every(w => searchWordDepth(w))) return true;
     const female = /^(?:мать|матери|дочь|дочери|дочка|дочки|сестра|сестры|жена|жены|тетя|тети|племянница|племянницы|(?:пра\d*)?бабушк[аи]|(?:пра\d*)?внучк[аи])$/;
@@ -286,14 +297,13 @@ function searchKinshipPossible(query, chain = searchChain(query)) {
 
 // Infer without traversing the tree; an explicit comment overrides the heuristic.
 function searchRadius(query, chain = false) {
-    const [, comment = ""] = String(query).split('#');
-    const explicit = comment.trim().match(/^\d+$/);
-    if (explicit) return Math.min(9, Math.max(1, Number(explicit[0])));
+    const parsed = searchConditions(query);
+    if (parsed.radii.length) return Math.max(...parsed.radii);
     chain = searchChain(query, chain);
-    const radius = searchWords(query).reduce((sum, word) => {
+    const radius = Math.max(1, ...parsed.conditions.map(c => searchWords(c.needle).reduce((sum, word) => {
         const depth = searchWordDepth(word);
         return sum + (chain && depth !== 1 ? 0 : depth);
-    }, 0);
+    }, 0)));
     return normalizeFocusRadius(radius, 5);
 }
 
@@ -306,8 +316,7 @@ function focusSearch(persons, weddings, pairs, spousePairs, key, query, chain, r
     const keys = focusListKeys(pairs, spousePairs, key, radius, sexOf, true);
     const list = focusListText([...persons, ...weddings], keys, key,
         pairs, spousePairs, sexOf, true, "", radius, chain);
-    if (/^\/[ \t]*#[1-9]$/.test(String(query))) return list ? list.split("\n") : [];
-    return flatSearch(list, query);
+    return flatSearch(list, query, true);
 }
 
 // список колокольчика «Имя ГГГГ-ММ-ДД[ ГГГГ-ММ-ДД смерти][ ЧЧ:ММ]»;

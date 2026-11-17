@@ -56,6 +56,7 @@ function run(platform, tag, commands) {
 }
 
 function response(result, query, occurrence = 0) {
+    query = query.replace(/\\n/g, '\n').trim();
     const hits = result.entries.map((e, i) => e.user && e.text === query ? i : -1).filter(i => i >= 0);
     assert.ok(hits[occurrence] !== undefined, 'Missing input ' + query + '\n' + result.log);
     const out = [];
@@ -65,7 +66,8 @@ function response(result, query, occurrence = 0) {
     return [...new Set(out.map(e => e.id))].map(id => {
         const versions = out.filter(e => e.id === id);
         const first = versions[0], final = versions.at(-1);
-        if (/ fynny=[01]\n⏳$/.test(first.text)) {
+        const hasProgress = /#[1-9] \/fynny[01]\n⏳$/.test(first.text);
+        if (hasProgress) {
             assert.equal(first.edited, false, query + ': progress is a new message');
             assert.ok(versions.length >= 2, query + ': missing final edit');
             assert.ok(versions.slice(1).every(e => e.edited), query + ': update the same message');
@@ -74,15 +76,18 @@ function response(result, query, occurrence = 0) {
             assert.ok(final.text.startsWith(first.text.slice(0, -1)), query + ': retain header');
         }
         return { ...final, rawText: final.text, initial: first, versions,
-            text: final.text.replace(/^[\s\S]*?\n[^\n]+ fynny=[01]\n/, '') };
+            text: hasProgress ? final.text.slice(first.text.length - 1) : final.text };
     });
 }
 
 function progress(result, query, radius, chain, occurrence = 0) {
     const final = response(result, query, occurrence)[0];
-    const range = radius === 1 ? 'родители-дети' : radius === 2 ? 'деды-внуки'
-        : radius === 3 ? 'прадеды-правнуки' : `пра${radius - 2}деды-пра${radius - 2}внуки`;
-    const head = query + '\n' + range + ' fynny=' + chain;
+    const lines = query.replace(/\\n/g, '\n').trim().split(/\r?\n/);
+    const last = lines.findLastIndex(line => /^[\/|!]/.test(line));
+    assert.ok(last >= 0, query + ': condition in header');
+    const hash = lines[last].indexOf('#');
+    lines[last] = (hash < 0 ? lines[last] : lines[last].slice(0, hash)) + '#' + radius + ' /fynny' + chain;
+    const head = lines.slice(0, last + 1).join('\n');
     assert.equal(final.initial.text, head + '\n⏳', query + ': initial range and effective mode');
     assert.equal(final.rawText, head + '\n' + final.text, query + ': actual final full text');
     return final;
@@ -184,6 +189,77 @@ for (const platform of ['tg', 'vk']) {
             context + ': adaptive searches preserve people, families, links and settings');
     }
 
+    const multilineCases = [
+        { q: '/Brother\\n/ ther', yes: ['Brother'], no: ['Sister'] },
+        { q: '/Brother\\n/ther', empty: true },
+        { q: '/missingzz\\n|/Sister', empty: true },
+        { q: '/Brother\\n/ missingzz\\n|Sister', yes: ['Sister'], no: ['Brother'] },
+        { q: '/Brother\\n|Sister\\n!Brother', yes: ['Sister'], no: ['Brother'] },
+        { q: '/Brother\\n|Sister\\n! Sister', yes: ['Brother'], no: ['Sister'] },
+        { q: '/missingzz\\n| ther', yes: ['Brother', 'Father', 'Mother'], no: ['Sister'] },
+        { q: '/Brother#first line\\n|Sister#second line\\n!Outside#ignored', yes: ['Brother', 'Sister'] },
+        { q: '# leading comment\\n\\n/Brother\\n|Sister\\n# trailing comment', yes: ['Brother', 'Sister'] },
+    ];
+    const syntaxCases = [
+        ['/Brother\\nSister', 2],
+        ['/Brother\\n!', 2], ['/Brother\\n/ #2', 2],
+        ['/Brother\\n|#ignored', 2], ['# comment\\n/Brother\\nplain text', 3],
+    ];
+    const multilineQueries = [...multilineCases.map(c => c.q), ...syntaxCases.map(c => c[0])];
+    const multiline = run(platform, 'multiline', [...setup,
+        ...multilineQueries, ...multilineQueries.map(q => reply + q)]);
+    for (const occurrence of [0, 1]) {
+        for (const c of multilineCases) {
+            const out = response(multiline, c.q, occurrence)[0];
+            if (c.empty) assert.equal(out.text, 'Ничего не найдено', platform + ': ' + c.q);
+            for (const name of c.yes || []) assert.match(out.text, new RegExp(name), platform + ': ' + c.q);
+            for (const name of c.no || []) assert.doesNotMatch(out.text, new RegExp(name), platform + ': ' + c.q);
+            if (occurrence) progress(multiline, c.q, 1, 0, occurrence);
+        }
+        for (const [q, line] of syntaxCases) {
+            const rejected = response(multiline, q, occurrence)[0];
+            assert.match(rejected.text, new RegExp('^Ошибка поискового запроса: строка ' + line + ': .+'));
+            assert.doesNotMatch(rejected.initial.text, /⏳|\/fynny[01]/, q + ': syntax error before progress');
+        }
+    }
+    assert.deepEqual(multiline.data, baseline.data, platform + ': global/reply multiline errors and filters do not mutate');
+
+    for (const chain of [0, 1]) {
+        const multiSetup = [extendedFamily, '/fynny' + chain, 'Hero 1980-03-03'];
+        const multiBaseline = run(platform, 'multiline-mode-baseline-' + chain, multiSetup);
+        const target = multiBaseline.entries.find(e => e.user && e.text === 'Hero 1980-03-03');
+        const cases = [
+            { q: '/ брат\\n| сестра#2', r: 2, mode: 1, yes: /Brother/ },
+            { q: '/ дядя\\n| брат отца', r: 2, mode: 0, yes: /Uncle 1954-05-05 дядя/, no: /брат отца/ },
+            { q: '/Uncle\\n! троюродный', r: 4, mode: 0, yes: /Uncle/ },
+            { q: '/Uncle\\n! троюродный брат', r: 5, mode: 0, yes: /Uncle/ },
+            { q: '/ брат\\n| брат отца', r: 2, mode: 1, yes: /Uncle 1954-05-05 брат отца/ },
+            { q: '/Uncle#1\\n|Brother#2\\n!missingzz#ignored', r: 2, mode: chain, yes: /Uncle/, no: /Grandfather/ },
+            { q: '/Uncle#1\\n! троюродный брат', r: 1, mode: 0, empty: true },
+            { q: '/#2\\n!Brother', r: 2, mode: chain, yes: /Uncle/, no: /Brother/ },
+            { q: '/#2 /fynny' + (1 - chain) + '\\n!Brother', r: 2, mode: chain, yes: /Uncle/, no: /Brother/ },
+            { q: '/Uncle#2 /fynny' + (1 - chain), r: 2, mode: chain, yes: /Uncle/ },
+            { q: '/#2 /fynny' + (1 - chain), r: 2, mode: chain, yes: /Grandfather/ },
+        ];
+        const impossible = ['/Brother\\n| бабушка матери', '/Brother\\n! жена тёти', '/ бабушка матери\\n|Brother'];
+        const checked = run(platform, 'multiline-modes-' + chain, [...multiSetup,
+            ...cases.map(c => '>' + target.id + ' ' + c.q),
+            ...impossible.map(q => '>' + target.id + ' ' + q)]);
+        for (const c of cases) {
+            const out = progress(checked, c.q, c.r, c.mode);
+            if (c.empty) assert.equal(out.text, 'Ничего не найдено');
+            if (c.yes) assert.match(out.text, c.yes, platform + ': ' + c.q);
+            if (c.no) assert.doesNotMatch(out.text, c.no, platform + ': ' + c.q);
+            assert.doesNotMatch(out.body, /\[\d+\.\d+\]/, c.q + ': plain reply results');
+        }
+        for (const q of impossible) {
+            const out = response(checked, q)[0];
+            assert.equal(out.text, 'Нет такой родственной связи', platform + ': impossible branch ' + q);
+            assert.doesNotMatch(out.initial.text, /⏳|\/fynny[01]/, q + ': reject before progress');
+        }
+        assert.deepEqual(checked.data, multiBaseline.data, platform + ': common mode/compact metadata never changes settings');
+    }
+
     const ordinary = run(platform, 'ordinary', [...setup, '/bellamy', '/startrek', '/ bell',
         reply + 'HeroRenamed 1980-03-03', '/HeroRenamed']);
     for (const q of ['/bellamy', '/startrek', '/ bell'])
@@ -249,8 +325,21 @@ for (const platform of ['tg', 'vk']) {
     const overflowBaseline = run(platform, 'overflow-baseline', overflowSetup);
     const overflowHero = overflowBaseline.entries.find(e => e.user && e.text === 'OverflowHero 1950-01-01');
     assert.ok(overflowHero, overflowBaseline.log);
-    const overflow = run(platform, 'overflow', [...overflowSetup, '>' + overflowHero.id + ' /#1']);
-    const full = progress(overflow, '/#1', 1, 0);
+    const fullQuery = '/#1\\n!missingzz#replace this';
+    const oversizedQuery = '/Child' + 'x'.repeat(4000) + '\\n|Child';
+    const overflow = run(platform, 'overflow', [...overflowSetup,
+        '>' + overflowHero.id + ' ' + fullQuery,
+        '>' + overflowHero.id + ' /Child099',
+        '>' + overflowHero.id + ' ' + oversizedQuery]);
+    const full = progress(overflow, fullQuery, 1, 0);
+    assert.match(response(overflow, '/Child099')[0].text, /Child099 Long Name For Complete Reply Search Overflow/,
+        platform + ': filtering sees rows beyond preview');
+    {
+        const rejected = response(overflow, oversizedQuery)[0];
+        assert.match(rejected.text, /Ошибка поискового запроса:/, platform + ': oversized header rejected');
+        assert.doesNotMatch(rejected.initial.text, /⏳/, platform + ': oversized query has no progress');
+        assert.ok(rejected.versions.every(e => e.text.length <= 4000), platform + ': bounded rejection');
+    }
     assert.ok(full.rawText.length <= 4000, platform + ': bounded final text');
     assert.match(full.rawText, /✂️/);
     assert.ok(full.versions.some(e => e.edited && /✂️⏳/.test(e.text)), platform + ': upload progress');
@@ -269,7 +358,7 @@ for (const platform of ['tg', 'vk']) {
         assert.match(full.rawText, /📎 вложение/, platform + ': attachment on the same message');
     }
     artifact = artifact.replace(/^\uFEFF/, '');
-    assert.ok(artifact.startsWith('/#1\nродители-дети fynny=0\n' + marker + '\n'), platform + ': full file header');
+    assert.ok(artifact.startsWith('/#1\n!missingzz#1 /fynny0\n' + marker + '\n'), platform + ': full file header');
     assert.doesNotMatch(artifact, /⏳|✂️/);
     const rows = artifact.split('\n').slice(3);
     assert.equal(rows.length, children.length + 1, platform + ': complete list including hero');
@@ -279,6 +368,6 @@ for (const platform of ['tg', 'vk']) {
     assert.ok(shown.length > 0 && shown.length < rows.length, platform + ': truncated preview');
     assert.deepEqual(shown, rows.slice(0, shown.length), platform + ': only complete rows in preview');
     assert.deepEqual(overflow.data, overflowBaseline.data, platform + ': overflow search preserves tree');
-    console.log(platform + ': reply progress/final IDs, automatic labels and R1/R2/R9 (fynny0/1), errors, commands, no mutation, ordinary edit, Romanov radius/bell, full overflow artifact OK');
+    console.log(platform + ': multiline AND/OR/NOT, compact progress/final IDs, automatic labels and radii (fynny0/1), early errors, commands, no mutation, ordinary edit, Romanov radius/bell, full overflow artifact OK');
 }
 console.log('Reply search REPL logs and isolated DBs: ' + tmp);
