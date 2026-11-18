@@ -9,6 +9,7 @@ import { jubileeText, approxOut } from './text.js';
 import { findShownRecord, REPLY_TARGET_ERROR } from './text.cjs';
 import { graftError } from './flat.cjs';
 import { localRecord, mskGedcom } from './event-time.cjs';
+import { viewerHtml, viewerAnnotations } from './viewer.cjs';
 import { chatFlatArtifacts, gedNoteLines, gedText, gedFictiveDates, trimImport } from './parse.cjs';
 import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText, isExactEvent } from './tree.cjs';
 // фокус-список (focusListText) — канон tree.cjs (с A3): реэкспорт — точки
@@ -1570,6 +1571,15 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
             pdf = res.pdf;
         } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
         if (pdf) await sendFile(Uint8Array.from(pdf, c => c.charCodeAt(0)), ".pdf", "application/pdf");
+        try {
+            const hero = heroKey ? (await personRows(chatId)).find(r => pkey(r) === heroKey) : null;
+            const heroXref = hero && g.split("\n").includes("0 @" + hero.xref + "@ INDI") ? hero.xref : null;
+            const annotations = viewerAnnotations(g, await flatRows(chatId), await linkPairs(chatId), await focusSpousePairs(chatId));
+            await sendFile(enc.encode(viewerHtml(g, chartHead, heroXref, annotations)), ".html", "text/html; charset=utf-8");
+        } catch (e) {
+            console.error("viewer:", e.message);
+            errors.push(base + ".html: " + e.message);
+        }
         if (chartErr && !chartErr.includes("персоны пусты")) errors.push("Диаграмма не построена: " + chartErr);
         const errorText = errors.length ? "\n💥 Не удалось выложить файлы:\n" + errors.join("\n") : "";
         if (replyTo) await api.editMessageText({ chat_id: chatId, message_id: replyTo,

@@ -9,11 +9,18 @@
     "trim": "bin/trim.cjs"
   },
   "scripts": {
+    "build:viewer": "node dev/build-viewer.mjs",
+    "test:viewer": "node dev/viewer-check.mjs && node dev/viewer-repl-check.mjs",
     "start": "node lunarreturns.js",
     "deploy": "tgcloud push"
   },
   "engines": {
     "node": ">=22.5"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@playwright/test": "1.59.1",
+    "esbuild": "0.28.2",
+    "topola": "3.11.1"
+  }
 }

@@ -1711,6 +1711,21 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
         if (pdf) files.push([base + ".pdf", Buffer.from(pdf, "latin1")]);
         if (overflow) files.push([base + ".ged.txt", "\uFEFF" + pack]);
         const atts = [], uploadErrors = [];
+        try {
+            const { viewerHtml, viewerFileBase, viewerAnnotations } = reqLib("viewer");
+            const hero = heroKey ? personRows(peerId).find(r => pkey(r) === heroKey) : null;
+            const heroXref = hero && g.split("\n").includes("0 @" + hero.xref + "@ INDI") ? hero.xref : null;
+            const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId));
+            const html = viewerHtml(g, chartHead, heroXref, annotations);
+            const viewerBase = viewerFileBase(base);
+            const gz = require("node:zlib").gzipSync(Buffer.from(html, "utf8"));
+            // VK rewrites dots in uploaded names; FNAME preserves the extracted .html extension.
+            gz[3] |= 0x08;
+            files.push([base + ".gz", Buffer.concat([gz.subarray(0, 10), Buffer.from(viewerBase + ".html\0", "ascii"), gz.subarray(10)])]);
+        } catch (e) {
+            console.error("viewer:", e.message);
+            uploadErrors.push("Просмотрщик gzip: " + e.message);
+        }
         for (const [name, content] of files) {
             t0 = Date.now();
             try {
