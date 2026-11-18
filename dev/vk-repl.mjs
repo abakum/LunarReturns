@@ -131,6 +131,8 @@ const srv = http.createServer((req, res) => {
             const bytes = Buffer.concat(chunks);
             body = bytes.toString('utf8');
             trace({ method: 'upload', body, base64: bytes.toString('base64') });
+            if (process.env.LR_BACKUP_FAIL && body.includes('-old.ged"'))
+                return json({ error: 'injected backup upload failure' });
             if (process.env.LR_CSV_FAIL && body.includes('.ged.csv"'))
                 return json({ error: 'injected CSV upload failure' });
             if (process.env.LR_TXT_FAIL && body.includes('.ged.txt"'))
@@ -147,6 +149,9 @@ const srv = http.createServer((req, res) => {
         trace({ method, params: p });
         if (RAW) console.log('>> vk', method, JSON.stringify(p).slice(0, 160));
         try {
+            if (process.env.LR_BACKUP_FAIL === 'all' && method === 'messages.send'
+                && String(p.message).startsWith('🧬 Резерв прежнего дерева'))
+                return json({ error: { error_code: 100, error_msg: 'injected backup text failure' } });
             if ((method === 'messages.send' || method === 'messages.edit') && p.keyboard !== undefined) {
                 let keyboard;
                 try { keyboard = JSON.parse(p.keyboard); } catch { /* rejected below */ }

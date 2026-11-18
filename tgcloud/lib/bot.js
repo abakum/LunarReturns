@@ -8,6 +8,7 @@ import { REL_DEFS, religiousDigest } from './religion.cjs';
 import { jubileeText, approxOut } from './text.js';
 import { findShownRecord, REPLY_TARGET_ERROR } from './text.cjs';
 import { graftError } from './flat.cjs';
+import { localRecord, mskGedcom } from './event-time.cjs';
 import { chatFlatArtifacts, gedNoteLines, gedText, gedFictiveDates, trimImport } from './parse.cjs';
 import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText, isExactEvent } from './tree.cjs';
 // фокус-список (focusListText) — канон tree.cjs (с A3): реэкспорт — точки
@@ -388,6 +389,9 @@ export async function applyTree(chatId, tree) {
             const named = p.spouseLine ? (await indiRows(chatId)).filter(r => r.name === rec.n) : [];
             x = named.length === 1 ? named[0].xref : await stubOf(chatId, rec.n);
             await db.update(indi).set({ sex: p.sex || null, ...(p.note ? { note: p.note } : {}) })
+                .where(and(eq(indi.chatId, chatId), eq(indi.xref, x))).run();
+            if (rec.dd) await db.update(indi).set({ deatD: rec.dd, deatH: rec.dh ?? null, deatM: rec.dm ?? null,
+                dsrcH: rec.dsrcH ?? null, dsrcM: rec.dsrcM ?? null, deatPlac: rec.plac2 ?? null, deatAbt: rec.dabt ?? 0 })
                 .where(and(eq(indi.chatId, chatId), eq(indi.xref, x))).run();
         } else {
             const r = await upsertPerson(chatId, Object.assign({ sex: p.sex, note: p.note }, rec));
@@ -1085,9 +1089,8 @@ export async function gedcomText(chatId, keys) {
         return (ABT_TAG[q] ? ABT_TAG[q] + " " : "") + s;
     };
     const hasKeys = Array.isArray(keys) && keys.length > 0;
-    const persons = (await personRows(chatId)).filter(r => !hasKeys || keys.includes(pkey(r)));
+    const persons = (await personRows(chatId)).filter(r => !hasKeys || keys.includes(pkey(r))).map(localRecord);
     const idOf = new Map(persons.map(r => [r.xref, r.xref]));
-    const sexOf = new Map(persons.map(r => [r.xref, r.sex || null]));
     // усыновления: xref ребёнка → xref семьи (chil.adopted)
     const adoptedOf = new Map();
     for (const c of (await chilRows(chatId)).filter(x => x.adopted)) adoptedOf.set(c.indi, c.fam);
@@ -1103,15 +1106,16 @@ export async function gedcomText(chatId, keys) {
             const i = await getIndi(chatId, x);
             if (!i || !i.name) return null;
             return { xref: x, name: i.name, sex: i.sex || null, deat: i.deatD || null, dp: i.deatPlac || null,
+                dh: i.deatH, dm: i.deatM, dsrcH: i.dsrcH, dsrcM: i.dsrcM,
                 dabt: i.deatD ? i.deatAbt || 0 : 0, note: i.note || null };
         };
-        for (const x of [f.husb, f.wife]) {
+        for (const [role, x] of [['HUSB', f.husb], ['WIFE', f.wife]]) {
             if (!x) continue;
             const k = await keyOfXref(chatId, x);
-            if (k) par.push({ x, k });
+            if (k) par.push({ x, k, role });
             else {
                 const st = await stubOfX(x);
-                if (st) stubs.push(st);
+                if (st) stubs.push({ ...st, role });
             }
         }
         for (const r of (await db.select().from(chil).where(and(eq(chil.chatId, chatId), eq(chil.fam, f.xref))).all()).sort((a, b) => a.id - b.id)) {
@@ -1135,7 +1139,6 @@ export async function gedcomText(chatId, keys) {
             // в росписи таких строк нет, глубины он не меняет
             const ps = par.filter(p => keys.includes(p.k));
             if (!ps.length) continue;
-            par.length = 0; par.push(...ps);
             const ks = chd.filter(c => keys.includes(c.k));
             chd.length = 0; chd.push(...ks);
             // фрагмент — датированные персоны из keys; заглушки-половины/дети — как есть
@@ -1160,17 +1163,20 @@ export async function gedcomText(chatId, keys) {
         for (const st of f.kstubs) addStub(st);
     }
     const fidOf = new Map(fams.map(f => [f, f.xref]));
+    for (const r of await personRows(chatId)) if (!idOf.has(r.xref) && fams.some(f => f.par.some(p => p.x === r.xref))) {
+        persons.push(localRecord(r)); idOf.set(r.xref, r.xref);
+    }
     const out = ["0 HEAD", "1 SOUR LunarReturns", "1 GEDC", "2 VERS 5.5.1", "2 FORM LINEAGE-LINKED", "1 CHAR UTF-8"];
     for (const r of persons) {
         out.push("0 @" + idOf.get(r.xref) + "@ INDI");
         out.push("1 NAME " + cleanName(r.n));
         if (r.sex) out.push("1 SEX " + r.sex);
         out.push("1 BIRT", "2 DATE " + gdateAbt(r.d, r.abt));
-        if (r.srcH !== undefined) out.push("2 TIME " + String(r.srcH).padStart(2, "0") + ":" + String(r.srcM).padStart(2, "0"));
+        if (r.srcH !== undefined) out.push("3 TIME " + String(r.srcH).padStart(2, "0") + ":" + String(r.srcM).padStart(2, "0"));
         if (r.plac) out.push("2 PLAC " + r.plac);
         if (r.dd) {
             out.push("1 DEAT", "2 DATE " + gdateAbt(r.dd, r.dabt));
-            if (r.dsrcH !== undefined) out.push("2 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
+            if (r.dsrcH !== undefined) out.push("3 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
             if (r.dp) out.push("2 PLAC " + r.dp);
         }
         out.push(...gedNoteLines(r.note));
@@ -1189,7 +1195,9 @@ export async function gedcomText(chatId, keys) {
         out.push(...gedNoteLines(st.note));
         if (st.sex) out.push("1 SEX " + st.sex);
         if (st.deat) {
-            out.push("1 DEAT", "2 DATE " + gdateAbt(st.deat, st.dabt));
+            const r = localRecord({ ...st, dd: st.deat });
+            out.push("1 DEAT", "2 DATE " + gdateAbt(r.dd, st.dabt));
+            if (r.dsrcH !== undefined) out.push("3 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
             if (st.dp) out.push("2 PLAC " + st.dp);
         }
         for (const f of fams) {
@@ -1199,13 +1207,12 @@ export async function gedcomText(chatId, keys) {
     }
     for (const f of fams) {
         out.push("0 @" + fidOf.get(f) + "@ FAM");
-        // по практике 5.5.1: сначала HUSB, затем WIFE; пол заглушек — из записи
+        // Family slots are independent of SEX.
         const all = [
-            ...f.par.map(p => ({ ref: idOf.get(p.x), sex: sexOf.get(p.x) })),
-            ...f.stubs.map(s => ({ ref: stubId.get(s.xref), sex: s.sex || null })),
+            ...f.par.map(p => ({ ref: p.x, role: p.role })),
+            ...f.stubs.map(s => ({ ref: stubId.get(s.xref), role: s.role })),
         ];
-        for (const x of all.filter(x => x.sex !== "F")) out.push("1 HUSB @" + x.ref + "@");
-        for (const x of all.filter(x => x.sex === "F")) out.push("1 WIFE @" + x.ref + "@");
+        for (const role of ['HUSB', 'WIFE']) for (const x of all.filter(x => x.role === role)) out.push("1 " + role + " @" + x.ref + "@");
         for (const c of f.chd) {
             out.push("1 CHIL @" + idOf.get(c.x) + "@");
             if (adoptedOf.get(c.x) === f.xref) out.push("2 PEDI adopted");
@@ -1244,6 +1251,8 @@ async function flatRows(chatId) {
         d: r.birtD ?? undefined, dd: r.deatD ?? undefined,
         h: r.birtH ?? undefined, m: r.birtM ?? undefined,
         srcH: r.srcH ?? undefined, srcM: r.srcM ?? undefined,
+        dh: r.deatH ?? undefined, dm: r.deatM ?? undefined,
+        dsrcH: r.dsrcH ?? undefined, dsrcM: r.dsrcM ?? undefined,
         plac: r.plac ?? undefined, dp: r.deatPlac ?? undefined,
         note: r.note ?? undefined, nameOnly: r.birtD == null,
         abt: r.birtAbt ?? undefined, dabt: r.deatAbt || undefined,
@@ -1251,14 +1260,11 @@ async function flatRows(chatId) {
     const fams = [];
     for (const f of (await famRowsOf(chatId)).sort((a, b) => a.id - b.id)) {
         const F = { xref: f.xref, hKey: null, hName: null, wKey: null, wName: null, children: [], marr: null, div: null, note: f.note || null };
-        for (const x of [f.husb, f.wife]) {
+        for (const [slot, x] of [['hKey', f.husb], ['wKey', f.wife]]) {
             if (!x) continue;
             const r = await getIndi(chatId, x);
             if (!r) continue;
-            // сторона по полу (как в гедкоме: без пола — мужская); занятая — на свободную
-            if (r.sex === "F" && F.wKey == null) F.wKey = x;
-            else if (F.hKey == null) F.hKey = x;
-            else if (F.wKey == null) F.wKey = x;
+            F[slot] = x;
         }
         for (const r of (await db.select().from(chil).where(and(eq(chil.chatId, chatId), eq(chil.fam, f.xref))).all()).sort((a, b) => a.id - b.id)) {
             const i = await getIndi(chatId, r.indi);
@@ -1627,6 +1633,7 @@ export async function uniqueKeyOf(chatId, name, birtD, approx, yearly, xref) {
 // без варианта — заглушки-персоны (birtD null); безымянные — мимо.
 // Возвращает краткий отчёт. Повторный импорт лечит любые старые данные
 export async function importGedcom(chatId, g) {
+    g = mskGedcom(g);
     await clearChatTree(chatId);
     const byX = new Map(); // xref файла → xref в базе (совпавшие «Имя Д» — один)
     const famRefs = new Set(); // xref'ы, упомянутые в семьях (супруги/дети)
@@ -1650,10 +1657,10 @@ export async function importGedcom(chatId, g) {
                 to: u.name + " " + approxOut(u.birtD, uabt) });
         await db.insert(indi).values({
             chatId, xref: ind.__xref, name: u.name, birtD: u.birtD,
-            birtH: null, birtM: null,
+            birtH: ind.birt.h ?? null, birtM: ind.birt.m ?? null,
             srcH: ind.birt.time ? Number(ind.birt.time.slice(0, 2)) : null,
             srcM: ind.birt.time ? Number(ind.birt.time.slice(3, 5)) : null,
-            deatD: ind.deat && ind.deat.date ? ind.deat.date : null, deatH: null, deatM: null,
+            deatD: ind.deat?.date ?? null, deatH: ind.deat?.h ?? null, deatM: ind.deat?.m ?? null,
             dsrcH: ind.deat && ind.deat.time ? Number(ind.deat.time.slice(0, 2)) : null,
             dsrcM: ind.deat && ind.deat.time ? Number(ind.deat.time.slice(3, 5)) : null,
             sex: ind.sex ?? null,
@@ -1694,8 +1701,8 @@ export async function importGedcom(chatId, g) {
             await db.insert(indi).values({
                 chatId, xref: ind.__xref, name: sname, birtD: null,
                 birtH: null, birtM: null, srcH: null, srcM: null,
-                deatD: ind.deat && ind.deat.date ? ind.deat.date : null, deatH: null, deatM: null,
-                dsrcH: null, dsrcM: null,
+                deatD: ind.deat?.date ?? null, deatH: ind.deat?.h ?? null, deatM: ind.deat?.m ?? null,
+                dsrcH: ind.deat?.srcH ?? null, dsrcM: ind.deat?.srcM ?? null,
                 sex: ind.sex ?? null,
                 plac: ind.birt && ind.birt.plac ? ind.birt.plac : null,
                 deatPlac: ind.deat && ind.deat.plac ? ind.deat.plac : null,
@@ -1717,8 +1724,8 @@ export async function importGedcom(chatId, g) {
         await db.insert(indi).values({
             chatId, xref: ind.__xref, name: u.name, birtD: u.birtD,
             birtH: null, birtM: null, srcH: null, srcM: null,
-            deatD: ind.deat && ind.deat.date ? ind.deat.date : null, deatH: null, deatM: null,
-            dsrcH: null, dsrcM: null,
+            deatD: ind.deat?.date ?? null, deatH: ind.deat?.h ?? null, deatM: ind.deat?.m ?? null,
+            dsrcH: ind.deat?.srcH ?? null, dsrcM: ind.deat?.srcM ?? null,
             sex: ind.sex ?? null,
             plac: ind.birt && ind.birt.plac ? ind.birt.plac : null,
             deatPlac: ind.deat && ind.deat.plac ? ind.deat.plac : null,
@@ -1779,7 +1786,7 @@ export async function importGedcom(chatId, g) {
 // резерв прежнего дерева чата файлом <имя>-old.ged (фолбэк — текстом);
 // true — выложен (или чат пуст), false — не смогли (замена отменяется)
 export async function sendTreeBackup(chatId) {
-    if (!(await personRows(chatId)).length) return true;
+    if (!(await indiRows(chatId)).length) return true;
     const g = await gedcomText(chatId);
     const base = fileBaseOf("Гедком-древо чата");
     try {
@@ -1794,7 +1801,8 @@ export async function sendTreeBackup(chatId) {
         console.error("backup upload:", e.message);
     }
     try {
-        await sendLong(chatId, "🧬 Резерв прежнего дерева (текстом):\n" + g, undefined, "Резерв");
+        for (const text of splitText("🧬 Резерв прежнего дерева (текстом):\n" + g))
+            await api.sendMessage({ chat_id: chatId, text });
         return true;
     } catch (e) {
         console.error("backup text:", e.message);

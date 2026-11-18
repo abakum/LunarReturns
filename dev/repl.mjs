@@ -80,6 +80,13 @@ function tgRender(text) {
 globalThis.__tgdev = {
     role: ADMIN ? 'administrator' : 'member',
     onApi(method, params) {
+        if (process.env.LR_BACKUP_FAIL && (
+            method === 'sendDocument' && /-old\.ged$/.test(params.document?.filename || '')
+            || process.env.LR_BACKUP_FAIL === 'all' && method === 'sendMessage'
+                && String(params.text).startsWith('🧬 Резерв прежнего дерева'))) {
+            console.log('    injected backup failure: ' + method);
+            throw new Error('injected backup failure');
+        }
         if (method === 'sendMessage') {
             const { text, entities } = tgRender(params.text);
             const n = ++counter;

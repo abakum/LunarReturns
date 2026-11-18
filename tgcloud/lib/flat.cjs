@@ -17,6 +17,7 @@
 
 const { approxOut } = require('./text.cjs');
 const { focusListKeys } = require('./tree.cjs');
+const { localRecord } = require('./event-time.cjs');
 
 // ключ персоны «Имя Д» — дословно как в копиях (lunarreturns.js, bot.js:
 // там DB-тиры держат собственный; здесь у flatHitKey своя, дословная)
@@ -128,6 +129,7 @@ function subsetBranch(persons, fams, x, extraKids = null) {
 // их семей; плавающие и остаток — по возрасту. Росписи радиуса и ветви героя
 // (герой первой строкой) — как прежде
 function flatTreeText(persons, fams, canonical = false) {
+    persons = persons.map(localRecord);
     const byKey = new Map(persons.map(p => [p.key, p]));
     const pairOf = f => f.hKey != null && f.wKey != null ? JSON.stringify([f.hKey, f.wKey].sort()) : null;
     const counts = new Map();
@@ -149,8 +151,7 @@ function flatTreeText(persons, fams, canonical = false) {
     // note выводится с маркером «^»: при обратном разборе всё после первого
     // «^» — примечание дословно (дата в его начале — не дата смерти).
     // Место — в скобках за своей датой (рождения/смерти): грамматика росписи
-    // трактует время как местное в месте, поэтому с местом выводится
-    // исходное время (если было), без места — московское, как прежде
+    // трактует время как местное; localRecord восстанавливает также местную дату.
     // примерная дата — гранулярно с суффиксом квалификатора (approxOut):
     // «1234», «1234-05», «1234-05-06~»/«1234-05?»/«1234=»…
     const dOut = approxOut;
@@ -160,7 +161,9 @@ function flatTreeText(persons, fams, canonical = false) {
             ? (r.srcH !== undefined && r.srcH !== null ? pad(r.srcH) + ":" + pad(r.srcM ?? 0) : null)
             : (r.h !== undefined && r.h !== null ? pad(r.h) + ":" + pad(r.m ?? 0) : null),
         r.plac ? "(" + r.plac + ")" : null,
-        r.dd !== undefined ? dOut(r.dd, r.dabt) : undefined, r.dp ? "(" + r.dp + ")" : null,
+        r.dd !== undefined ? dOut(r.dd, r.dabt) : undefined,
+        r.dh != null ? pad(r.dh) + ":" + pad(r.dm ?? 0) : null,
+        r.dp ? "(" + r.dp + ")" : null,
         r.note ? "^" + r.note : null,
     ].filter(Boolean).join(" ");
     const out = [], printed = new Set(), famsDone = new Set();
@@ -189,7 +192,7 @@ function flatTreeText(persons, fams, canonical = false) {
     const lineOf = (r, male, d, bare) => {
         const m = bare ? "" : (male ? "-" : "=").repeat(d + 1);
         out.push(m + r.name
-            + (r.nameOnly ? (r.note ? " ^" + r.note : "")
+            + (r.nameOnly ? (r.dd ? " * " + tail(r) : r.note ? " ^" + r.note : "")
                 : (r.d != null || r.dd != null || r.note ? " " + tail(r) : "")));
         if (typeof r.key === "string") printed.add(r.key);
     };

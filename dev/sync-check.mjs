@@ -59,6 +59,87 @@ const TGOS = await import(path.join(ROOT, 'tgcloud', 'lib', 'religion.cjs'));
 const TGC = await import(path.join(ROOT, 'tgcloud', 'lib', 'chart.cjs'));
 const FONT = TGC.chartFont();
 
+// Independent event/role assertions, not just agreement between implementations.
+for (const time of ['0:05', '00:00', '12:34:56.789', '23:59:59']) {
+    const g = TGP.parseGedcom('0 HEAD\n0 @I@ INDI\n1 NAME Clock\n1 BIRT\n2 DATE 2 JAN 2000\n3 TIME ' + time + '\n0 TRLR');
+    assert.equal(g.indis[0].birt.time, time.split(':')[0].padStart(2, '0') + ':' + time.split(':')[1]);
+}
+for (const tail of ['2 TIME 12:34', '2 PLAC Somewhere\n3 TIME 12:34', '2 NOTE Hidden\n3 TIME 12:34', '3 TIME 24:00', '3 TIME 12:60', '3 TIME 12:34junk', '3 TIME 12:34:60']) {
+    const g = TGP.parseGedcom('0 HEAD\n0 @I@ INDI\n1 NAME Clock\n1 BIRT\n2 DATE 2 JAN 2000\n' + tail + '\n0 TRLR');
+    assert.equal(g.indis[0].birt.time, undefined, tail);
+}
+for (const zone of ['UTC', 'GMT', 'ГМТ', 'МСК', 'Москва', 'Гринвич', 'Гринуич', 'UTC+5', 'МСК-2']) {
+    assert.match(TGP.parseTrigger('Clock 2000-01-02 00:30 ' + zone).error, /\(UTC\+5\)/);
+    assert.equal(TGP.parseTrigger('Clock 2000-01-02 00:30 (' + zone + ')').rec.plac, zone);
+    assert.equal(TGP.parseTrigger('Clock 2000-01-02 ^' + zone).tail, zone);
+}
+for (const api of [VK, TG]) {
+    const id = 898980;
+    for (const [date, time, place] of [
+        ['2000-01-01', '00:30', 'UTC+5'], ['1999-12-31', '23:30', 'МСК-2'],
+        ['2000-03-01', '0:05', 'Пермь'], ['2014-10-26', '00:30', 'Минск'],
+        ['2014-10-25', '23:30', 'Минск'], ['2000-01-02', '12:00', 'Unknown'],
+        ['2000-01-02', '00:00', ''], ['2000-01-02', '', 'Пермь'],
+    ]) {
+        const [y, mo, day] = date.split('-');
+        const mon = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'][Number(mo) - 1];
+        const event = '2 DATE ' + Number(day) + ' ' + mon + ' ' + y + (time ? '\n3 TIME ' + time : '') + (place ? '\n2 PLAC ' + place : '');
+        const source = TGP.parseGedcom('0 HEAD\n0 @I@ INDI\n1 NAME Clock\n1 BIRT\n' + event + '\n1 DEAT\n' + event + '\n0 TRLR');
+        await api.importGedcom(id, source);
+        const expected = TGP.eventToMsk(source.indis[0].birt);
+        const stored = (await api.personRows(id))[0];
+        assert.equal(stored.d, expected.d);
+        assert.equal(stored.h, expected.h);
+        const ged = await api.gedcomText(id);
+        assert.match(ged, /2 VERS 5\.5\.1/);
+        assert.doesNotMatch(ged, /^2 TIME/m);
+        assert.deepEqual(TGP.parseGedcom(ged).indis[0].birt, source.indis[0].birt);
+        await api.importGedcom(id, TGP.parseGedcom(ged));
+        assert.equal(await api.gedcomText(id), ged);
+        const flat = await api.chatFlatText(id);
+        await api.clearChatTree(id);
+        await api.applyTree(id, TGP.parseTree(flat));
+        const restored = TGP.parseGedcom(await api.gedcomText(id)).indis[0];
+        assert.deepEqual(restored.birt, source.indis[0].birt, flat);
+        assert.deepEqual(restored.deat, source.indis[0].deat, flat);
+    }
+    for (const sexes of [['M', 'M'], ['F', 'F'], ['', ''], ['F', 'M']]) {
+        await api.importGedcom(id, TGP.parseGedcom('0 HEAD\n0 @H@ INDI\n1 NAME First\n1 SEX ' + sexes[0] + '\n1 BIRT\n2 DATE 1900\n0 @W@ INDI\n1 NAME Second\n1 SEX ' + sexes[1] + '\n1 BIRT\n2 DATE 1901\n0 @F@ FAM\n1 HUSB @H@\n1 WIFE @W@\n0 TRLR'));
+        const ged = await api.gedcomText(id);
+        assert.match(ged, /1 HUSB @H@\n1 WIFE @W@/);
+        assert.match(ged, /1 FAMS @F@/);
+        const fragment = TGP.parseGedcom(await api.gedcomText(id, [(await api.personRows(id))[0]].map(r => r.n + ' ' + r.d)));
+        assert.equal(fragment.indis.length, 2);
+        assert.equal(fragment.fams[0].wife, 'W');
+    }
+    await api.importGedcom(id, TGP.parseGedcom('0 HEAD\n0 @S@ INDI\n1 NAME Stub\n1 DEAT\n2 DATE 2 JAN 2000\n3 TIME 00:30\n2 PLAC UTC+5\n0 @F@ FAM\n1 WIFE @S@\n0 TRLR'));
+    const stubGed = await api.gedcomText(id);
+    assert.match(stubGed, /2 DATE 2 JAN 2000\n3 TIME 00:30\n2 PLAC UTC\+5/);
+    assert.match(stubGed, /1 WIFE @S@/);
+    const flat = await api.chatFlatText(id);
+    await api.clearChatTree(id);
+    await api.applyTree(id, TGP.parseTree(flat));
+    assert.deepEqual(TGP.parseGedcom(await api.gedcomText(id)).indis[0].deat, TGP.parseGedcom(stubGed).indis[0].deat, flat);
+}
+console.log('Event time/local GED/flat round trips and family slots: OK');
+const { localEvent } = TGP;
+assert.deepEqual(localEvent('1999-12-31', null, null, 0, 30, 'UTC+5'), { d: '1999-12-31', h: 0, m: 30 });
+assert.deepEqual(localEvent('1999-12-31', 22, 30, 0, 30, null), { d: '1999-12-31', h: 22, m: 30 });
+// Minsk changes from -60 to 0 at the local date boundary: two local dates
+// can describe the same Moscow minute. Source hours resolve the ambiguity.
+const historic = TGP.eventToMsk({ date: '2014-10-26', time: '00:30', plac: 'Минск' });
+assert.deepEqual(localEvent(historic.d, historic.h, historic.m, 0, 30, 'Минск'), { d: '2014-10-26', h: 0, m: 30 });
+assert.throws(() => localEvent(historic.d, historic.h, historic.m, null, null, 'Минск'), /unambiguous/);
+for (const api of [VK, TG]) {
+    const id = 898981;
+    const source = TGP.parseGedcom('0 HEAD\n0 @P@ INDI\n1 NAME Parent\n1 BIRT\n2 DATE 1 JAN 1950\n0 @C@ INDI\n1 NAME Child\n1 BIRT\n3 TIME 12:34\n1 DEAT\n2 DATE 2 JAN 2000\n3 TIME 00:30\n2 PLAC UTC+5\n0 @F@ FAM\n1 HUSB @P@\n1 CHIL @C@\n0 TRLR');
+    await api.importGedcom(id, source);
+    const child = TGP.parseGedcom(await api.gedcomText(id)).indis.find(i => i.name === 'Child');
+    assert.equal(child.birt.time, undefined, 'fictive birth must have no real birth time');
+    assert.equal(child.deat.time, '00:30');
+    assert.equal(child.deat.date, '2000-01-02');
+}
+
 // Repeated complete marriages retain database family identities and children.
 for (const api of [VK, TG]) {
     const id = 898989;

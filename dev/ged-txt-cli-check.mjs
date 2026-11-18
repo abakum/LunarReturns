@@ -143,7 +143,7 @@ try {
     const rawTrim = path.join(tmp, 'raw.ged');
     fs.writeFileSync(rawTrim, '0 HEAD\r\n0 @I@ INDI\r\n1 NAME Foo /Bar/\r\n2 GIVN Foo\r\n2 SURN Bar\r\n1 BIRT\r\n2 DATE BEF 29 FEB 1904\r\n3 TIME 12:34:56\r\n2 PLAC Private\r\n3 MAP\r\n4 LATI N12\r\n1 NOTE Secret\r\n2 CONT More secret\r\n0 TRLR\r\n');
     run('trim', [rawTrim]);
-    assert.equal(read(path.join(tmp, 'raw.trim.ged')), '0 HEAD\r\n0 @I@ INDI\r\n1 NAME FB\r\n1 BIRT\r\n2 DATE BEF 29 FEB 1904\r\n0 TRLR\r\n');
+    assert.equal(read(path.join(tmp, 'raw.trim.ged')), '0 HEAD\r\n0 @I@ INDI\r\n1 NAME FB\r\n1 BIRT\r\n2 DATE BEF 29 FEB 1904\r\n3 TIME 12:34:56\r\n0 TRLR\r\n');
     const mediaInput = path.join(tmp, 'media.ged');
     fs.writeFileSync(mediaInput, '0 HEAD\n0 @I@ INDI\n1 NAME Foo /Bar/\n1 OBJE\n2 FILE foo\n3 FORM bar\n1 BIRT\n2 DATE 1900\n1 OBJE @O1@\n0 @O1@ OBJE\n1 FILE private.jpg\n2 FORM jpg\n0 TRLR\n');
     run('trim', [mediaInput]);
@@ -154,7 +154,20 @@ try {
     run('trim', [whitelistInput]);
     const whitelistText = read(path.join(tmp, 'whitelist.trim.ged'));
     assert.doesNotMatch(whitelistText, /SOUR|Private|EMAIL|_CUSTOM|DATE 2000|CONC|CONT|NOTE|PLAC/);
-    assert.match(whitelistText, /2 TIME 12:34:56/);
+    assert.doesNotMatch(whitelistText, /2 TIME/);
+    const nestedInput = path.join(tmp, 'nested-time.ged');
+    fs.writeFileSync(nestedInput, '0 HEAD\n1 GEDC\n2 VERS 5.5.1\n0 @I@ INDI\n1 NAME Clock\n1 BIRT\n2 DATE 2 JAN 2000\n3 TIME 0:05:59.123\n2 TIME 10:00\n2 PLAC Private\n3 TIME 11:00\n1 CHAN\n2 DATE 1 JAN 2001\n3 TIME 12:00\n1 FAMC @F@\n2 PEDI adopted\n2 STAT proven\n1 FAMS @F@\n1 ADOP\n2 FAMC @F@\n3 ADOP BOTH\n0 @F@ FAM\n1 WIFE @I@\n0 TRLR\n');
+    run('trim', [nestedInput]);
+    const nestedText = read(path.join(tmp, 'nested-time.trim.ged'));
+    assert.match(nestedText, /2 DATE 2 JAN 2000\n3 TIME 0:05:59\.123/);
+    assert.doesNotMatch(nestedText, /2 TIME|3 TIME (?:11|12):00|CHAN/);
+    assert.match(nestedText, /1 FAMC @F@\n2 PEDI adopted\n2 STAT proven\n1 FAMS @F@/);
+    assert.match(nestedText, /1 ADOP\n2 FAMC @F@\n3 ADOP BOTH/);
+    const eventInput = path.join(tmp, 'event-times.ged');
+    fs.writeFileSync(eventInput, '0 HEAD\n0 @I@ INDI\n1 NAME Clock\n1 BURI\n2 DATE 1 JAN 2000\n3 TIME 12:34:56\n0 @F@ FAM\n1 MARR\n2 DATE 1 JAN 1990\n3 TIME 01:02:03\n1 DIV\n2 DATE 1 JAN 1995\n3 TIME 04:05:06\n0 TRLR\n');
+    run('trim', [eventInput]);
+    const eventText = read(path.join(tmp, 'event-times.trim.ged'));
+    for (const time of ['12:34:56', '01:02:03', '04:05:06']) assert.ok(eventText.includes('3 TIME ' + time));
     assert.deepEqual(parseGedcom(whitelistText), trimImport(parseGedcom(whitelistSource)), 'whitelist preserves imported adoption and date fields');
     for (const mode of ['ged2txt', 'txt2ged', 'trim']) {
         run(mode, [], false);

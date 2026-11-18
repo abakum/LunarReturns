@@ -67,17 +67,16 @@ const sendJubilee = async (chatId, rec, note = "", replyTo = 0) => {
     return sent;
 };
 
-// клавиатура дропа: «Да, с резервом» — только при непустом дереве чата
-const dropKb = hasTree => ({
+// «Да» автоматически резервирует прежнее дерево перед заменой.
+const dropKb = () => ({
     inline_keyboard: [[
         { text: "Нет", callback_data: "ged:ign" },
         { text: "Да", callback_data: "ged:rep" },
-        ...(hasTree ? [{ text: "Да, с резервом", callback_data: "ged:bak" }] : []),
     ]]
 });
 
 // дроп .ged-документа: скачать, разобрать, запомнить в ged_drops (последний
-// дроп выигрывает); «Да» — ЗАМЕНА дерева (с резервом — прежнее дерево файлом
+// дроп выигрывает); «Да» — ЗАМЕНА дерева (сначала прежнее дерево файлом
 // <имя>-old.ged перед очисткой)
 
 // скачать текст документа-дропа с ретраями: файл отдаётся не сразу
@@ -116,12 +115,11 @@ async function gedDrop(chatId, doc, fromId) {
     const old = await db.select().from(gedDrops).where(eq(gedDrops.chatId, chatId)).get();
     if (old) await db.update(gedDrops).set(vals).where(eq(gedDrops.chatId, chatId)).run();
     else await db.insert(gedDrops).values({ chatId, ...vals }).run();
-    // «Да, с резервом» — только при непустом дереве чата (резервовать нечего)
     await api.sendMessage({
         chat_id: chatId,
         text: "🧬 Файл " + name + ": персон " + s.persons + ", семей " + s.fams
             + ", детей " + s.links + ". Заменить события чата деревом?",
-        reply_markup: dropKb(await hasTree(chatId)),
+        reply_markup: dropKb(),
     });
     console.log("ged drop:", name, "chat", chatId);
 }
@@ -179,8 +177,7 @@ async function txtDrop(chatId, doc, fromId, replyTo) {
             .map(p => p.rec.n + "|" + (p.rec.d ?? ""))).size
             + ", семей " + tree.weddings.length + ", детей " + tree.children.length
             + ". Заменить этим древо чата? В ответ на триггер — без замены: будет срезана и привита ветвь триггера.",
-        // «Да, с резервом» — только при непустом дереве чата
-        reply_markup: dropKb(await hasTree(chatId)),
+        reply_markup: dropKb(),
     });
     console.log("txt drop:", name, "chat", chatId);
 }

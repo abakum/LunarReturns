@@ -14,7 +14,7 @@ export const indi = table('indi', {
   birtD: text('birt_d'),          // 'YYYY-MM-DD' (МСК); null у заглушек
   birtH: integer('birt_h'),       // МСК-время (из триггера)
   birtM: integer('birt_m'),
-  srcH: integer('src_h'),         // исходное местное время рождения (2 TIME)
+  srcH: integer('src_h'),         // исходное местное время рождения (DATE/3 TIME)
   srcM: integer('src_m'),
   birtAbt: integer('birt_abt'),   // abt = Q*3+G: квалификатор×гранулярность (lib/parse.cjs) — юбилеи молчат
   deatAbt: integer('deat_abt'),   // смерть с abt!=0 (в оповещения не попадает)

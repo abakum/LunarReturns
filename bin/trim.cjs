@@ -29,13 +29,18 @@ try {
         const allowed = level === 0 ? ['HEAD', 'INDI', 'FAM', 'TRLR'].includes(tag)
             : level === 1 && root === 'HEAD' ? ['GEDC', 'CHAR'].includes(tag)
             : level === 2 && root === 'HEAD' && parent === 'GEDC' ? ['VERS', 'FORM'].includes(tag)
-            : level === 1 && root === 'INDI' ? ['NAME', 'SEX', 'BIRT', 'DEAT', 'BURI', 'ADOP'].includes(tag)
+            : level === 1 && root === 'INDI' ? ['NAME', 'SEX', 'BIRT', 'DEAT', 'BURI', 'ADOP', 'FAMC', 'FAMS'].includes(tag)
             : level === 1 && root === 'FAM' ? ['HUSB', 'WIFE', 'CHIL', 'MARR', 'DIV'].includes(tag)
             : level === 2 && root === 'INDI' && ['BIRT', 'DEAT', 'BURI'].includes(parent)
-                ? tag === 'DATE' || (tag === 'TIME' && parent !== 'BURI')
+                ? tag === 'DATE'
+            : level === 3 && parent === 'DATE' &&
+                ((root === 'INDI' && ['BIRT', 'DEAT', 'BURI'].includes(kept[1])) ||
+                 (root === 'FAM' && ['MARR', 'DIV'].includes(kept[1]))) ? tag === 'TIME'
+            : level === 2 && root === 'INDI' && ['FAMC', 'FAMS'].includes(parent) ? ['PEDI', 'STAT'].includes(tag)
             : level === 2 && root === 'FAM' && ['MARR', 'DIV'].includes(parent) ? tag === 'DATE'
             : level === 2 && root === 'FAM' && parent === 'CHIL' ? tag === 'PEDI'
             : level === 2 && root === 'INDI' && parent === 'ADOP' ? tag === 'FAMC'
+            : level === 3 && root === 'INDI' && kept[1] === 'ADOP' && parent === 'FAMC' ? tag === 'ADOP'
             : false;
         if (!allowed) continue;
         kept[level] = tag;

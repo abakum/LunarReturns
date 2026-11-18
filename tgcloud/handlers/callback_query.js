@@ -349,7 +349,8 @@ export default async function (cq, ctx) {
         }
     }
 
-    // «Нет / Да / Да, с резервом» на дроп .ged: ЗАМЕНА дерева или отказ
+    // «Нет / Да» на дроп: замена с резервом или отказ.
+    // ged:bak остаётся для уже отправленных подтверждений живого дропа.
     // (в группе — только отправивший файл)
     if (data === "ged:rep" || data === "ged:bak" || data === "ged:ign") {
         const row = await db.select().from(gedDrops).where(eq(gedDrops.chatId, chatId)).get();
@@ -372,7 +373,7 @@ export default async function (cq, ctx) {
         }
         // роспись .ged.txt: ЗАМЕНА дерева чата (с резервом сначала файлом)
         if (/\.ged\.txt$/i.test(row.fileName)) {
-            if (data === "ged:bak" && !(await sendTreeBackup(chatId))) {
+            if (!(await sendTreeBackup(chatId))) {
                 await editText("💥 Не удалось выложить резерв — замена отменена, прежнее дерево цело", undefined);
                 return;
             }
@@ -387,7 +388,7 @@ export default async function (cq, ctx) {
             return;
         }
         const g = parseGedcom(row.content);
-        const r = await replaceWithGedcom(chatId, (await getSettings(chatId)).trim ? trimImport(g) : g, data === "ged:bak");
+        const r = await replaceWithGedcom(chatId, (await getSettings(chatId)).trim ? trimImport(g) : g, true);
         const parts = splitText(r.head);
         await editText(parts[0], undefined);
         for (const part of parts.slice(1)) await api.sendMessage({ chat_id: chatId, text: part });
