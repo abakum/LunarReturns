@@ -108,9 +108,15 @@ for (const api of [VK, TG]) {
         const ged = await api.gedcomText(id);
         assert.match(ged, /1 HUSB @H@\n1 WIFE @W@/);
         assert.match(ged, /1 FAMS @F@/);
-        const fragment = TGP.parseGedcom(await api.gedcomText(id, [(await api.personRows(id))[0]].map(r => r.n + ' ' + r.d)));
-        assert.equal(fragment.indis.length, 2);
-        assert.equal(fragment.fams[0].wife, 'W');
+        for (const [name, xref, role, other] of [['First', 'H', 'husb', 'wife'], ['Second', 'W', 'wife', 'husb']]) {
+            const row = (await api.personRows(id)).find(r => r.n === name);
+            const raw = await api.gedcomText(id, [row.n + ' ' + row.d]);
+            const fragment = TGP.parseGedcom(raw);
+            assert.deepEqual(fragment.indis.map(i => i.__xref), [xref]);
+            assert.equal(fragment.fams[0][role], xref);
+            assert.ok(!fragment.fams[0][other]);
+            assert.match(raw, /^1 FAMS @F@$/m);
+        }
     }
     await api.importGedcom(id, TGP.parseGedcom('0 HEAD\n0 @S@ INDI\n1 NAME Stub\n1 DEAT\n2 DATE 2 JAN 2000\n3 TIME 00:30\n2 PLAC UTC+5\n0 @F@ FAM\n1 WIFE @S@\n0 TRLR'));
     const stubGed = await api.gedcomText(id);

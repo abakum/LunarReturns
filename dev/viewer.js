@@ -11,12 +11,32 @@ const annotationText = document.getElementById('annotation-text');
 function closeAnnotation() {
     annotation.hidden = true;
 }
-function showAnnotation(id, node) {
-    const text = input.annotations?.[id] || '\nНет росписи для этой персоны.';
-    const newline = text.indexOf('\n');
-    document.getElementById('annotation-heading').textContent = text.slice(0, newline);
-    annotationText.textContent = text.slice(newline + 1);
+function showAnnotation(id, node, people, navigate) {
+    const rows = Object.hasOwn(input.annotations ?? {}, id) ? input.annotations[id] : [];
+    annotationText.replaceChildren();
+    for (const [i, { text, hero, xref, kinship, prefix = '' }] of rows.entries()) {
+        if (i) annotationText.append('\n');
+        if (prefix) annotationText.append(prefix);
+        if (hero) {
+            const strong = document.createElement('strong');
+            strong.textContent = text;
+            annotationText.append(strong);
+        } else if (people.has(xref)) {
+            const link = document.createElement('a');
+            link.href = '#person=' + encodeURIComponent(xref);
+            link.textContent = text;
+            link.onclick = event => {
+                if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+                event.preventDefault();
+                navigate(xref);
+            };
+            annotationText.append(link);
+            if (kinship) annotationText.append(' · ' + kinship);
+        } else annotationText.append(text);
+    }
+    if (!rows.length) annotationText.textContent = 'Нет росписи для этой персоны.';
     annotation.hidden = false;
+    annotation.scrollTop = 0;
     const rect = node.getBoundingClientRect();
     const width = annotation.offsetWidth, height = annotation.offsetHeight;
     annotation.style.left = Math.max(12, Math.min(rect.left, innerWidth - width - 12)) + 'px';
@@ -86,7 +106,8 @@ try {
                     link.append(text);
                     link.onclick = event => {
                         event.preventDefault(); event.stopPropagation();
-                        showAnnotation(node.__data__.indi.id, node);
+                        dismissTip();
+                        showAnnotation(node.__data__.indi.id, node, people, navigate);
                     };
                 }
             }

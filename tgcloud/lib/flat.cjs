@@ -17,6 +17,7 @@
 
 const { approxOut } = require('./text.cjs');
 const { focusListKeys } = require('./tree.cjs');
+const { kinLabel } = require('./kinship.cjs');
 const { localRecord } = require('./event-time.cjs');
 
 // ключ персоны «Имя Д» — дословно как в копиях (lunarreturns.js, bot.js:
@@ -128,7 +129,7 @@ function subsetBranch(persons, fams, x, extraKids = null) {
 // браки одной персоны — по тому же ключу; корни-владельцы семей — в порядке
 // их семей; плавающие и остаток — по возрасту. Росписи радиуса и ветви героя
 // (герой первой строкой) — как прежде
-function flatTreeText(persons, fams, canonical = false) {
+function flatTreeText(persons, fams, canonical = false, structured = false, heroKey = null) {
     persons = persons.map(localRecord);
     const byKey = new Map(persons.map(p => [p.key, p]));
     const pairOf = f => f.hKey != null && f.wKey != null ? JSON.stringify([f.hKey, f.wKey].sort()) : null;
@@ -167,6 +168,7 @@ function flatTreeText(persons, fams, canonical = false) {
         r.note ? "^" + r.note : null,
     ].filter(Boolean).join(" ");
     const out = [], printed = new Set(), famsDone = new Set();
+    const emit = (prefix, text, person) => out.push(structured ? { prefix, text, person } : prefix + text);
     // канонические ключи (canonical — рецепт): семья — дата свадьбы, без
     // неё — дата рождения старшего супруга (раньше старше); без дат — в
     // конец, стабильно. Порядок перестаёт зависеть от порядка вставки:
@@ -187,13 +189,14 @@ function flatTreeText(persons, fams, canonical = false) {
         return ks.length ? ks[0] : (r.d ?? null);
     };
     const halfOf = r => fams.some(f => f.hKey === r.key || f.wKey === r.key);
+    const heroOwns = f => heroKey != null && (f.hKey === heroKey || f.wKey === heroKey);
     // строка персоны: bare — вторая половина «+»-свадьбы (без маркера), иначе
     // маркеры '-'×(d+1)/'='×(d+1); заглушки — только имя
-    const lineOf = (r, male, d, bare) => {
+    const lineOf = (r, male, d, bare, person = r) => {
         const m = bare ? "" : (male ? "-" : "=").repeat(d + 1);
-        out.push(m + r.name
+        emit(m, r.name
             + (r.nameOnly ? (r.dd ? " * " + tail(r) : r.note ? " ^" + r.note : "")
-                : (r.d != null || r.dd != null || r.note ? " " + tail(r) : "")));
+                : (r.d != null || r.dd != null || r.note ? " " + tail(r) : "")), person);
         if (typeof r.key === "string") printed.add(r.key);
     };
     // Места сразу за своими датами; начальный пробел оставляет свадьбу неизвестной.
@@ -217,8 +220,9 @@ function flatTreeText(persons, fams, canonical = false) {
         const other = maleOwner
             ? (f.wKey != null ? byKey.get(f.wKey) : f.wName != null ? { name: f.wName, nameOnly: true } : null)
             : (f.hKey != null ? byKey.get(f.hKey) : f.hName != null ? { name: f.hName, nameOnly: true } : null);
+        // Keep the boundary even when an opening family has no dated events.
+        emit("+".repeat(d + 1), other || f.marr || f.div || f.note ? wedPlus(f) : "");
         if (other) {
-            out.push("+".repeat(d + 1) + wedPlus(f));
             // «другая половина» — ребёнок включённого семейства? Печатаем её
             // полную строку (с событием) под свадьбой, но НЕ закрываем её
             // от печати: строку с маркером позже выдаст родительская ветвь,
@@ -231,17 +235,13 @@ function flatTreeText(persons, fams, canonical = false) {
             const kfam = other.key != null ? familyOf.get(other.key) : null;
             const kid = other.key != null && !printed.has(other.key) && kfam
                 && [kfam.hKey, kfam.wKey].some(k => k != null && byKey.has(k));
-            if (kid) lineOf(other, other.sex !== "F", d, true);
+            const opensFamily = heroOwns(f) && !printed.has(other.key) && fams.some(g =>
+                !heroOwns(g) && !famsDone.has(g) && (g.hKey === other.key || g.wKey === other.key));
+            if (kid || opensFamily) lineOf(other, other.sex !== "F", d, true);
             else if (other.key != null && printed.has(other.key))
-                lineOf({ name: other.name, nameOnly: true }, other.sex !== "F", d, true);
+                lineOf({ name: other.name, nameOnly: true }, other.sex !== "F", d, true, other);
             else lineOf(other, other.sex !== "F", d, true);
-            if (kid) printed.delete(other.key); // маркерная строка — от родителей
-        } else if (f.marr || f.div || f.note) {
-            // семья без второй половины: односторонняя свадьба («+дата»)
-            out.push("+".repeat(d + 1) + wedPlus(f));
-        } else {
-            // Граница односторонней семьи нужна и при наличии детей.
-            out.push("+".repeat(d + 1));
+            if (kid || opensFamily) printed.delete(other.key); // маркерная строка — от родителей/для другой семьи
         }
         // дети по возрасту (canonical): старшие раньше, без даты — в конце
         const kids = f.children.map(ck => byKey.get(ck)).filter(Boolean);
@@ -259,7 +259,7 @@ function flatTreeText(persons, fams, canonical = false) {
             const k = f.hKey === r.key, x = k ? f.wKey : f.hKey;
             return x != null ? byKey.has(x) : (k ? f.wName : f.hName) != null;
         };
-        const mine = fams.filter(f => f.hKey === r.key || f.wKey === r.key);
+        const mine = fams.filter(f => (f.hKey === r.key || f.wKey === r.key) && (r.key === heroKey || !heroOwns(f)));
         const solo = mine.filter(f => !hasOther(f) && !f.marr);
         const wed = mine.filter(f => hasOther(f) || f.marr);
         if (canonical) wed.sort(famCmp); // браки — по дате свадьбы/старшему супругу
@@ -286,7 +286,11 @@ function flatTreeText(persons, fams, canonical = false) {
         // семей) — после семей, по возрасту; остаток (циклы, оторванные
         // узлы) — тоже по возрасту
         const roots = persons.filter(r => isRoot(r));
-        for (const r of roots.filter(halfOf).sort((a, b) => byDate(minFamKey(a), minFamKey(b))
+        // A spouse with no separate family is printed under the hero's marriage.
+        const deferred = r => heroKey != null && r.key !== heroKey && !fams.some(f =>
+            !heroOwns(f) && (f.hKey === r.key || f.wKey === r.key));
+        for (const r of roots.filter(halfOf).sort((a, b) => Number(deferred(a)) - Number(deferred(b))
+            || byDate(minFamKey(a), minFamKey(b))
             || byDate(a.d ?? null, b.d ?? null) // ничья — старший супруг первым (как в PDF)
             || (a.name < b.name ? -1 : 1)))
             visit(r, 0);
@@ -298,7 +302,7 @@ function flatTreeText(persons, fams, canonical = false) {
         for (const r of persons) if (isRoot(r)) visit(r, 0);
         for (const r of persons) visit(r, 0);
     }
-    return out.join("\n");
+    return structured ? out : out.join("\n");
 }
 
 // поиск по родословной росписи -+= (chatFlatText): "/Иван" — префикс от начала
@@ -379,22 +383,32 @@ function flatSearch(flat, query, fullList = false) {
 
 // Full-chat snapshot; chart keys (especially anchored stubs) are not identities.
 // Textual edge endpoints are usable only when they resolve unambiguously.
-function createFlatAnnotationText([persons, fams], linkPairs, focusSpousePairs) {
+function createFlatAnnotationText([persons, fams], linkPairs, focusSpousePairs, radius = 1) {
     const { shortenEventPlaces } = require('./parse.cjs');
     const shortPlace = place => {
         if (!place) return place;
         const words = place.split(/\s+/).map(word => word.replace(/^,+|,+$/g, "")).filter(Boolean);
         return words.length > 1 ? words[0] + "…" + words.at(-1) : (words[0] || "");
     };
-    // PDF-only copies: keep full places and structured tails in text exports.
+    // Annotation-only copies: keep full places and structured tails in text exports.
     persons = persons.map(p => ({ ...p, plac: shortPlace(p.plac), dp: shortPlace(p.dp),
         note: p.note && shortenEventPlaces(p.note, shortPlace),
     }));
+    const { keysOf } = createFlatAnnotationScope([persons, fams], linkPairs, focusSpousePairs, radius);
     fams = fams.map(f => ({ ...f,
         marr: f.marr ? { ...f.marr, plac: shortPlace(f.marr.plac) } : f.marr,
         div: f.div ? { ...f.div, plac: shortPlace(f.div.plac) } : f.div,
     }));
+    return function annotationText(row) {
+        const keys = keysOf(row.xref);
+        return flatTreeText(persons.filter(p => keys.has(p.key)), radius === 0 ? [] : fams.filter(f =>
+            [f.hKey, f.wKey, ...f.children].some(k => k != null && keys.has(k))), true);
+    };
+}
+
+function createFlatAnnotationScope([persons, fams], linkPairs, focusSpousePairs, radius = 1) {
     const byXref = new Map(persons.map(p => [p.key, p]));
+    if (radius === 0) return { keysOf: key => new Set(byXref.has(key) ? [key] : []), labelOf: () => "" };
     const xOf = new Map();
     for (const p of persons) {
         if (p.d == null) continue;
@@ -414,12 +428,10 @@ function createFlatAnnotationText([persons, fams], linkPairs, focusSpousePairs) 
     }
     for (const [p, c] of linkPairs) put(pairs, seenPairs, xOf.get(p), xOf.get(c));
     for (const [a, b] of focusSpousePairs) put(spouses, seenSpouses, xOf.get(a), xOf.get(b), true);
-    return function annotationText(row) {
-        if (!byXref.has(row.xref)) return "";
-        const keys = new Set(focusListKeys(pairs, spouses, row.xref, 1,
-            k => byXref.get(k)?.sex ?? null, false));
-        return flatTreeText(persons.filter(p => keys.has(p.key)), fams.filter(f =>
-            [f.hKey, f.wKey, ...f.children].some(k => k != null && keys.has(k))), true);
+    const sexOf = key => byXref.get(key)?.sex ?? null;
+    return {
+        keysOf: key => new Set(byXref.has(key) ? focusListKeys(pairs, spouses, key, radius, sexOf, false) : []),
+        labelOf: (from, to, chain) => kinLabel(pairs, spouses, sexOf, from, to, radius, chain),
     };
 }
 
@@ -490,4 +502,4 @@ function cutLines(text, budget, reserved = 0, joinReserve = true) {
     return acc;
 }
 
-module.exports = { flatTreeText, subsetBranch, parseSearchQuery, flatSearch, flatHitPerson, flatHitKey, searchHead, cutLines, datePlusYears, treeReport, rootOf, graftError, createFlatAnnotationText };
+module.exports = { flatTreeText, subsetBranch, parseSearchQuery, flatSearch, flatHitPerson, flatHitKey, searchHead, cutLines, datePlusYears, treeReport, rootOf, graftError, createFlatAnnotationText, createFlatAnnotationScope };

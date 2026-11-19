@@ -26,6 +26,9 @@ const tmp = fs.mkdtempSync('/tmp/kilo/lr-pdf-radius-');
     assert.match(mother, /Ребёнок/);
     assert.match(mother, /Первая/);
     assert.doesNotMatch(mother, /Вторая|Внук/);
+    const personOnly = createFlatAnnotationText([persons, fams], [], [], 0);
+    assert.equal(personOnly({ xref: 'mother' }), flatTreeText([persons[1]], [], true));
+    assert.equal(personOnly({ xref: 'missing' }), '');
     assert.match(textOf({ xref: 'other' }), /Вторая/);
     assert.doesNotMatch(textOf({ xref: 'other' }), /Первая|Ребёнок/);
     assert.match(textOf({ xref: 'child' }), /Внук/, 'relatives outside PDF and interactive edges retained');
@@ -454,6 +457,9 @@ for (const exact of [false, true, 3, 4, 5, 'Husband', 'Wife']) {
         assert.equal(text.status, 0, text.stderr);
         if (policy) {
             const expected = focusListKeys(policyPairs, policySpouses, key(exact), radius, () => null);
+            const ids = new Set([...ged.matchAll(/^0 @([^@]+)@ INDI$/gm)].map(m => m[1]));
+            for (const [, ref] of ged.matchAll(/^1 (?:HUSB|WIFE|CHIL) @([^@]+)@$/gm))
+                assert.ok(ids.has(ref), `${name}: dangling family member ${ref}`);
             for (const r of policyRows) {
                 const included = expected.includes(key(r.name));
                 assert.equal(ged.includes('1 NAME ' + r.name + '\n'), included, name + ': GED ' + r.name);

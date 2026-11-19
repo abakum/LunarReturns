@@ -33,12 +33,38 @@ const snapshot = [[{ key: 'I1', name: 'Иван Тест', d: '1980-01-01', plac
     { key: 'I2', name: 'Отец Тест', sex: 'M' }, { key: 'I3', name: 'Мать Тест', sex: 'F' },
     { key: 'OUT', name: 'НЕ_ЭКСПОРТИРОВАН', d: '2000-01-01' }],
     [{ xref: 'F1', hKey: 'I2', wKey: 'I3', children: ['I1', 'OUT'] }]];
-const annotations = viewerAnnotations(gedcom, snapshot, [], []);
+const annotations = viewerAnnotations(gedcom, snapshot);
 assert(!JSON.stringify(annotations).includes('НЕ_ЭКСПОРТИРОВАН'));
-assert.match(annotations.I1, /Иван Тест/);
-assert.match(annotations.I1, /SECRET_PLACE/);
-assert.match(annotations.I1, /Первая\nВторая/);
-assert(!annotations.I1.includes('^'));
+assert.deepEqual(annotations.I1, [
+    { prefix: '=', text: 'Мать Тест', xref: 'I3', kinship: 'мать' }, { text: '+' },
+    { prefix: '', text: 'Отец Тест', xref: 'I2', kinship: 'отец' },
+    { hero: true, text: '--Иван Тест 1980-01-01 (SECRET_PLACE)\nПервая\nВторая' },
+]);
+assert.equal(annotations.I2[0].text, '-Отец Тест');
+assert.equal(annotations.I2.find(row => row.xref === 'I1').kinship, 'сын');
+{
+    const [persons, fams] = structuredClone(snapshot);
+    persons[0].note += 'Жил: 2000 (Первый район Город) <личная заметка>^Титул: Герой 2001[^Титул: Герой 2002]^';
+    persons[1].note = 'чужая заметка';
+    persons.push({ key: 'I4', name: 'Тёзка', nameOnly: true },
+        { key: 'I5', name: 'Ребёнок', d: '2000-01-01', abt: 1, plac: 'чужое место' },
+        { key: 'I6', name: 'Тёзка', nameOnly: true });
+    fams[0].marr = { d: '1979-01-01', plac: 'чужая свадьба' };
+    fams.push({ xref: 'F2', hKey: 'I1', wKey: 'I4', children: ['I5'],
+        marr: { d: '2001-01-01', plac: 'Город, Область' }, div: { d: '2002-01-01' }, note: 'семейная заметка' },
+    { xref: 'F3', hKey: 'I1', wKey: 'I6', children: [] });
+    const extended = gedcom.replace('0 TRLR', '0 @I4@ INDI\n0 @I5@ INDI\n0 @I6@ INDI\n0 @F2@ FAM\n0 @F3@ FAM\n0 TRLR');
+    const before = structuredClone([persons, fams]);
+    const byId = viewerAnnotations(extended, [persons, fams]);
+    assert.match(byId.I1.find(row => row.hero).text,
+        /Жил: 2000 \(Первый район Город\) <личная заметка>\nТитул: Герой 2001\[\nТитул: Герой 2002\]/);
+    assert.doesNotMatch(byId.I1.map(row => row.text).join('\n'), /чужая|чужое|семейная заметка|НЕ_ЭКСПОРТИРОВАН/);
+    assert.ok(byId.I1.some(row => row.text === '++2001-01-01 (Город, Область) 2002-01-01'));
+    assert.deepEqual(byId.I1.filter(row => row.text === 'Тёзка').map(row => row.xref).sort(), ['I4', 'I6']);
+    assert.deepEqual(byId.I1.find(row => row.xref === 'I5'), { prefix: '---', text: 'Ребёнок 2000-01', xref: 'I5', kinship: 'ребёнок' });
+    assert.equal(byId.I1.find(row => row.xref === 'I4').kinship, 'супруг');
+    assert.deepEqual([persons, fams], before);
+}
 const html = viewerHtml(gedcom, 'Тест <дерева>', 'I1', annotations);
 const data = JSON.parse(html.match(/<script id="tree-data" type="application\/json">(.*?)<\/script>/s)[1]);
 assert.equal(data.gedcom, gedcom);
@@ -90,6 +116,19 @@ try {
         assert.equal(await chartTransform(), beforeDismiss);
         await page.reload();
         assert(await tip.isHidden());
+        await page.evaluate(() => sessionStorage.removeItem('lunarreturns.viewer.touch-tip-dismissed'));
+        await page.reload();
+        assert(await tip.isVisible());
+        const firstName = page.locator('#chart .indi').filter({ hasText: 'Иван' }).first().locator('a.name-link').first();
+        const beforeName = await chartTransform();
+        if (viewport.width < 500) await firstName.tap();
+        else await firstName.click();
+        assert(await tip.isHidden());
+        assert(await page.locator('#annotation').isVisible());
+        assert.equal(await chartTransform(), beforeName);
+        assert.equal(hash(), '');
+        await page.reload();
+        assert(await tip.isHidden());
         assert(!(await page.locator('#chart').textContent()).includes('SECRET_PLACE'));
         assert.match(await page.locator('#chart').textContent(), /Иван/);
         assert(await page.locator('#chart rect').count() > 0);
@@ -138,8 +177,11 @@ try {
         assert(await page.locator('#annotation').isHidden());
         await name.click();
         assert(await page.locator('#annotation').isVisible());
-        assert.match(await page.locator('#annotation-text').textContent(), /SECRET_PLACE/);
-        assert.equal(await page.locator('#annotation-heading').textContent(), 'Иван Тест 1980-01-01');
+        const hero = page.locator('#annotation-text strong');
+        assert.match(await hero.textContent(), /^--Иван Тест .*\(SECRET_PLACE\)\nПервая\nВторая$/);
+        assert.equal(await hero.evaluate(node => getComputedStyle(node).fontWeight), '700');
+        assert(await page.locator('#chart .indi').filter({ hasText: 'Отец' }).first().isVisible());
+        assert.equal(await page.locator('#annotation-heading').count(), 0);
         await page.locator('#annotation').hover();
         assert(await page.locator('#annotation').isVisible());
         await name.click();
@@ -174,6 +216,24 @@ try {
             assert.match(await page.locator('#annotation-text').textContent(), /Иван Тест/);
             await page.locator('header').tap({ position: { x: 2, y: 2 } });
             assert(await page.locator('#annotation').isHidden());
+        }
+        for (const viaKeyboard of [false, true]) {
+            await name.click();
+            const mother = page.locator('#annotation-text a[href="#person=I3"]');
+            assert.equal(await mother.textContent(), 'Мать Тест');
+            assert.equal(await mother.evaluate(node => node.nextSibling.textContent), ' · мать');
+            if (viaKeyboard) await mother.press('Enter');
+            else if (viewport.width < 500) await mother.tap();
+            else await mother.click();
+            assert.equal(hash(), '#person=I3');
+            assert.match(await picker.inputValue(), /\(I3\)$/);
+            assert(await page.locator('#annotation').isHidden());
+            await page.goBack();
+            await page.waitForFunction(() => document.getElementById('person').value.endsWith('(I1)'));
+            await page.goForward();
+            await page.waitForFunction(() => document.getElementById('person').value.endsWith('(I3)'));
+            await page.goBack();
+            await page.waitForFunction(() => document.getElementById('person').value.endsWith('(I1)'));
         }
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
         const localUrl = page.url().split('#')[0];

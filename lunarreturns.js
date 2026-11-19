@@ -1262,6 +1262,7 @@ function gedcomText(peerId, keys) {
             // в росписи таких строк нет, глубины он не меняет
             const ps = par.filter(p => keys.includes(p.k));
             if (!ps.length) continue;
+            par.length = 0; par.push(...ps);
             const ks = chd.filter(c => keys.includes(c.k));
             chd.length = 0; chd.push(...ks);
             // фрагмент — датированные персоны из keys; заглушки-половины/дети — как есть
@@ -1286,9 +1287,6 @@ function gedcomText(peerId, keys) {
         for (const st of f.kstubs) addStub(st);
     }
     const fidOf = new Map(fams.map(f => [f, f.xref]));
-    for (const r of personRows(peerId)) if (!idOf.has(r.xref) && fams.some(f => f.par.some(p => p.x === r.xref))) {
-        persons.push(localRecord(r)); idOf.set(r.xref, r.xref);
-    }
     const out = ["0 HEAD", "1 SOUR LunarReturns", "1 GEDC", "2 VERS 5.5.1", "2 FORM LINEAGE-LINKED", "1 CHAR UTF-8"];
     for (const r of persons) {
         out.push("0 @" + idOf.get(r.xref) + "@ INDI");
@@ -1715,7 +1713,7 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
             const { viewerHtml, viewerFileBase, viewerAnnotations } = reqLib("viewer");
             const hero = heroKey ? personRows(peerId).find(r => pkey(r) === heroKey) : null;
             const heroXref = hero && g.split("\n").includes("0 @" + hero.xref + "@ INDI") ? hero.xref : null;
-            const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId));
+            const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), getSettings(peerId).fynny);
             const html = viewerHtml(g, chartHead, heroXref, annotations);
             const viewerBase = viewerFileBase(base);
             const gz = require("node:zlib").gzipSync(Buffer.from(html, "utf8"));

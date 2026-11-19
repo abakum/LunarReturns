@@ -91,15 +91,56 @@ function checkPayloads(platform, result, focused) {
     const data = JSON.parse(html.match(/<script id="tree-data" type="application\/json">(.*?)<\/script>/s)[1]);
     assert.equal(data.gedcom, ged.bytes.toString(), 'Viewer must embed exactly the exported GED');
     assert.ok(Object.keys(data.annotations).length);
-    assert.ok(Object.values(data.annotations).some(text => /Романов/.test(text)));
+    const rows = Object.values(data.annotations).flat();
+    assert.ok(rows.some(row => /Романов/.test(row.text)));
     if (!focused && data.gedcom.includes('2 TYPE Постриг')) {
-        const annotations = Object.values(data.annotations).join('\n');
+        const annotations = rows.filter(row => row.hero).map(row => row.text).join('\n');
         assert.match(annotations, /Событие: Постриг 1698 в монашестве Маргарита/);
         assert.match(annotations, /Титул: Царь всея Руси 1682\[ соправитель Петра I/);
         assert.match(annotations, /Титул: Царь всея Руси 1696\] соправитель Петра I/);
-        assert.match(annotations, /Похоронен: 1886 \(Петропавловский…Санкт-Петербург\) перезахоронен/);
+        assert.match(annotations, /Похоронен: 1886 \(Петропавловский собор, Санкт-Петербург\) перезахоронен/);
+        const peter = Object.values(data.annotations).find(lines => lines.some(row => row.hero && /^[-=]*Пётр I Алексеевич /.test(row.text)));
+        assert.ok(peter, 'Peter I must have an annotation');
+        assert.notEqual(peter[0].hero, true, 'Peter I stays below his parents');
+        assert.equal(peter.filter(row => row.hero).length, 1);
+        assert.match(peter.find(row => row.hero).text, /1672-05-30 \(Преображенское, Москва, Русское царство\) 1725-01-28/);
+        assert.ok(peter.some(row => row.text === '++1689-01-27 (Преображенское, Москва, Русское царство)'));
+        assert.ok(peter.some(row => row.xref && row.text === 'Евдокия Фёдоровна Лопухина 1669-07-30' && row.kinship === 'жена'));
+        assert.ok(peter.some(row => row.xref && row.text === 'Павел Петрович Романов 1693-01'));
+        assert.ok(peter.some(row => row.text === '+++1711-10-14'));
+        assert.ok(peter.some(row => row.xref && row.text === 'Наталья Петровна Романова 1713-03-03'));
+        const alexey = Object.values(data.annotations).find(lines => lines.some(row => row.hero && /Алексей Михайлович Тишайший/.test(row.text)));
+        const natalya = Object.values(data.annotations).find(lines => lines.some(row => row.hero && /Наталья Кирилловна Нарышкина/.test(row.text)));
+        assert.match(natalya?.[0].text ?? '', /^=Наталья Кирилловна Нарышкина /);
+        assert.equal(natalya[1].text, '+1671-01-22 (Москва, Русское царство)');
+        assert.match(natalya[2].text, /^Алексей Михайлович Тишайший /);
+        assert.equal(natalya[2].kinship, 'муж');
+        assert.equal(natalya.filter(row => row.xref === natalya[2].xref).length, 1);
+        assert.ok(!natalya.some(row => row.text.includes('1648-01-16')));
+        assert.ok(natalya.some(row => row.xref && /^Пётр I Алексеевич /.test(row.text)));
+        assert.ok(natalya.some(row => row.text === '++1689-01-27'));
+        assert.ok(alexey?.[0].hero);
+        assert.match(alexey[0].text, /^-Алексей Михайлович Тишайший.*\nТитул:/s);
+        assert.equal(alexey.filter(row => row.hero).length, 1);
+        for (const [date, spouse, child] of [
+            ['1648-01-16', 'Мария Ильинична Милославская', 'Дмитрий Алексеевич Романов'],
+            ['1671-01-22', 'Наталья Кирилловна Нарышкина', 'Пётр I Алексеевич Великий Романов'],
+        ]) {
+            const wedding = alexey.findIndex(row => row.text === '+' + date + ' (Москва, Русское царство)');
+            assert.ok(wedding > 0);
+            assert.ok(alexey[wedding + 1].text.startsWith(spouse));
+            assert.equal(alexey[wedding + 1].prefix, '');
+            assert.ok(alexey[wedding + 2].text.startsWith(child));
+            assert.equal(alexey[wedding + 2].prefix, '--');
+        }
     }
     for (const id of Object.keys(data.annotations)) assert.ok(data.gedcom.includes('0 @' + id + '@ INDI'));
+    for (const row of rows.filter(row => row.xref)) {
+        assert.ok(Object.hasOwn(data.annotations, row.xref));
+        assert.ok(!row.hero);
+        assert.ok(row.kinship, `Missing kinship label: ${row.text}`);
+        assert.doesNotMatch(row.text, /\n| \(/);
+    }
     const count = [...data.gedcom.matchAll(/^0 @[^@]+@ INDI$/gm)].length;
     if (focused) {
         assert.ok(count > 0 && count < 57, 'Focused export must be a subset: ' + count);

@@ -1140,6 +1140,7 @@ export async function gedcomText(chatId, keys) {
             // в росписи таких строк нет, глубины он не меняет
             const ps = par.filter(p => keys.includes(p.k));
             if (!ps.length) continue;
+            par.length = 0; par.push(...ps);
             const ks = chd.filter(c => keys.includes(c.k));
             chd.length = 0; chd.push(...ks);
             // фрагмент — датированные персоны из keys; заглушки-половины/дети — как есть
@@ -1164,9 +1165,6 @@ export async function gedcomText(chatId, keys) {
         for (const st of f.kstubs) addStub(st);
     }
     const fidOf = new Map(fams.map(f => [f, f.xref]));
-    for (const r of await personRows(chatId)) if (!idOf.has(r.xref) && fams.some(f => f.par.some(p => p.x === r.xref))) {
-        persons.push(localRecord(r)); idOf.set(r.xref, r.xref);
-    }
     const out = ["0 HEAD", "1 SOUR LunarReturns", "1 GEDC", "2 VERS 5.5.1", "2 FORM LINEAGE-LINKED", "1 CHAR UTF-8"];
     for (const r of persons) {
         out.push("0 @" + idOf.get(r.xref) + "@ INDI");
@@ -1574,7 +1572,8 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
         try {
             const hero = heroKey ? (await personRows(chatId)).find(r => pkey(r) === heroKey) : null;
             const heroXref = hero && g.split("\n").includes("0 @" + hero.xref + "@ INDI") ? hero.xref : null;
-            const annotations = viewerAnnotations(g, await flatRows(chatId), await linkPairs(chatId), await focusSpousePairs(chatId));
+            const annotations = viewerAnnotations(g, await flatRows(chatId), await linkPairs(chatId),
+                await focusSpousePairs(chatId), (await getSettings(chatId)).fynny);
             await sendFile(enc.encode(viewerHtml(g, chartHead, heroXref, annotations)), ".html", "text/html; charset=utf-8");
         } catch (e) {
             console.error("viewer:", e.message);
