@@ -82,8 +82,9 @@ function checkPayloads(platform, result, focused) {
     if (platform === 'vk') {
         assert.equal(viewer.bytes.readUInt16BE(0), 0x1f8b);
         assert.ok(viewer.bytes[3] & 0x08, 'Gzip must carry an original filename');
-        assert.equal(viewer.name, ged.name.replace(/\.ged$/, '.html.gz'));
-        assert.equal(viewer.bytes.subarray(10, viewer.bytes.indexOf(0, 10)).toString('ascii'), viewerFileBase(ged.name.replace(/\.ged$/, '')) + '.html');
+        const htmlName = viewerFileBase(ged.name.replace(/\.ged$/, '')) + '.html';
+        assert.equal(viewer.name, htmlName + '.gz');
+        assert.equal(viewer.bytes.subarray(10, viewer.bytes.indexOf(0, 10)).toString('ascii'), htmlName);
         html = gunzipSync(viewer.bytes).toString('utf8');
         assert.doesNotMatch(result.log, /ged viewer HTML:|viewer HTML debug:/);
     }
