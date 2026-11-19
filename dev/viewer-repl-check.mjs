@@ -75,14 +75,14 @@ function run(platform, name, commands, failure = '') {
 function checkPayloads(platform, result, focused) {
     const ged = result.files.find(f => f.name.endsWith('.ged'));
     const pdf = result.files.find(f => f.name.endsWith('.pdf'));
-    const viewer = result.files.find(f => f.name.endsWith(platform === 'tg' ? '.html' : '.gz'));
+    const viewer = result.files.find(f => f.name.endsWith(platform === 'tg' ? '.html' : '.html.gz'));
     assert.ok(ged && pdf && viewer, 'Missing artifact: ' + result.files.map(f => f.name));
     assert.match(pdf.bytes.toString('ascii', 0, 8), /^%PDF-/);
     let html = viewer.bytes.toString();
     if (platform === 'vk') {
         assert.equal(viewer.bytes.readUInt16BE(0), 0x1f8b);
         assert.ok(viewer.bytes[3] & 0x08, 'Gzip must carry an original filename');
-        assert.equal(viewer.name, ged.name.replace(/\.ged$/, '.gz'));
+        assert.equal(viewer.name, ged.name.replace(/\.ged$/, '.html.gz'));
         assert.equal(viewer.bytes.subarray(10, viewer.bytes.indexOf(0, 10)).toString('ascii'), viewerFileBase(ged.name.replace(/\.ged$/, '')) + '.html');
         html = gunzipSync(viewer.bytes).toString('utf8');
         assert.doesNotMatch(result.log, /ged viewer HTML:|viewer HTML debug:/);

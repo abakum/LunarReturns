@@ -1721,7 +1721,7 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
             const gz = require("node:zlib").gzipSync(Buffer.from(html, "utf8"));
             // VK rewrites dots in uploaded names; FNAME preserves the extracted .html extension.
             gz[3] |= 0x08;
-            files.push([base + ".gz", Buffer.concat([gz.subarray(0, 10), Buffer.from(viewerBase + ".html\0", "ascii"), gz.subarray(10)])]);
+            files.push([base + ".html.gz", Buffer.concat([gz.subarray(0, 10), Buffer.from(viewerBase + ".html\0", "ascii"), gz.subarray(10)])]);
         } catch (e) {
             console.error("viewer:", e.message);
             uploadErrors.push("Просмотрщик gzip: " + e.message);

@@ -1,7 +1,8 @@
 import { createChart, gedcomToJson, HourglassChart, DetailedRenderer } from 'topola';
 
 const input = JSON.parse(document.getElementById('tree-data').textContent);
-const select = document.getElementById('person');
+const search = document.getElementById('person');
+const results = document.getElementById('person-results');
 const status = document.getElementById('status');
 const svg = document.getElementById('tree');
 const group = document.getElementById('chart');
@@ -45,29 +46,36 @@ try {
     if (new TextEncoder().encode(input.gedcom).length > 8 * 1024 * 1024 || (input.gedcom.match(/^0 @[^\r\n]+@ INDI\r?$/gm) || []).length > 1000)
         throw new Error('Для просмотра поддерживается до 1000 персон и 8 МиБ текста GEDCOM. Выберите меньший фрагмент в боте.');
     const data = gedcomToJson(input.gedcom);
+    const people = new Map();
+    const normalize = text => text.toLocaleLowerCase('ru').replace(/ё/g, 'е');
     // Strip display-only fields before Topola measures cards. The original GEDCOM stays embedded.
     for (const person of data.indis) {
         delete person.images;
         for (const event of [person.birth, person.death, ...(person.events || [])]) if (event) delete event.place;
-        const option = document.createElement('option');
-        option.value = person.id;
         const birth = person.birth?.date?.year || '';
-        option.textContent = [person.firstName, person.lastName, birth, '(' + person.id + ')'].filter(Boolean).join(' ');
-        select.append(option);
+        const label = [person.firstName, person.lastName, birth, '(' + person.id + ')'].filter(Boolean).join(' ');
+        people.set(person.id, { id: person.id, label, searchable: normalize(label) });
     }
     for (const family of data.fams) if (family.marriage) delete family.marriage.place;
     if (!data.indis.length) throw new Error('В файле нет персон.');
+    const collator = new Intl.Collator('ru', { numeric: true });
+    const sorted = [...people.values()].sort((a, b) => collator.compare(a.label, b.label));
+    const defaultId = people.has(input.heroXref) ? input.heroXref : data.indis[0].id;
+    let currentId;
     const chart = createChart({ json: data, chartType: HourglassChart, renderer: DetailedRenderer,
         svgSelector: '#chart', animate: false, updateSvgSize: false, locale: 'ru', expanders: false,
-        indiCallback: info => { select.value = info.id; render(); } });
-    function render() {
+        indiCallback: info => { dismissTip(); navigate(info.id); } });
+    function render(refocus = false) {
         try {
             closeAnnotation();
             for (const link of group.querySelectorAll('a.name-link')) link.replaceWith(...link.childNodes);
             group.removeAttribute('transform');
-            const info = chart.render({ startIndi: select.value });
+            const info = chart.render({ startIndi: currentId });
             size = info.size;
+            let selected;
             for (const node of group.querySelectorAll('.indi')) {
+                const person = node.__data__;
+                if (refocus && person.indi.id === currentId && (!selected || person.generation === 0)) selected = node;
                 for (const text of node.querySelectorAll('text.name')) {
                     const link = document.createElementNS('http://www.w3.org/2000/svg', 'a');
                     link.setAttribute('href', '#annotation');
@@ -82,12 +90,113 @@ try {
                     };
                 }
             }
-            fit();
+            const card = selected?.querySelector('rect.border');
+            if (card) {
+                const bounds = card.getBoundingClientRect();
+                const viewport = svg.getBoundingClientRect();
+                x = svg.clientWidth / 2 - (bounds.left + bounds.width / 2 - viewport.left - svg.clientLeft) * scale;
+                y = svg.clientHeight / 2 - (bounds.top + bounds.height / 2 - viewport.top - svg.clientTop) * scale;
+                transform();
+            } else fit();
             status.textContent = '';
         } catch (error) { status.textContent = 'Не удалось построить дерево: ' + error.message; }
     }
-    select.value = data.indis.some(p => p.id === input.heroXref) ? input.heroXref : data.indis[0].id;
-    select.addEventListener('change', render);
+    const tip = document.getElementById('touch-tip');
+    const tipKey = 'lunarreturns.viewer.touch-tip-dismissed';
+    function dismissTip() {
+        if (tip.hidden) return;
+        tip.hidden = true;
+        try { sessionStorage.setItem(tipKey, '1'); } catch { /* Storage may be disabled for file URLs. */ }
+    }
+    if (matchMedia('(hover:none) and (pointer:coarse)').matches) {
+        try { tip.hidden = sessionStorage.getItem(tipKey) === '1'; } catch { tip.hidden = false; }
+    }
+    tip.querySelector('button').onclick = () => { dismissTip(); fit(); };
+
+    let matches = [], active = -1;
+    function closeResults() {
+        results.hidden = true;
+        search.setAttribute('aria-expanded', 'false');
+        search.removeAttribute('aria-activedescendant');
+        search.value = people.get(currentId).label;
+    }
+    function showResults(query = '') {
+        const words = normalize(query).trim().split(/\s+/).filter(Boolean);
+        matches = sorted.filter(person => words.every(word => person.searchable.includes(word)));
+        active = -1;
+        search.removeAttribute('aria-activedescendant');
+        results.replaceChildren(...matches.map(({ label }, i) => {
+            const option = document.createElement('li');
+            option.id = 'person-result-' + i;
+            option.dataset.index = i;
+            option.setAttribute('role', 'option');
+            option.setAttribute('aria-selected', 'false');
+            option.textContent = label;
+            return option;
+        }));
+        if (!matches.length) {
+            const empty = document.createElement('li');
+            empty.setAttribute('role', 'status');
+            empty.textContent = 'Никого не найдено';
+            results.append(empty);
+        }
+        results.hidden = false;
+        results.scrollTop = 0;
+        search.setAttribute('aria-expanded', 'true');
+    }
+    function showPerson(id, refocus = false) {
+        const previousId = currentId;
+        currentId = id;
+        closeResults();
+        if (refocus || previousId !== id) render(previousId !== undefined);
+    }
+    function navigate(id) {
+        const fragment = '#person=' + encodeURIComponent(id);
+        if (id !== currentId && location.hash !== fragment) location.hash = fragment;
+        showPerson(id, true);
+    }
+    function readFragment() {
+        try {
+            const fragment = /^#person=(.+)$/.exec(location.hash);
+            const id = fragment && decodeURIComponent(fragment[1]);
+            if (people.has(id)) return id;
+        } catch { /* Ignore malformed fragments. */ }
+        return defaultId;
+    }
+    search.addEventListener('focus', () => { search.select(); showResults(); });
+    search.addEventListener('click', () => { if (results.hidden) { search.select(); showResults(); } });
+    search.addEventListener('input', () => showResults(search.value));
+    search.addEventListener('blur', closeResults);
+    search.addEventListener('keydown', event => {
+        if (event.isComposing) return;
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            if (results.hidden) showResults();
+            if (!matches.length) return;
+            if (active !== -1) results.children[active].setAttribute('aria-selected', 'false');
+            active = event.key === 'ArrowDown' ? Math.min(active + 1, matches.length - 1)
+                : active === -1 ? matches.length - 1 : Math.max(active - 1, 0);
+            const option = results.children[active];
+            option.setAttribute('aria-selected', 'true');
+            search.setAttribute('aria-activedescendant', option.id);
+            option.scrollIntoView({ block: 'nearest' });
+        } else if (event.key === 'Enter' && !results.hidden && matches.length) {
+            event.preventDefault();
+            navigate(matches[Math.max(0, active)].id);
+        } else if (event.key === 'Escape' && !results.hidden) {
+            event.preventDefault();
+            closeResults();
+        }
+    });
+    results.addEventListener('mousedown', event => event.preventDefault());
+    results.addEventListener('click', event => {
+        const option = event.target.closest('[data-index]');
+        if (option) {
+            navigate(matches[option.dataset.index].id);
+            if (event.pointerType === 'touch') search.blur();
+        }
+    });
+    window.addEventListener('hashchange', () => { const id = readFragment(); if (id !== currentId) showPerson(id); });
     document.getElementById('fit').onclick = fit;
     document.getElementById('plus').onclick = () => zoom(1.3);
     document.getElementById('minus').onclick = () => zoom(1 / 1.3);
@@ -122,5 +231,5 @@ try {
         if (dragged) { event.stopPropagation(); event.preventDefault(); }
     }, true);
     window.addEventListener('resize', fit);
-    render();
+    showPerson(readFragment());
 } catch (error) { status.textContent = 'Не удалось открыть дерево: ' + error.message; }
