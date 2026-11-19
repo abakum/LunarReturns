@@ -16,7 +16,7 @@ const fs = require('node:fs');
 const fail = process.env.VIEWER_FAIL;
 if (fail === 'generation') {
     const viewer = require(${JSON.stringify(path.join(root, 'tgcloud/lib/viewer.cjs'))});
-    viewer.viewerHtml = viewer.viewerZip = () => { throw new Error('injected viewer generation'); };
+    viewer.viewerHtml = () => { throw new Error('injected viewer generation'); };
 }
 Object.defineProperty(globalThis, '__tgdev', { configurable: true, set(value) {
     const original = value.onApi;

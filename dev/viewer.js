@@ -108,10 +108,8 @@ try {
         tip.hidden = true;
         try { sessionStorage.setItem(tipKey, '1'); } catch { /* Storage may be disabled for file URLs. */ }
     }
-    if (matchMedia('(hover:none) and (pointer:coarse)').matches) {
-        try { tip.hidden = sessionStorage.getItem(tipKey) === '1'; } catch { tip.hidden = false; }
-    }
-    tip.querySelector('button').onclick = () => { dismissTip(); fit(); };
+    try { tip.hidden = sessionStorage.getItem(tipKey) === '1'; } catch { tip.hidden = false; }
+    tip.querySelector('button').onclick = dismissTip;
 
     let matches = [], active = -1;
     function closeResults() {
@@ -230,6 +228,5 @@ try {
     svg.addEventListener('click', event => {
         if (dragged) { event.stopPropagation(); event.preventDefault(); }
     }, true);
-    window.addEventListener('resize', fit);
     showPerson(readFragment());
 } catch (error) { status.textContent = 'Не удалось открыть дерево: ' + error.message; }

@@ -3,11 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { execFileSync } from 'node:child_process';
 import { chromium } from '@playwright/test';
 import { pathToFileURL } from 'node:url';
 const require = createRequire(import.meta.url);
-const { viewerHtml, viewerZip, viewerFileBase, viewerAnnotations } = require('../tgcloud/lib/viewer.cjs');
+const { viewerHtml, viewerFileBase, viewerAnnotations } = require('../tgcloud/lib/viewer.cjs');
 assert.equal(viewerFileBase('1 КА 1963-09-27'), '1_KA_1963-09-27');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lr-viewer-'));
 const gedcom = `0 HEAD
@@ -47,14 +46,8 @@ assert.equal(data.heroXref, 'I1');
 const hostile = viewerHtml('</script><script>globalThis.pwned=1</script>\u2028', '<img src=x onerror=alert(1)>');
 assert(!hostile.includes('<img src=x'));
 assert(!hostile.includes('</script><script>globalThis.pwned'));
-assert.throws(() => viewerZip(html, '../tree.html'));
 fs.writeFileSync(path.join(dir, 'tree.html'), html);
 fs.writeFileSync(path.join(dir, 'empty.html'), viewerHtml('0 HEAD\n0 TRLR', 'Пустое дерево'));
-fs.writeFileSync(path.join(dir, 'tree.zip'), viewerZip(html, 'Дерево.html'));
-execFileSync('unzip', ['-t', path.join(dir, 'tree.zip')]);
-assert.equal(execFileSync('unzip', ['-p', path.join(dir, 'tree.zip')]).toString(), html);
-const zip = viewerZip(html, 'Дерево.html');
-assert.equal(new TextDecoder().decode(zip.slice(30, 30 + new DataView(zip.buffer).getUint16(26, true))), 'Дерево.html');
 const romanov = fs.readFileSync(new URL('./fixtures/Romanov_family.ged', import.meta.url), 'utf8');
 fs.writeFileSync(path.join(dir, 'romanov.html'), viewerHtml(romanov, 'Романовы'));
 fs.writeFileSync(path.join(dir, 'single.html'), viewerHtml('0 HEAD\n0 @I1@ INDI\n1 NAME Один\n0 TRLR', 'Один', 'absent'));
@@ -66,7 +59,7 @@ const wide = '0 HEAD\n0 @I0@ INDI\n1 NAME Родитель\n1 FAMS @F1@\n'
 fs.writeFileSync(path.join(dir, 'wide.html'), viewerHtml(wide, 'Большая семья', 'I0'));
 fs.writeFileSync(path.join(dir, 'refocus.html'), viewerHtml(wide, 'Большая семья', 'I1'));
 fs.writeFileSync(path.join(dir, 'oversized.html'), viewerHtml(large.replace('0 TRLR', '0 @I1000@ INDI\n1 NAME Лишний\n0 TRLR'), '1001 персона'));
-console.log('viewer generation, escaping, UTF-8 ZIP: OK');
+console.log('viewer generation and escaping: OK');
 const browser = await chromium.launch();
 try {
     for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
@@ -83,13 +76,20 @@ try {
         assert.equal(await page.locator('h1, label, details, .privacy').count(), 0);
         assert.match(await picker.inputValue(), /\(I1\)$/);
         const tip = page.locator('#touch-tip');
-        assert.equal(await tip.isVisible(), viewport.width < 500);
-        if (viewport.width < 500) {
-            await tip.getByRole('button').tap();
-            assert(await tip.isHidden());
-            await page.reload();
-            assert(await tip.isHidden());
-        }
+        assert(await tip.isVisible());
+        const docs = tip.getByRole('link');
+        assert.equal(await docs.getAttribute('href'), 'https://github.com/abakum/LunarReturns/blob/main/-%2B%3D.md');
+        assert.equal(await docs.getAttribute('target'), '_blank');
+        const chartTransform = () => page.locator('#chart').getAttribute('transform');
+        await page.locator('#plus').click();
+        const beforeDismiss = await chartTransform();
+        const dismiss = tip.getByRole('button');
+        if (viewport.width < 500) await dismiss.tap();
+        else await dismiss.click();
+        assert(await tip.isHidden());
+        assert.equal(await chartTransform(), beforeDismiss);
+        await page.reload();
+        assert(await tip.isHidden());
         assert(!(await page.locator('#chart').textContent()).includes('SECRET_PLACE'));
         assert.match(await page.locator('#chart').textContent(), /Иван/);
         assert(await page.locator('#chart rect').count() > 0);
@@ -101,7 +101,20 @@ try {
         await page.mouse.move(150, 300); await page.mouse.down();
         await page.mouse.move(180, 330); await page.mouse.up();
         assert.notEqual(await page.locator('#chart').getAttribute('transform'), initial);
+        const beforeSearch = await chartTransform();
         await picker.click();
+        assert.equal(await chartTransform(), beforeSearch);
+        if (viewport.width < 500) {
+            // Simulate a keyboard shrinking the layout viewport while the input has focus.
+            for (const height of [viewport.height - 300, viewport.height]) {
+                await page.evaluate(() => {
+                    window.viewerTestResize = new Promise(resolve => window.addEventListener('resize', resolve, { once: true }));
+                });
+                await page.setViewportSize({ width: viewport.width, height });
+                await page.evaluate(() => window.viewerTestResize);
+                assert.equal(await chartTransform(), beforeSearch);
+            }
+        }
         assert.deepEqual(await options.allTextContents(), ['Иван Тест 1980 (I1)', 'Мать Тест (I3)', 'Отец Тест (I2)']);
         await picker.fill('1980 ИВ');
         assert.deepEqual(await options.allTextContents(), ['Иван Тест 1980 (I1)']);
