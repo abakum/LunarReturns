@@ -43,6 +43,7 @@ if (typeof P.gedNoteLines !== 'function') {
     const occupation = '\u0417\u0430\u043d\u044f\u0442\u0438\u0435: ';
     const residence = '\u0416\u0438\u043b: ';
     const burial = '\u041f\u043e\u0445\u043e\u0440\u043e\u043d\u0435\u043d: ';
+    const event = 'Событие: ';
     const ellipsis = '\u2026';
     const globe = '\u{1F30D}';
 
@@ -108,19 +109,54 @@ if (typeof P.gedNoteLines !== 'function') {
     });
 
     await check('RESI/BURI placement, nested parentheses, note-only and place-only', () => {
-        assert.deepEqual(exportNote(residence + 'Town^' + residence + 'Village^'),
+        assert.deepEqual(exportNote(residence + '(Town)^' + residence + '(Village)^'),
             ['1 RESI', '2 PLAC Town', '1 RESI', '2 PLAC Village']);
-        assert.deepEqual(exportNote(burial + 'Town (District) (grave (stone))^'),
+        assert.deepEqual(exportNote(burial + '(Town (District)) grave (stone)^'),
             ['1 BURI', '2 PLAC Town (District)', '2 NOTE grave (stone)']);
-        assert.deepEqual(exportNote(burial + 'Town^'), ['1 BURI', '2 PLAC Town']);
-        assert.deepEqual(exportNote(burial + '(grave)^'), ['1 BURI', '2 NOTE grave']);
+        assert.deepEqual(exportNote(burial + '(Town)^'), ['1 BURI', '2 PLAC Town']);
+        assert.deepEqual(exportNote(burial + 'grave^'), ['1 BURI', '2 NOTE grave']);
+        assert.deepEqual(exportNote(burial + '() участок 1980^'), ['1 BURI', '2 NOTE участок 1980']);
+        assert.deepEqual(exportNote(burial + '2000-02-02 участок 1980^'), ['1 BURI', '2 DATE 2 FEB 2000', '2 NOTE участок 1980']);
+    });
+
+    await check('all structured fields and bounded ranges round-trip for all six types', () => {
+        for (const [tag, label, value] of [['BURI', burial], ['RESI', residence],
+            ['OCCU', occupation, 'Teacher'], ['TITL', title, 'Duke'], ['CAST', caste, 'Noble'], ['EVEN', event, 'Постриг']]) {
+            const head = value && tag !== 'EVEN' ? [`1 ${tag} ${value}`] : [`1 ${tag}`];
+            if (tag === 'EVEN') head.push('2 TYPE ' + value);
+            for (const date of ['', '1698', 'CAL MAY 1698', 'ABT 6 MAY 1698', 'FROM 1698', 'TO MAY 1698', 'AFT 1698', 'BEF MAY 1698']) {
+                for (const place of ['', 'Town']) for (const note of ['', '1980 участок']) {
+                    if (!value && !date && !place && !note) continue;
+                    const lines = [...head, ...(date ? ['2 DATE ' + date] : []),
+                        ...(place ? ['2 PLAC ' + place] : []), ...(note ? ['2 NOTE ' + note] : [])];
+                    const tail = person(lines).note;
+                    assert.ok(tail.startsWith(label));
+                    assert.deepEqual(exportNote(tail), lines, tail);
+                    assert.equal(person(exportNote(tail)).note, tail);
+                }
+            }
+            const metadata = ['2 PLAC Town', '2 NOTE downstream 1980'];
+            const tail = person([...head, '2 DATE FROM 12340506 TO 12340507', ...metadata]).note;
+            const prefix = label + (value ? value + ' ' : '');
+            assert.equal(tail, prefix + '1234-05-06[ (Town) downstream 1980^' + prefix + '1234-05-07] (Town) downstream 1980^');
+            assert.deepEqual(exportNote(tail), [...head, '2 DATE FROM 6 MAY 1234', ...metadata, ...head, '2 DATE TO 7 MAY 1234', ...metadata]);
+            assert.equal(person(exportNote(tail)).note, tail);
+        }
+        assert.equal(person(['1 EVEN Y', '2 TYPE Постриг', '2 DATE 1698', '2 NOTE в монашестве Маргарита']).note,
+            event + 'Постриг 1698 в монашестве Маргарита^');
+        assert.equal(person(['1 OCCU', '2 NOTE учитель']).note, occupation + '() учитель^');
+        const literal = person(['1 TITL Chapter (1980)', '2 PLAC Town (District)', '2 NOTE (keep) 1990']);
+        assert.deepEqual(exportNote(literal.note), ['1 TITL Chapter 1980', '2 PLAC Town District', '2 NOTE keep 1990']);
+        assert.deepEqual(exportNote(person(['1 OCCU Literal 1980[', '2 DATE TO 1990']).note), ['1 OCCU Literal 1980[', '2 DATE TO 1990']);
+        assert.deepEqual(exportNote(person(['1 RESI', '2 NOTE 1980] literal']).note), ['1 RESI', '2 NOTE 1980] literal']);
+        assert.equal(person(['1 RESI', '2 DATE BET 1 JAN 1980 AND 1 JAN 1985', '2 PLAC Town']).note, residence + '(Town)^');
     });
 
     await check('BURI NOTE is one maximally filled truncated line, never CONT/CONC', () => {
         for (const unit of ['a', '\u044f', globe]) {
             for (const count of [1, 60, 61, 62, 123, 124, 247, 248, 400]) {
                 const input = unit.repeat(count);
-                const lines = exportNote(burial + 'Town (' + input + ')^');
+                const lines = exportNote(burial + '(Town) ' + input + '^');
                 assert.deepEqual(lines.slice(0, 2), ['1 BURI', '2 PLAC Town']);
                 assert.equal(lines.length, 3);
                 let expected = input;
@@ -132,7 +168,7 @@ if (typeof P.gedNoteLines !== 'function') {
                 assert.equal(lines[2], '2 NOTE ' + expected);
             }
         }
-        assert.deepEqual(exportNote(burial + '(' + 'word '.repeat(80) + ')^'),
+        assert.deepEqual(exportNote(burial + 'word '.repeat(80) + '^'),
             ['1 BURI', '2 NOTE ' + ('word '.repeat(80)).slice(0, 244) + ellipsis]);
     });
 
@@ -145,7 +181,7 @@ if (typeof P.gedNoteLines !== 'function') {
             '1 NOTE final', '1 OCCU Farmer', '2 CONC must not leak']);
         assert.equal(p.note, 'first joined^^last^second^' + title + 'Duke^' + title + 'Count^'
             + caste + 'Noble^' + caste + 'Citizen^' + occupation + 'Writer^' + occupation + 'Teacher^'
-            + residence + 'Town^' + residence + 'Village^final^' + occupation + 'Farmer^');
+            + residence + '(Town)^' + residence + '(Village)^final^' + occupation + 'Farmer^');
         const f = P.parseGedcom(ged(['0 @F1@ FAM', '1 NOTE first', '2 CONT line',
             '1 MARR', '2 NOTE ignored', '1 NOTE second', '2 CONC joined'])).fams[0];
         assert.equal(f.note, 'first^line^secondjoined');
@@ -155,16 +191,20 @@ if (typeof P.gedNoteLines !== 'function') {
         const p = person(['1 BURI', '2 DATE 2 FEB 2000', '2 PLAC Town (District)',
             '2 NOTE grave', '3 CONC stone', '3 CONT next', '2 NOTE last',
             '1 BURI', '2 PLAC Elsewhere', '1 BURI', '2 NOTE only note']);
-        assert.equal(p.note, burial + 'Town (District) (gravestone next last)^'
-            + burial + 'Elsewhere^' + burial + '(only note)^');
+        assert.equal(p.note, burial + '2000-02-02 (Town District) gravestone next last^'
+            + burial + '(Elsewhere)^' + burial + 'only note^');
         assert.equal(p.deat.date, '2000-02-02');
         assert.equal(p.deat.plac, 'Elsewhere', 'legacy BURI fallback uses the last supplied place');
-        assert.deepEqual(exportNote(p.note), ['1 BURI', '2 PLAC Town (District)',
+        assert.deepEqual(exportNote(p.note), ['1 BURI', '2 DATE 2 FEB 2000', '2 PLAC Town District',
             '2 NOTE gravestone next last', '1 BURI', '2 PLAC Elsewhere', '1 BURI', '2 NOTE only note']);
         const ownDeath = person(['1 DEAT', '2 DATE 1 JAN 1999', '2 PLAC Home',
             '1 BURI', '2 DATE 2 FEB 2000', '2 PLAC Cemetery']);
         assert.equal(ownDeath.deat.date, '1999-01-01');
         assert.equal(ownDeath.deat.plac, 'Home');
+        const period = person(['1 BURI', '2 DATE FROM 1999 TO 2000']);
+        assert.equal(period.note, burial + '1999[^' + burial + '2000]^');
+        assert.equal(period.deat.date, '2000-01-01');
+        assert.equal(period.deat.abt, person(['1 BURI', '2 DATE BEF 2000']).deat.abt);
     });
 
     if (!process.argv.includes('--pure')) {
@@ -184,16 +224,25 @@ if (typeof P.gedNoteLines !== 'function') {
             fs.cpSync(path.join(ROOT, 'dev/sdk-mock'), path.join(ROOT, 'node_modules/sdk'), { recursive: true });
             const TG = await import('../tgcloud/lib/bot.js');
             const source = ged(['0 @I1@ INDI', '1 NAME Parent', '1 BIRT', '2 DATE 1 JAN 1950',
-                '1 NOTE first', '1 NOTE second', '2 CONT line', '1 TITL Duke', '1 TITL Count',
+                '2 PLAC Town (District)', '1 DEAT', '2 DATE 1 JAN 2000', '2 PLAC City (District)',
+                '1 NOTE first (keep)', '1 NOTE second', '2 CONT line', '1 TITL Duke', '1 TITL Count',
                 '1 CAST Noble', '1 OCCU Writer', '1 RESI', '2 PLAC Town',
+                '1 EVEN', '2 TYPE Move', '2 DATE FROM 1970 TO 1980', '2 PLAC Town', '2 NOTE family',
                 '1 BURI', '2 PLAC Cemetery', '2 NOTE stone',
                 '0 @I2@ INDI', '1 NAME Dateless', '1 NOTE stub', '1 OCCU Teacher',
                 '0 @I3@ INDI', '1 NAME Unanchored', '1 NOTE undated', '1 TITL Baron',
                 '0 @I4@ INDI', '1 NAME UnanchoredPartner', '1 RESI', '2 PLAC Village',
                 '0 @F1@ FAM', '1 HUSB @I1@', '1 WIFE @I2@', '1 MARR', '2 DATE 1 JAN 1970',
-                '1 NOTE family', '1 NOTE ' + title + 'ordinary family text',
+                '2 PLAC Village (District)', '1 DIV', '2 DATE 1 JAN 1980', '2 PLAC Capital (District)',
+                '1 NOTE family (keep)', '1 NOTE ' + title + 'ordinary family text',
                 '0 @F2@ FAM', '1 HUSB @I3@', '1 WIFE @I4@', '1 NOTE undated family']);
             const expected = P.parseGedcom(source);
+            assert.equal(expected.indis[0].birt.plac, 'Town District');
+            assert.equal(expected.indis[0].deat.plac, 'City District');
+            assert.equal(expected.fams[0].marr.plac, 'Village District');
+            assert.equal(expected.fams[0].div.plac, 'Capital District');
+            assert.match(expected.indis[0].note, /first \(keep\)/);
+            assert.match(expected.fams[0].note, /family \(keep\)/);
             const snapshots = [];
             for (const [label, api] of [['VK', VK], ['TG', TG]]) {
                 const id = 761113;
@@ -212,6 +261,10 @@ if (typeof P.gedNoteLines !== 'function') {
                 }
                 assert.deepEqual(restored.fams.map(f => f.note).sort(), expected.fams.map(f => f.note).sort(),
                     label + ': family labels stay plain');
+                for (const place of ['Town', 'City', 'Village', 'Capital']) {
+                    assert.ok(flat.includes('(' + place + ' District)'), label + ': flat place ' + place);
+                    assert.ok(text.includes('2 PLAC ' + place + ' District\n'), label + ': GED place ' + place);
+                }
                 assert.match(text, /1 TITL Duke\n1 TITL Count/);
                 assert.match(text, /1 BURI\n2 PLAC Cemetery\n2 NOTE stone/);
                 await api.importGedcom(id, restored);

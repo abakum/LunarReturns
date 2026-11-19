@@ -41,9 +41,9 @@ const tmp = fs.mkdtempSync('/tmp/kilo/lr-pdf-radius-');
     const persons = [
         { key: 'a', name: 'Person', d: '1950-01-01', plac: 'Россия, Пермский край, Пермь',
              dd: '2020-01-01', dp: '  Россия,\n Ростов-на-Дону,  ',
-             note: 'Note (keep these words)^Жил: foo bar baz^Жил: Пермь^Титул: keep these words^Похоронен: foo bar baz (note with (nested) words)^Похоронен: foo bar baz^Похоронен: (note only words)^' },
+              note: 'Note (keep these words)^Жил: (foo bar baz)^Жил: (Пермь)^Титул: keep these words^Похоронен: 1980 (foo bar baz) note with (nested) words^Похоронен: (foo bar baz)^Похоронен: note only words^Событие: Постриг 1698 (foo bar baz) note 1980^' },
         { key: 'b', name: 'Spouse', d: '1951-01-01', plac: 'Пермь', dp: ' , , ',
-             note: 'Жил: Россия, Пермский край, Пермь^' },
+              note: 'Жил: (Россия, Пермский край, Пермь)^' },
     ];
     const fams = [{ hKey: 'a', wKey: 'b', children: [],
         marr: { d: '1970-01-01', plac: 'Нижний Новгород' },
@@ -54,16 +54,17 @@ const tmp = fs.mkdtempSync('/tmp/kilo/lr-pdf-radius-');
     for (const place of ['Россия…Пермь', 'Россия…Ростов-на-Дону', 'Нижний…Новгород', 'Россия…Москва', 'Пермь'])
         assert.ok(text.includes('(' + place + ')'), place);
     assert.ok(text.includes('^Note (keep these words)'));
-    assert.ok(text.includes('^Жил: foo…baz^Жил: Пермь^Титул: keep these words^'));
-    assert.ok(text.includes('^Жил: Россия…Пермь^'));
-    assert.ok(text.includes('^Похоронен: foo…baz (note with (nested) words)^'));
-    assert.ok(text.includes('^Похоронен: foo…baz^Похоронен: (note only words)^'));
+    assert.ok(text.includes('^Жил: (foo…baz)^Жил: (Пермь)^Титул: keep these words^'));
+    assert.ok(text.includes('^Жил: (Россия…Пермь)^'));
+    assert.ok(text.includes('^Похоронен: 1980 (foo…baz) note with (nested) words^'));
+    assert.ok(text.includes('^Похоронен: (foo…baz)^Похоронен: note only words^'));
+    assert.ok(text.includes('^Событие: Постриг 1698 (foo…baz) note 1980^'));
     assert.ok(createFlatAnnotationText([[{ key: 'burial', name: 'Burial', nameOnly: true,
-        note: 'Похоронен: foo bar baz (note)^' }], []], [], [])({ xref: 'burial' })
-        .includes('^Похоронен: foo…baz (note)^'));
+        note: 'Похоронен: (foo bar baz) note^' }], []], [], [])({ xref: 'burial' })
+        .includes('^Похоронен: (foo…baz) note^'));
     assert.doesNotMatch(text, /foo bar baz/);
-    const dateless = { key: 'stub', name: 'Stub', nameOnly: true, note: 'Жил: foo bar baz^' };
-    assert.match(createFlatAnnotationText([[dateless], []], [], [])({ xref: 'stub' }), /\^Жил: foo…baz\^/);
+    const dateless = { key: 'stub', name: 'Stub', nameOnly: true, note: 'Жил: (foo bar baz)^' };
+    assert.match(createFlatAnnotationText([[dateless], []], [], [])({ xref: 'stub' }), /\^Жил: \(foo…baz\)\^/);
     assert.doesNotMatch(text, /\(\)|undefined|Пермский/);
     textOf({ xref: 'b' });
     assert.equal(JSON.stringify([persons, fams]), snapshot, 'places and nested events unchanged');

@@ -380,6 +380,7 @@ function flatSearch(flat, query, fullList = false) {
 // Full-chat snapshot; chart keys (especially anchored stubs) are not identities.
 // Textual edge endpoints are usable only when they resolve unambiguously.
 function createFlatAnnotationText([persons, fams], linkPairs, focusSpousePairs) {
+    const { shortenEventPlaces } = require('./parse.cjs');
     const shortPlace = place => {
         if (!place) return place;
         const words = place.split(/\s+/).map(word => word.replace(/^,+|,+$/g, "")).filter(Boolean);
@@ -387,19 +388,7 @@ function createFlatAnnotationText([persons, fams], linkPairs, focusSpousePairs) 
     };
     // PDF-only copies: keep full places and structured tails in text exports.
     persons = persons.map(p => ({ ...p, plac: shortPlace(p.plac), dp: shortPlace(p.dp),
-        note: p.note?.replace(/(^|\^)(Жил|Похоронен): ([^^]*)/g, (_, boundary, label, value) => {
-            let place = value, note = "";
-            if (label === "Похоронен" && value.endsWith(")")) {
-                let depth = 0;
-                for (let i = value.length - 1; i >= 0; i--) {
-                    if (value[i] === ")") depth++;
-                    else if (value[i] === "(" && --depth === 0 && (i === 0 || value[i - 1] === " ")) {
-                        place = value.slice(0, i).trimEnd(); note = value.slice(i); break;
-                    }
-                }
-            }
-            return boundary + label + ": " + shortPlace(place) + (place && note ? " " : "") + note;
-        }),
+        note: p.note && shortenEventPlaces(p.note, shortPlace),
     }));
     fams = fams.map(f => ({ ...f,
         marr: f.marr ? { ...f.marr, plac: shortPlace(f.marr.plac) } : f.marr,

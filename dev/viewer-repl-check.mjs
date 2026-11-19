@@ -92,6 +92,13 @@ function checkPayloads(platform, result, focused) {
     assert.equal(data.gedcom, ged.bytes.toString(), 'Viewer must embed exactly the exported GED');
     assert.ok(Object.keys(data.annotations).length);
     assert.ok(Object.values(data.annotations).some(text => /Романов/.test(text)));
+    if (!focused && data.gedcom.includes('2 TYPE Постриг')) {
+        const annotations = Object.values(data.annotations).join('\n');
+        assert.match(annotations, /Событие: Постриг 1698 в монашестве Маргарита/);
+        assert.match(annotations, /Титул: Царь всея Руси 1682\[ соправитель Петра I/);
+        assert.match(annotations, /Титул: Царь всея Руси 1696\] соправитель Петра I/);
+        assert.match(annotations, /Похоронен: 1886 \(Петропавловский…Санкт-Петербург\) перезахоронен/);
+    }
     for (const id of Object.keys(data.annotations)) assert.ok(data.gedcom.includes('0 @' + id + '@ INDI'));
     const count = [...data.gedcom.matchAll(/^0 @[^@]+@ INDI$/gm)].length;
     if (focused) {
@@ -125,6 +132,8 @@ for (const platform of ['tg', 'vk']) {
     assert.match(full.log, /✅ древо: персон 57, семей 13, детей 43/);
     assert.match(full.log, /bell chat: 67->67 строк/);
     outputs[platform] = checkPayloads(platform, full, false);
+    assert.match(outputs[platform], /1 EVEN\n2 TYPE Постриг\n2 DATE 1698\n2 NOTE в монашестве Маргарита/);
+    assert.match(outputs[platform], /1 TITL Царь всея Руси\n2 DATE FROM 1682\n2 NOTE соправитель Петра I\n1 TITL Царь всея Руси\n2 DATE TO 1696\n2 NOTE соправитель Петра I/);
     const flat = run(platform, 'flat-full', ['!txt dev/fixtures/Romanov_family.ged.txt', '/2 2', '/bell', '/gedcom']);
     assert.match(flat.log, /✅ древо: персон 57, семей 13, детей 43/);
     assert.match(flat.log, /bell chat: 67->67 строк/);
