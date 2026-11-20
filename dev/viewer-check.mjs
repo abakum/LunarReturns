@@ -103,7 +103,10 @@ try {
         assert.match(await picker.inputValue(), /\(I1\)$/);
         const tip = page.locator('#touch-tip');
         assert(await tip.isVisible());
-        const docs = tip.getByRole('link');
+        const treeLink = tip.getByRole('link', { name: 'дерево', exact: true });
+        assert.equal(await treeLink.getAttribute('href'), 'https://pewu.github.io/topola-viewer/');
+        assert.equal(await treeLink.getAttribute('target'), '_blank');
+        const docs = tip.getByRole('link', { name: 'родственные связи' });
         assert.equal(await docs.getAttribute('href'), 'https://github.com/abakum/LunarReturns/blob/main/-%2B%3D.md');
         assert.equal(await docs.getAttribute('target'), '_blank');
         const chartTransform = () => page.locator('#chart').getAttribute('transform');
@@ -227,11 +230,15 @@ try {
             else await mother.click();
             assert.equal(hash(), '#person=I3');
             assert.match(await picker.inputValue(), /\(I3\)$/);
-            assert(await page.locator('#annotation').isHidden());
+            assert(await page.locator('#annotation').isVisible());
+            assert.match(await hero.textContent(), /Мать Тест/);
+            assert.equal(await page.locator('#annotation-text a[href="#person=I1"]').textContent(), 'Иван Тест 1980-01-01');
             await page.goBack();
             await page.waitForFunction(() => document.getElementById('person').value.endsWith('(I1)'));
+            assert(await page.locator('#annotation').isHidden());
             await page.goForward();
             await page.waitForFunction(() => document.getElementById('person').value.endsWith('(I3)'));
+            assert(await page.locator('#annotation').isHidden());
             await page.goBack();
             await page.waitForFunction(() => document.getElementById('person').value.endsWith('(I1)'));
         }

@@ -28,7 +28,7 @@ function showAnnotation(id, node, people, navigate) {
             link.onclick = event => {
                 if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
                 event.preventDefault();
-                navigate(xref);
+                navigate(xref, true);
             };
             annotationText.append(link);
             if (kinship) annotationText.append(' · ' + kinship);
@@ -85,7 +85,7 @@ try {
     const chart = createChart({ json: data, chartType: HourglassChart, renderer: DetailedRenderer,
         svgSelector: '#chart', animate: false, updateSvgSize: false, locale: 'ru', expanders: false,
         indiCallback: info => { dismissTip(); navigate(info.id); } });
-    function render(refocus = false) {
+    function render(refocus = false, openAnnotation = false) {
         try {
             closeAnnotation();
             for (const link of group.querySelectorAll('a.name-link')) link.replaceWith(...link.childNodes);
@@ -95,7 +95,7 @@ try {
             let selected;
             for (const node of group.querySelectorAll('.indi')) {
                 const person = node.__data__;
-                if (refocus && person.indi.id === currentId && (!selected || person.generation === 0)) selected = node;
+                if ((refocus || openAnnotation) && person.indi.id === currentId && (!selected || person.generation === 0)) selected = node;
                 for (const text of node.querySelectorAll('text.name')) {
                     const link = document.createElementNS('http://www.w3.org/2000/svg', 'a');
                     link.setAttribute('href', '#annotation');
@@ -111,7 +111,7 @@ try {
                     };
                 }
             }
-            const card = selected?.querySelector('rect.border');
+            const card = refocus && selected?.querySelector('rect.border');
             if (card) {
                 const bounds = card.getBoundingClientRect();
                 const viewport = svg.getBoundingClientRect();
@@ -119,6 +119,7 @@ try {
                 y = svg.clientHeight / 2 - (bounds.top + bounds.height / 2 - viewport.top - svg.clientTop) * scale;
                 transform();
             } else fit();
+            if (openAnnotation && selected) showAnnotation(currentId, selected, people, navigate);
             status.textContent = '';
         } catch (error) { status.textContent = 'Не удалось построить дерево: ' + error.message; }
     }
@@ -163,16 +164,16 @@ try {
         results.scrollTop = 0;
         search.setAttribute('aria-expanded', 'true');
     }
-    function showPerson(id, refocus = false) {
+    function showPerson(id, refocus = false, openAnnotation = false) {
         const previousId = currentId;
         currentId = id;
         closeResults();
-        if (refocus || previousId !== id) render(previousId !== undefined);
+        if (refocus || previousId !== id) render(previousId !== undefined, openAnnotation);
     }
-    function navigate(id) {
+    function navigate(id, openAnnotation = false) {
         const fragment = '#person=' + encodeURIComponent(id);
         if (id !== currentId && location.hash !== fragment) location.hash = fragment;
-        showPerson(id, true);
+        showPerson(id, true, openAnnotation);
     }
     function readFragment() {
         try {
