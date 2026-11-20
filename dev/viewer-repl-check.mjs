@@ -3,8 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { gunzipSync } from 'node:zlib';
-import { viewerFileBase } from '../tgcloud/lib/viewer.cjs';
+import { inflateRawSync } from 'node:zlib';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const tmp = fs.mkdtempSync('/tmp/kilo/lr-viewer-repl-');
@@ -15,8 +14,8 @@ fs.writeFileSync(preload, `
 const fs = require('node:fs');
 const fail = process.env.VIEWER_FAIL;
 if (fail === 'generation') {
-    const viewer = require(${JSON.stringify(path.join(root, 'tgcloud/lib/viewer.cjs'))});
-    viewer.viewerHtml = () => { throw new Error('injected viewer generation'); };
+    const epub = require(${JSON.stringify(path.join(root, 'tgcloud/lib/epub.cjs'))});
+    epub.viewerEpub = () => { throw new Error('injected viewer generation'); };
 }
 Object.defineProperty(globalThis, '__tgdev', { configurable: true, set(value) {
     const original = value.onApi;
@@ -72,23 +71,50 @@ function run(platform, name, commands, failure = '') {
     return { log, events, files };
 }
 
-function checkPayloads(platform, result, focused) {
+let bookCount = 0;
+function readBook(book) {
+    const bookPath = path.join(tmp, `book-${++bookCount}.epub`);
+    fs.writeFileSync(bookPath, book.bytes);
+    assert.equal(book.bytes.readUInt32LE(0), 0x04034b50);
+    assert.equal(book.bytes.readUInt16LE(8), 0, 'First ZIP entry must be stored');
+    assert.equal(book.bytes.subarray(30, 30 + book.bytes.readUInt16LE(26)).toString(), 'mimetype');
+    const filename = book.name.replace(/\.epub$/, '.xhtml');
+    const extract = entry => execFileSync('unzip', ['-p', bookPath, entry], { encoding: 'utf8' });
+    assert.equal(extract('mimetype'), 'application/epub+zip');
+    const href = encodeURIComponent(filename);
+    assert.ok(extract('EPUB/package.opf').includes(`href="${href}"`));
+    assert.ok(extract('EPUB/nav.xhtml').includes(`href="${href}"`));
+    // Info-ZIP builds differ in how they decode Unicode names; check the flags and bytes directly.
+    const bytes = book.bytes;
+    let xhtml;
+    for (let at = bytes.readUInt32LE(bytes.length - 6); bytes.readUInt32LE(at) === 0x02014b50;) {
+        const nameLength = bytes.readUInt16LE(at + 28);
+        if (bytes.subarray(at + 46, at + 46 + nameLength).toString() === 'EPUB/' + filename) {
+            assert.ok(bytes.readUInt16LE(at + 8) & 0x0800);
+            assert.equal(bytes.readUInt16LE(at + 10), 8, 'XHTML must be Deflate-compressed');
+            const local = bytes.readUInt32LE(at + 42);
+            assert.ok(bytes.readUInt16LE(local + 6) & 0x0800);
+            const start = local + 30 + bytes.readUInt16LE(local + 26) + bytes.readUInt16LE(local + 28);
+            xhtml = inflateRawSync(bytes.subarray(start, start + bytes.readUInt32LE(at + 20))).toString();
+            break;
+        }
+        at += 46 + nameLength + bytes.readUInt16LE(at + 30) + bytes.readUInt16LE(at + 32);
+    }
+    assert.ok(xhtml, 'Missing Unicode XHTML entry');
+    assert.ok(xhtml.includes(`открыть <code>EPUB/${filename}</code>`));
+    assert.match(xhtml, /connect-src 'none'/);
+    return JSON.parse(xhtml.match(/<script id="tree-data" type="application\/json"><!\[CDATA\[(.*?)\]\]><\/script>/s)[1]);
+}
+
+function checkPayloads(platform, result, focused, radius = 1) {
     const ged = result.files.find(f => f.name.endsWith('.ged'));
     const pdf = result.files.find(f => f.name.endsWith('.pdf'));
-    const viewer = result.files.find(f => f.name.endsWith(platform === 'tg' ? '.html' : '.html.gz'));
-    assert.ok(ged && pdf && viewer, 'Missing artifact: ' + result.files.map(f => f.name));
+    const books = result.files.filter(f => f.name.endsWith('.epub'));
+    assert.ok(ged && pdf && books.length === 1, 'Wrong artifacts: ' + result.files.map(f => f.name));
+    assert.ok(result.files.every(f => !/\.html(?:\.(?:zip|gz))?$/.test(f.name)));
     assert.match(pdf.bytes.toString('ascii', 0, 8), /^%PDF-/);
-    let html = viewer.bytes.toString();
-    if (platform === 'vk') {
-        assert.equal(viewer.bytes.readUInt16BE(0), 0x1f8b);
-        assert.ok(viewer.bytes[3] & 0x08, 'Gzip must carry an original filename');
-        const htmlName = viewerFileBase(ged.name.replace(/\.ged$/, '')) + '.html';
-        assert.equal(viewer.name, htmlName + '.gz');
-        assert.equal(viewer.bytes.subarray(10, viewer.bytes.indexOf(0, 10)).toString('ascii'), htmlName);
-        html = gunzipSync(viewer.bytes).toString('utf8');
-        assert.doesNotMatch(result.log, /ged viewer HTML:|viewer HTML debug:/);
-    }
-    const data = JSON.parse(html.match(/<script id="tree-data" type="application\/json">(.*?)<\/script>/s)[1]);
+    assert.equal(books[0].name, focused ? `${radius} Павел I Петрович Романов 1754-09-20.epub` : 'Древо чата.epub');
+    const data = readBook(books[0]);
     assert.equal(data.gedcom, ged.bytes.toString(), 'Viewer must embed exactly the exported GED');
     assert.ok(Object.keys(data.annotations).length);
     const rows = Object.values(data.annotations).flat();
@@ -152,11 +178,10 @@ function checkPayloads(platform, result, focused) {
         assert.equal(count, 57);
         assert.equal(data.heroXref, null);
     }
-    assert.match(html, /connect-src 'none'/);
     if (platform === 'tg') {
         const documents = result.events.filter(e => e.method === 'sendDocument');
         assert.ok(documents.every(e => e.params.reply_parameters?.message_id));
-        assert.equal(documents.find(e => e.params.document.filename.endsWith('.html')).params.document.type, 'text/html; charset=utf-8');
+        assert.equal(documents.find(e => e.params.document.filename.endsWith('.epub')).params.document.type, 'application/epub+zip');
     } else {
         const edits = result.events.filter(e => e.method === 'messages.edit' && e.params.attachment);
         assert.ok(edits.length >= 3);
@@ -173,6 +198,11 @@ for (const platform of ['tg', 'vk']) {
     assert.match(full.log, /✅ древо: персон 57, семей 13, детей 43/);
     assert.match(full.log, /bell chat: 67->67 строк/);
     outputs[platform] = checkPayloads(platform, full, false);
+    const menu = run(platform, 'chat-menu', [...setup, '/']);
+    const chatButton = [...menu.log.matchAll(/\[(\d+)\.(\d+)\] 🧬/g)].at(-1);
+    assert.ok(chatButton, menu.log);
+    const chatTap = run(platform, 'chat-button', [...setup, '/', `/${chatButton[1]} ${chatButton[2]}`]);
+    assert.equal(checkPayloads(platform, chatTap, false), outputs[platform]);
     assert.match(outputs[platform], /1 EVEN\n2 TYPE Постриг\n2 DATE 1698\n2 NOTE в монашестве Маргарита/);
     assert.match(outputs[platform], /1 TITL Царь всея Руси\n2 DATE FROM 1682\n2 NOTE соправитель Петра I\n1 TITL Царь всея Руси\n2 DATE TO 1696\n2 NOTE соправитель Петра I/);
     const flat = run(platform, 'flat-full', ['!txt dev/fixtures/Romanov_family.ged.txt', '/2 2', '/bell', '/gedcom']);
@@ -183,26 +213,17 @@ for (const platform of ['tg', 'vk']) {
     checkPayloads(platform, focus, true);
     const books = run(platform, 'epub', [...setup, '/Павел I', '/epub', '>4 /epub', '>4 /epub2', '>4 /gedcom2']);
     const epubs = books.files.filter(f => f.name.endsWith('.epub'));
-    assert.equal(epubs.length, 3, books.log);
+    assert.equal(epubs.length, 4, books.log);
     assert.equal(books.files.filter(f => f.name.endsWith('.ged')).length, 1, 'Only /gedcom2 attaches GEDCOM');
     assert.equal(books.files.filter(f => f.name.endsWith('.pdf')).length, 1, 'Only /gedcom2 attaches a PDF');
     if (platform === 'tg') {
         const docs = books.events.filter(e => e.method === 'sendDocument' && e.params.document.filename.endsWith('.epub'));
         assert.ok(docs.every(e => e.params.document.type === 'application/epub+zip' && e.params.reply_parameters?.message_id));
     }
-    for (const [index, expected] of [outputs[platform], focus.files.find(f => f.name.endsWith('.ged')).bytes.toString(),
-        checkPayloads(platform, { ...books, events: books.events.filter(e => !e.params?.document?.filename.endsWith('.epub')) }, true)].entries()) {
-        const pathToBook = path.join(tmp, `${platform}-${index}.epub`);
-        const archive = epubs[index].bytes;
-        fs.writeFileSync(pathToBook, archive);
-        assert.equal(archive.readUInt16LE(8), 0, 'First ZIP entry must be stored');
-        const listing = execFileSync('unzip', ['-lv', pathToBook], { encoding: 'utf8' });
-        assert.match(listing, /Stored[^\n]*mimetype/);
-        assert.match(listing, /Defl[^\n]*EPUB\/tree\.xhtml/);
-        const extract = entry => execFileSync('unzip', ['-p', pathToBook, entry], { encoding: 'utf8' });
-        assert.equal(extract('mimetype'), 'application/epub+zip');
-        const xhtml = extract('EPUB/tree.xhtml');
-        const payload = JSON.parse(xhtml.match(/<script id="tree-data" type="application\/json"><!\[CDATA\[(.*?)\]\]><\/script>/s)[1]);
+    const radiusTwo = checkPayloads(platform, { ...books, files: books.files.filter(f => !epubs.slice(0, 3).includes(f)) }, true, 2);
+    for (const [index, expected] of [outputs[platform], focus.files.find(f => f.name.endsWith('.ged')).bytes.toString(), radiusTwo].entries()) {
+        assert.equal(epubs[index].name, index ? `${index} Павел I Петрович Романов 1754-09-20.epub` : 'Древо чата.epub');
+        const payload = readBook(epubs[index]);
         assert.equal(payload.gedcom, expected);
         assert.equal(Boolean(payload.heroXref), index > 0);
         if (index > 0) assert.match(payload.annotations[payload.heroXref].find(row => row.hero).text, /Павел I/);
@@ -216,19 +237,20 @@ for (const platform of ['tg', 'vk']) {
     assert.ok(finalized.length);
     assert.ok(!(finalized.at(-1).params.text || finalized.at(-1).params.message).includes('⏳'));
     assert.ok(platform === 'tg' ? finalized.at(-1).params.reply_markup : finalized.at(-1).params.keyboard);
-    for (const failure of [platform === 'tg' ? 'html' : 'gz', 'ged', 'pdf', 'generation']) {
-        const failed = run(platform, 'fail-' + failure, [...setup, '/gedcom'], failure);
+    for (const failure of ['epub', 'ged', 'pdf', 'generation']) {
+        const failed = run(platform, 'fail-' + failure, [...setup, '/Павел I', '/4 ' + button[1]], failure);
         assert.match(failed.log, /injected/);
-        const ext = platform === 'tg' ? 'html' : 'gz';
-        const expected = ['ged', 'pdf', ext].filter(e => e !== failure && !(failure === 'generation' && e === ext));
+        const missing = failure === 'generation' ? 'epub' : failure;
+        const expected = ['ged', 'pdf', 'epub'].filter(e => e !== missing);
         for (const e of expected) assert.ok(failed.files.some(f => f.name.endsWith('.' + e)), e + ' lost after ' + failure);
-        assert.ok(!failed.files.some(f => f.name.endsWith('.' + (failure === 'generation' ? ext : failure))));
+        assert.ok(!failed.files.some(f => f.name.endsWith('.' + missing)));
         const edits = failed.events.filter(e => ['editMessageText', 'messages.edit'].includes(e.method));
         const finalText = edits.at(-1).params.text || edits.at(-1).params.message;
         assert.match(finalText, /Не удалось выложить файлы/);
         assert.ok(!finalText.includes('⏳'));
+        assert.ok(platform === 'tg' ? edits.at(-1).params.reply_markup : edits.at(-1).params.keyboard);
     }
-    console.log(platform + ': Romanov GED/flat import confirmation and bell, full/reply/button GED+PDF+viewer payloads, four isolated failures OK');
+    console.log(platform + ': Romanov GED/flat import confirmation and bell, full/reply/button GED+PDF+viewer payloads, isolated failures OK');
 }
 assert.equal(outputs.tg, outputs.vk, 'Full GED exports must match between platforms');
 assert.equal(flatOutputs.tg, flatOutputs.vk, 'Full flat-import GED exports must match between platforms');

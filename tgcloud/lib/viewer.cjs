@@ -40,15 +40,6 @@ function viewerAnnotations(gedcom, snapshot, pairs = [], spouses = [], chain = f
     }));
 }
 
-function viewerFileBase(title) {
-    const letters = 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя';
-    const latin = ['a','b','v','g','d','e','yo','zh','z','i','y','k','l','m','n','o','p','r','s','t','u','f','kh','ts','ch','sh','shch','','y','','e','yu','ya'];
-    return String(title).replace(/[а-яё]/gi, c => {
-        const s = latin[letters.indexOf(c.toLowerCase())];
-        return c === c.toUpperCase() ? s.charAt(0).toUpperCase() + s.slice(1) : s;
-    }).replace(/\s+/g, '_').replace(/[^A-Za-z0-9_-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').slice(0, 120) || 'tree';
-}
-
 function viewerHtml(gedcom, title, heroXref = null, annotations = {}) {
     const escape = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
     const data = JSON.stringify({ gedcom, heroXref, annotations }).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
@@ -72,4 +63,4 @@ function viewerHtml(gedcom, title, heroXref = null, annotations = {}) {
 <script id="tree-data" type="application/json">${data}</script><script>${script}</script></body></html>`;
 }
 
-module.exports = { viewerHtml, viewerFileBase, viewerAnnotations };
+module.exports = { viewerHtml, viewerAnnotations };

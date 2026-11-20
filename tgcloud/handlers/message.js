@@ -395,7 +395,7 @@ export default async function (message, ctx) {
             const r = normalizeFocusRadius(radius, focusDepth(pairs, spouses, skey));
             const sex = new Map(rows.map(p => [p.n + ' ' + p.d, p.sex ?? null]));
             const keys = focusListKeys(pairs, spouses, skey, r, k => sex.get(k) ?? null);
-            await sendEpub(chatId, keys, focusHead(skey, r, hero.dd), hero.xref, message.message_id);
+            await sendEpub(chatId, keys, focusHead(skey, r, hero.dd), skey, hero.xref, message.message_id);
             return;
         }
         if (resolved) {
@@ -428,7 +428,7 @@ export default async function (message, ctx) {
             return;
         }
         if (epub) {
-            await sendEpub(chatId, undefined, 'Древо чата', null, message.message_id);
+            await sendEpub(chatId, undefined, 'Древо чата', null, null, message.message_id);
             return;
         }
         // «🧬⏳» ответом; прицепы (.ged+.pdf) — медиа-группой в ответ на

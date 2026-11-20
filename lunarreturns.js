@@ -1575,22 +1575,15 @@ function chartFor(peerId, keys, title, heroKey = null, range = null, diagnose = 
     return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages, annotationText), persons: Math.min(rows.length, CHART_MAX) };
 }
 
-function gzipNamed(bytes, filename) {
-    const gz = require('node:zlib').gzipSync(bytes);
-    // VK can rewrite dots in upload names; FNAME preserves the extracted filename.
-    gz[3] |= 0x08;
-    return Buffer.concat([gz.subarray(0, 10), Buffer.from(filename + '\0', 'ascii'), gz.subarray(10)]);
-}
-
-async function sendEpub(peerId, keys, head, heroXref, msgId, convMsgId) {
+async function sendEpub(peerId, keys, head, heroKey, heroXref, msgId, convMsgId) {
     try {
-        const { viewerEpub } = reqLib('epub');
-        const { viewerAnnotations, viewerFileBase } = reqLib('viewer');
+        const { viewerEpub, epubBase } = reqLib('epub');
+        const { viewerAnnotations } = reqLib('viewer');
         const g = gedcomText(peerId, keys);
         const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), getSettings(peerId).fynny);
-        const epub = viewerEpub(g, head.replace(/^\d\s+/, ''), heroXref, annotations);
-        const name = viewerFileBase(fileBaseOf(head)) + '.epub';
-        const attachment = await vkUploadDoc(peerId, name, epub);
+        const title = epubBase(heroKey, parseInt(head, 10) || 1);
+        const epub = viewerEpub(g, title, heroXref, annotations);
+        const attachment = await vkUploadDoc(peerId, title + '.epub', epub);
         await messagesSend(peerId, head, msgId, convMsgId, undefined, attachment);
     } catch (e) {
         console.error('epub:', e.message);
@@ -1730,16 +1723,16 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
         if (overflow) files.push([base + ".ged.txt", "\uFEFF" + pack]);
         const atts = [], uploadErrors = [];
         try {
-            const { viewerHtml, viewerFileBase, viewerAnnotations } = reqLib("viewer");
+            const { viewerAnnotations } = reqLib("viewer");
+            const { viewerEpub, epubBase } = reqLib("epub");
             const hero = heroKey ? personRows(peerId).find(r => pkey(r) === heroKey) : null;
             const heroXref = hero && g.split("\n").includes("0 @" + hero.xref + "@ INDI") ? hero.xref : null;
             const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), getSettings(peerId).fynny);
-            const html = viewerHtml(g, chartHead, heroXref, annotations);
-            const viewerBase = viewerFileBase(base);
-            files.push([viewerBase + ".html.gz", gzipNamed(Buffer.from(html, "utf8"), viewerBase + ".html")]);
+            const title = epubBase(heroKey, parseInt(head0, 10) || 1);
+            files.push([title + ".epub", viewerEpub(g, title, heroXref, annotations)]);
         } catch (e) {
             console.error("viewer:", e.message);
-            uploadErrors.push("Просмотрщик gzip: " + e.message);
+            uploadErrors.push("Просмотрщик EPUB: " + e.message);
         }
         for (const [name, content] of files) {
             t0 = Date.now();
@@ -2642,7 +2635,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
                 const keys = focusListKeys(pairs, spPairs, skey, r, k => sexMap.get(k) ?? null);
                 if (epub) {
                     const hero = personRows(peerId).find(p => pkey(p) === skey);
-                    if (hero) await sendEpub(peerId, keys, focusHead(skey, r, hero.dd), hero.xref, msgId, convMsgId);
+                    if (hero) await sendEpub(peerId, keys, focusHead(skey, r, hero.dd), skey, hero.xref, msgId, convMsgId);
                     else await messagesSend(peerId, REPLY_TARGET_ERROR, msgId, convMsgId);
                     return;
                 }
@@ -2652,7 +2645,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             }
         }
         if (!hasTree(peerId)) { await messagesSend(peerId, "связей пока нет", msgId, convMsgId); return; }
-        if (epub) { await sendEpub(peerId, undefined, 'Древо чата', null, msgId, convMsgId); return; }
+        if (epub) { await sendEpub(peerId, undefined, 'Древо чата', null, null, msgId, convMsgId); return; }
         // чат-кейс: «🧬⏳» ответом с цитатой на команду, затем .ged+.pdf
         // (при переливе росписи ещё и .ged.txt) комбинированной правкой цепляются
         // в то же сообщение — часы сняты, остаётся «🧬»

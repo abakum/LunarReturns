@@ -9,8 +9,8 @@ import { jubileeText, approxOut } from './text.js';
 import { findShownRecord, REPLY_TARGET_ERROR } from './text.cjs';
 import { graftError } from './flat.cjs';
 import { localRecord, mskGedcom } from './event-time.cjs';
-import { viewerHtml, viewerAnnotations, viewerFileBase } from './viewer.cjs';
-import { viewerEpub, EPUB_TYPE } from './epub.cjs';
+import { viewerAnnotations } from './viewer.cjs';
+import { viewerEpub, EPUB_TYPE, epubBase } from './epub.cjs';
 import { chatFlatArtifacts, gedNoteLines, gedText, gedFictiveDates, trimImport } from './parse.cjs';
 import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText, isExactEvent } from './tree.cjs';
 // фокус-список (focusListText) — канон tree.cjs (с A3): реэкспорт — точки
@@ -1511,15 +1511,16 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
 // в пределах радиуса; всему древу чата росписи нет (его «-+=» и так весь).
 // markup — клавиатура, которую надо сохранить при правке текста росписью
 // (editMessageText без reply_markup в TG клавиатуру снимает)
-export async function sendEpub(chatId, keys, head, heroXref, replyTo) {
+export async function sendEpub(chatId, keys, head, heroKey, heroXref, replyTo) {
     const reply_parameters = { message_id: replyTo, allow_sending_without_reply: true };
     try {
         const g = await gedcomText(chatId, keys);
         const annotations = viewerAnnotations(g, await flatRows(chatId), await linkPairs(chatId),
             await focusSpousePairs(chatId), (await getSettings(chatId)).fynny);
-        const epub = viewerEpub(g, head.replace(/^\d\s+/, ''), heroXref, annotations);
+        const title = epubBase(heroKey, parseInt(head, 10) || 1);
+        const epub = viewerEpub(g, title, heroXref, annotations);
         await api.sendDocument({ chat_id: chatId, reply_parameters, caption: head,
-            document: new InputFile(epub, viewerFileBase(fileBaseOf(head)) + '.epub', { type: EPUB_TYPE }) });
+            document: new InputFile(epub, title + '.epub', { type: EPUB_TYPE }) });
     } catch (e) {
         console.error('epub:', e.message);
         await api.sendMessage({ chat_id: chatId, reply_parameters, text: 'Не удалось выгрузить EPUB.' });
@@ -1559,16 +1560,16 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
             });
         }
         const errors = [];
-        const sendFile = async (bytes, ext, type) => {
+        const sendFile = async (bytes, ext, type, name = base + ext) => {
             try {
                 await api.sendDocument({ chat_id: chatId,
-                    document: new InputFile(bytes, base + ext, { type }),
+                    document: new InputFile(bytes, name, { type }),
                     caption: head,
                     ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
                 });
             } catch (e) {
-                console.error("sendDocument:", base + ext, e.message);
-                errors.push(base + ext + ": " + e.message);
+                console.error("sendDocument:", name, e.message);
+                errors.push(name + ": " + e.message);
             }
         };
         await sendFile(enc.encode(g), ".ged", "text/plain");
@@ -1585,15 +1586,16 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
             pdf = res.pdf;
         } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
         if (pdf) await sendFile(Uint8Array.from(pdf, c => c.charCodeAt(0)), ".pdf", "application/pdf");
+        const epubTitle = epubBase(heroKey, parseInt(head0, 10) || 1);
         try {
             const hero = heroKey ? (await personRows(chatId)).find(r => pkey(r) === heroKey) : null;
             const heroXref = hero && g.split("\n").includes("0 @" + hero.xref + "@ INDI") ? hero.xref : null;
             const annotations = viewerAnnotations(g, await flatRows(chatId), await linkPairs(chatId),
                 await focusSpousePairs(chatId), (await getSettings(chatId)).fynny);
-            await sendFile(enc.encode(viewerHtml(g, chartHead, heroXref, annotations)), ".html", "text/html; charset=utf-8");
+            await sendFile(viewerEpub(g, epubTitle, heroXref, annotations), ".epub", EPUB_TYPE, epubTitle + ".epub");
         } catch (e) {
             console.error("viewer:", e.message);
-            errors.push(base + ".html: " + e.message);
+            errors.push(epubTitle + ".epub: " + e.message);
         }
         if (chartErr && !chartErr.includes("персоны пусты")) errors.push("Диаграмма не построена: " + chartErr);
         const errorText = errors.length ? "\n💥 Не удалось выложить файлы:\n" + errors.join("\n") : "";

@@ -6,8 +6,7 @@ import { createRequire } from 'node:module';
 import { chromium } from '@playwright/test';
 import { pathToFileURL } from 'node:url';
 const require = createRequire(import.meta.url);
-const { viewerHtml, viewerFileBase, viewerAnnotations } = require('../tgcloud/lib/viewer.cjs');
-assert.equal(viewerFileBase('1 КА 1963-09-27'), '1_KA_1963-09-27');
+const { viewerHtml, viewerAnnotations } = require('../tgcloud/lib/viewer.cjs');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lr-viewer-'));
 const gedcom = `0 HEAD
 1 CHAR UTF-8

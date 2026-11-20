@@ -132,7 +132,9 @@ globalThis.__tgdev = {
             console.log(`[${n}] sendDocument: ${doc.filename || '?'} (${doc.type || '—'}, ${size} байт)`);
             if (doc.bytes && doc.filename) {
                 if (!docDir) docDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lr-tg-repl-'));
-                const p = path.join(docDir, doc.filename.replace(/[\/\\:*?"<>|#]/g, '_'));
+                const filename = doc.filename.replace(/[\/\\:*?"<>|#]/g, '_');
+                let p = path.join(docDir, filename);
+                if (fs.existsSync(p)) p = path.join(fs.mkdtempSync(path.join(docDir, 'upload-')), filename);
                 fs.writeFileSync(p, doc.bytes);
                 console.log(`    → ${p}`);
             }
