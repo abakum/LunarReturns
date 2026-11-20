@@ -280,6 +280,7 @@ const handle = async raw => {
             chat: { id: CHAT, type: CHAT_TYPE },
             from: { id: 1, first_name: 'dev' },
             text: rm ? rm[2] : input,
+            message_id: counter + 1,
             ...(reply ? { reply_to_message: reply } : {}),
         };
         // сообщение пользователя тоже получает номер [N] (общий счётчик)

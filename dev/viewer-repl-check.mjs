@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { gunzipSync } from 'node:zlib';
 import { viewerFileBase } from '../tgcloud/lib/viewer.cjs';
 
@@ -181,6 +181,37 @@ for (const platform of ['tg', 'vk']) {
     flatOutputs[platform] = checkPayloads(platform, flat, false);
     const focus = run(platform, 'focus-reply', [...setup, '/Павел I', '>4 /gedcom1']);
     checkPayloads(platform, focus, true);
+    const books = run(platform, 'epub', [...setup, '/Павел I', '/epub', '>4 /epub', '>4 /epub2', '>4 /gedcom2']);
+    const epubs = books.files.filter(f => f.name.endsWith(platform === 'vk' ? '.epub.gz' : '.epub'));
+    assert.equal(epubs.length, 3, books.log);
+    assert.equal(books.files.filter(f => f.name.endsWith('.ged')).length, 1, 'Only /gedcom2 attaches GEDCOM');
+    assert.equal(books.files.filter(f => f.name.endsWith('.pdf')).length, 1, 'Only /gedcom2 attaches a PDF');
+    if (platform === 'tg') {
+        const docs = books.events.filter(e => e.method === 'sendDocument' && e.params.document.filename.endsWith('.epub'));
+        assert.ok(docs.every(e => e.params.document.type === 'application/epub+zip' && e.params.reply_parameters?.message_id));
+    }
+    for (const [index, expected] of [outputs[platform], focus.files.find(f => f.name.endsWith('.ged')).bytes.toString(),
+        checkPayloads(platform, { ...books, events: books.events.filter(e => !e.params?.document?.filename.endsWith('.epub')) }, true)].entries()) {
+        const pathToBook = path.join(tmp, `${platform}-${index}.epub`);
+        const { name, bytes } = epubs[index];
+        if (platform === 'vk') {
+            assert.ok(bytes[3] & 0x08, 'Gzip must carry the EPUB filename');
+            assert.equal(bytes.subarray(10, bytes.indexOf(0, 10)).toString('ascii'), name.slice(0, -3));
+        }
+        const archive = platform === 'vk' ? gunzipSync(bytes) : bytes;
+        fs.writeFileSync(pathToBook, archive);
+        assert.equal(archive.readUInt16LE(8), 0, 'First ZIP entry must be stored');
+        const listing = execFileSync('unzip', ['-lv', pathToBook], { encoding: 'utf8' });
+        assert.match(listing, /Stored[^\n]*mimetype/);
+        assert.match(listing, /Defl[^\n]*EPUB\/tree\.xhtml/);
+        const extract = entry => execFileSync('unzip', ['-p', pathToBook, entry], { encoding: 'utf8' });
+        assert.equal(extract('mimetype'), 'application/epub+zip');
+        const xhtml = extract('EPUB/tree.xhtml');
+        const payload = JSON.parse(xhtml.match(/<script id="tree-data" type="application\/json"><!\[CDATA\[(.*?)\]\]><\/script>/s)[1]);
+        assert.equal(payload.gedcom, expected);
+        assert.equal(Boolean(payload.heroXref), index > 0);
+        if (index > 0) assert.match(payload.annotations[payload.heroXref].find(row => row.hero).text, /Павел I/);
+    }
     const button = [...focus.log.matchAll(/\[4\.(\d+)\] 🧬/g)].at(-1);
     assert.ok(button, focus.log);
     const tapped = run(platform, 'focus-button', [...setup, '/Павел I', '/4 ' + button[1]]);

@@ -77,14 +77,18 @@ fs.writeFileSync(path.join(dir, 'empty.html'), viewerHtml('0 HEAD\n0 TRLR', 'П�
 const romanov = fs.readFileSync(new URL('./fixtures/Romanov_family.ged', import.meta.url), 'utf8');
 fs.writeFileSync(path.join(dir, 'romanov.html'), viewerHtml(romanov, 'Романовы'));
 fs.writeFileSync(path.join(dir, 'single.html'), viewerHtml('0 HEAD\n0 @I1@ INDI\n1 NAME Один\n0 TRLR', 'Один', 'absent'));
-const large = '0 HEAD\n' + Array.from({ length: 1000 }, (_, i) => `0 @I${i}@ INDI\n1 NAME Тёзка\n`).join('') + '0 TRLR';
-fs.writeFileSync(path.join(dir, 'large.html'), viewerHtml(large, '1000 персон'));
+const large = '0 HEAD\n' + Array.from({ length: 10000 }, (_, i) => `0 @I${i}@ INDI\n1 NAME Тёзка\n`).join('') + '0 TRLR';
+fs.writeFileSync(path.join(dir, 'large.html'), viewerHtml(large, '10 000 персон'));
+const longText = '0 HEAD\n0 @I0@ INDI\n1 NAME Один\n1 NOTE Длинное примечание\n'
+    + ('2 CONT ' + 'x'.repeat(200) + '\n').repeat(41000) + '0 TRLR';
+assert.ok(Buffer.byteLength(longText) > 8 * 1024 * 1024);
+fs.writeFileSync(path.join(dir, 'long-text.html'), viewerHtml(longText, 'Большой GEDCOM'));
 const wide = '0 HEAD\n0 @I0@ INDI\n1 NAME Родитель\n1 FAMS @F1@\n'
     + Array.from({ length: 999 }, (_, i) => `0 @I${i + 1}@ INDI\n1 NAME Ребёнок ${i}\n1 FAMC @F1@\n`).join('')
     + '0 @F1@ FAM\n1 HUSB @I0@\n' + Array.from({ length: 999 }, (_, i) => `1 CHIL @I${i + 1}@\n`).join('') + '0 TRLR';
 fs.writeFileSync(path.join(dir, 'wide.html'), viewerHtml(wide, 'Большая семья', 'I0'));
 fs.writeFileSync(path.join(dir, 'refocus.html'), viewerHtml(wide, 'Большая семья', 'I1'));
-fs.writeFileSync(path.join(dir, 'oversized.html'), viewerHtml(large.replace('0 TRLR', '0 @I1000@ INDI\n1 NAME Лишний\n0 TRLR'), '1001 персона'));
+fs.writeFileSync(path.join(dir, 'oversized.html'), viewerHtml(large.replace('0 TRLR', '0 @I10000@ INDI\n1 NAME Лишний\n0 TRLR'), '10 001 персона'));
 console.log('viewer generation and escaping: OK');
 const browser = await chromium.launch();
 try {
@@ -267,10 +271,13 @@ try {
         assert.match(await page.locator('#chart').textContent(), /Один/);
         await page.goto(pathToFileURL(path.join(dir, 'large.html')).href);
         await picker.click();
-        assert.equal(await options.count(), 1000);
-        await picker.fill('тезка i999');
-        assert.deepEqual(await options.allTextContents(), ['Тёзка (I999)']);
+        assert.equal(await options.count(), 10000);
+        await picker.fill('тезка i9999');
+        assert.deepEqual(await options.allTextContents(), ['Тёзка (I9999)']);
         assert.equal(await page.locator('#status').textContent(), '');
+        await page.goto(pathToFileURL(path.join(dir, 'long-text.html')).href);
+        assert.equal(await page.locator('#status').textContent(), '');
+        assert.equal(await page.locator('#chart .indi').count(), 1);
         await page.goto(pathToFileURL(path.join(dir, 'wide.html')).href);
         assert.equal(await page.locator('#status').textContent(), '');
         assert(await page.locator('#chart .indi').count() >= 1000);
@@ -305,7 +312,7 @@ try {
             assert.equal(hash(), '#person=I0');
         }
         await page.goto(pathToFileURL(path.join(dir, 'oversized.html')).href);
-        assert.match(await page.locator('#status').textContent(), /до 1000 персон/);
+        assert.match(await page.locator('#status').textContent(), /до 10 000 персон/);
         fs.writeFileSync(path.join(dir, 'hostile.html'), viewerHtml('0 HEAD\n0 @I1@ INDI\n1 NAME </script><script>globalThis.pwned=1</script>\n0 TRLR', '</title><script>globalThis.pwned=1</script>'));
         await page.goto(pathToFileURL(path.join(dir, 'hostile.html')).href);
         assert.equal(await page.evaluate(() => globalThis.pwned), undefined);

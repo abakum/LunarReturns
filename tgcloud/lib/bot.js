@@ -9,7 +9,8 @@ import { jubileeText, approxOut } from './text.js';
 import { findShownRecord, REPLY_TARGET_ERROR } from './text.cjs';
 import { graftError } from './flat.cjs';
 import { localRecord, mskGedcom } from './event-time.cjs';
-import { viewerHtml, viewerAnnotations } from './viewer.cjs';
+import { viewerHtml, viewerAnnotations, viewerFileBase } from './viewer.cjs';
+import { viewerEpub, EPUB_TYPE } from './epub.cjs';
 import { chatFlatArtifacts, gedNoteLines, gedText, gedFictiveDates, trimImport } from './parse.cjs';
 import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText, isExactEvent } from './tree.cjs';
 // фокус-список (focusListText) — канон tree.cjs (с A3): реэкспорт — точки
@@ -1510,6 +1511,21 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
 // в пределах радиуса; всему древу чата росписи нет (его «-+=» и так весь).
 // markup — клавиатура, которую надо сохранить при правке текста росписью
 // (editMessageText без reply_markup в TG клавиатуру снимает)
+export async function sendEpub(chatId, keys, head, heroXref, replyTo) {
+    const reply_parameters = { message_id: replyTo, allow_sending_without_reply: true };
+    try {
+        const g = await gedcomText(chatId, keys);
+        const annotations = viewerAnnotations(g, await flatRows(chatId), await linkPairs(chatId),
+            await focusSpousePairs(chatId), (await getSettings(chatId)).fynny);
+        const epub = viewerEpub(g, head.replace(/^\d\s+/, ''), heroXref, annotations);
+        await api.sendDocument({ chat_id: chatId, reply_parameters, caption: head,
+            document: new InputFile(epub, viewerFileBase(fileBaseOf(head)) + '.epub', { type: EPUB_TYPE }) });
+    } catch (e) {
+        console.error('epub:', e.message);
+        await api.sendMessage({ chat_id: chatId, reply_parameters, text: 'Не удалось выгрузить EPUB.' });
+    }
+}
+
 export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0, markup = undefined) {
     // заголовок чарта без цифры радиуса;
     // цифра → range героя для chartFor

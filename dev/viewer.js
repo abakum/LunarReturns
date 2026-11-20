@@ -63,8 +63,8 @@ function zoom(factor, cx = svg.clientWidth / 2, cy = svg.clientHeight / 2) {
 }
 try {
     // Refuse oversized inputs explicitly instead of silently dropping relatives.
-    if (new TextEncoder().encode(input.gedcom).length > 8 * 1024 * 1024 || (input.gedcom.match(/^0 @[^\r\n]+@ INDI\r?$/gm) || []).length > 1000)
-        throw new Error('Для просмотра поддерживается до 1000 персон и 8 МиБ текста GEDCOM. Выберите меньший фрагмент в боте.');
+    if ((input.gedcom.match(/^0 @[^\r\n]+@ INDI\r?$/gm) || []).length > 10000)
+        throw new Error('Для просмотра поддерживается до 10 000 персон. Выберите меньший фрагмент в боте.');
     const data = gedcomToJson(input.gedcom);
     const people = new Map();
     const normalize = text => text.toLocaleLowerCase('ru').replace(/ё/g, 'е');

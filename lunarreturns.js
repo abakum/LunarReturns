@@ -1575,10 +1575,30 @@ function chartFor(peerId, keys, title, heroKey = null, range = null, diagnose = 
     return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages, annotationText), persons: Math.min(rows.length, CHART_MAX) };
 }
 
-// загрузка документа на серверы VK (docs… — файлы любого типа); сервер загрузки
-// иногда отвечает HTML-страницей ошибки вместо JSON — до 3 попыток, каждый раз
-// с новым upload_url (одноразовый) и свежим FormData. Получение сервера тоже
-// входит в попытку; docs.save повторяем отдельно только при сетевом сбое.
+function gzipNamed(bytes, filename) {
+    const gz = require('node:zlib').gzipSync(bytes);
+    // VK can rewrite dots in upload names; FNAME preserves the extracted filename.
+    gz[3] |= 0x08;
+    return Buffer.concat([gz.subarray(0, 10), Buffer.from(filename + '\0', 'ascii'), gz.subarray(10)]);
+}
+
+async function sendEpub(peerId, keys, head, heroXref, msgId, convMsgId) {
+    try {
+        const { viewerEpub } = reqLib('epub');
+        const { viewerAnnotations, viewerFileBase } = reqLib('viewer');
+        const g = gedcomText(peerId, keys);
+        const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), getSettings(peerId).fynny);
+        const epub = viewerEpub(g, head.replace(/^\d\s+/, ''), heroXref, annotations);
+        const name = viewerFileBase(fileBaseOf(head)) + '.epub';
+        const attachment = await vkUploadDoc(peerId, name + '.gz', gzipNamed(epub, name));
+        await messagesSend(peerId, head, msgId, convMsgId, undefined, attachment);
+    } catch (e) {
+        console.error('epub:', e.message);
+        await messagesSend(peerId, 'Не удалось выгрузить EPUB.', msgId, convMsgId);
+    }
+}
+
+// Повтор загрузки использует новый upload_url; docs.save повторяется при сетевом сбое.
 async function vkUploadDoc(peerId, title, content) {
     let j = null, lastErr = null;
     // таймаут по размеру: 10 с + ~1 с на КБ, кап 60 с (7 КБ → 17 с; upload
@@ -1716,10 +1736,7 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
             const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), getSettings(peerId).fynny);
             const html = viewerHtml(g, chartHead, heroXref, annotations);
             const viewerBase = viewerFileBase(base);
-            const gz = require("node:zlib").gzipSync(Buffer.from(html, "utf8"));
-            // VK rewrites dots in uploaded names; FNAME preserves the extracted .html extension.
-            gz[3] |= 0x08;
-            files.push([viewerBase + ".html.gz", Buffer.concat([gz.subarray(0, 10), Buffer.from(viewerBase + ".html\0", "ascii"), gz.subarray(10)])]);
+            files.push([viewerBase + ".html.gz", gzipNamed(Buffer.from(html, "utf8"), viewerBase + ".html")]);
         } catch (e) {
             console.error("viewer:", e.message);
             uploadErrors.push("Просмотрщик gzip: " + e.message);
@@ -2570,7 +2587,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     if (text.trim().startsWith("/")) console.log("команда:", JSON.stringify(text.trim()), "peer", peerId);
     if (date) markSeen(date);
     const scopedCommand = isStart(text, payload)
-        || /^\/(?:bell[1-5]?|gedcom[1-5]?|links)(?:@\S+)?$/i.test(text.trim())
+        || /^\/(?:bell[1-5]?|gedcom[1-5]?|epub[1-5]?|links)(?:@\S+)?$/i.test(text.trim())
         || text.trim().toLowerCase() === "связи";
     if (originalReply && (scopedCommand || anchorInput) && !parseGedcom(text)) {
         if (!resolved) {
@@ -2609,9 +2626,10 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         await messagesSend(peerId, "Родство: " + (mode ? "цепочки." : "обычные названия."), msgId, convMsgId);
         return;
     }
-    const gm = t.match(/^\/gedcom([1-5])?(?:@\S+)?$/);
+    const gm = t.match(/^\/(gedcom|epub)([1-5])?(?:@\S+)?$/);
     if (gm) {
-        const radius = Number(gm[1]) || 1;
+        const epub = gm[1] === 'epub';
+        const radius = Number(gm[2]) || 1;
         // ответом на триггер — только текст родни выбранного радиуса, без кнопок
         // (заголовок фокуса «2 Имя ГГГГ-ММ-ДД» — цифру радиуса снимаем)
         if (resolved) {
@@ -2622,12 +2640,19 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
                 const pairs = linkPairs(peerId), spPairs = focusSpousePairs(peerId);
                 const r = normalizeFocusRadius(radius, focusDepth(pairs, spPairs, skey));
                 const keys = focusListKeys(pairs, spPairs, skey, r, k => sexMap.get(k) ?? null);
+                if (epub) {
+                    const hero = personRows(peerId).find(p => pkey(p) === skey);
+                    if (hero) await sendEpub(peerId, keys, focusHead(skey, r, hero.dd), hero.xref, msgId, convMsgId);
+                    else await messagesSend(peerId, REPLY_TARGET_ERROR, msgId, convMsgId);
+                    return;
+                }
                 await sendGedArtifacts(peerId, keys, focusHead(skey, r, rec.dd), msgId, convMsgId, skey);
                 console.log("focus text:", skey, "радиус", r, "peer", peerId);
                 return;
             }
         }
         if (!hasTree(peerId)) { await messagesSend(peerId, "связей пока нет", msgId, convMsgId); return; }
+        if (epub) { await sendEpub(peerId, undefined, 'Древо чата', null, msgId, convMsgId); return; }
         // чат-кейс: «🧬⏳» ответом с цитатой на команду, затем .ged+.pdf
         // (при переливе росписи ещё и .ged.txt) комбинированной правкой цепляются
         // в то же сообщение — часы сняты, остаётся «🧬»

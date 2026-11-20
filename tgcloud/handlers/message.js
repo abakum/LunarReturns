@@ -10,7 +10,7 @@ import { REPLY_TARGET_ERROR, resolveReplyRecord } from '../lib/text.cjs';
 import {
     helpText, startMarkup, chatAdmin, getSettings, todayText, jubileeMarkup, sendLong,
     recordOf, recordShownOf, recordByXref, replaceWithGedcom,
-    linkPairs, personRows, weddingRows, sendGedPdf, focusHead, focusMarkup,
+    linkPairs, personRows, weddingRows, sendGedPdf, sendEpub, focusHead, focusMarkup,
     focusListKeys, focusSpousePairs, focusDepth, focusListText, mmddToday, upcomingText, upsertPerson, applyTree, cutAndGraft, treeReport,
     editTrigger, hasTree, NOT_FOR_GRAFT,
     chatFlatText, flatSearch, sendFlatPack, flatHitKey, searchHead, cutLines,
@@ -296,7 +296,7 @@ export default async function (message, ctx) {
     }
 
     const scopedCommand = start || text === "/"
-        || /^\/(?:bell[1-5]?|gedcom[1-5]?|links)(?:@\S+)?$/i.test(text)
+        || /^\/(?:bell[1-5]?|gedcom[1-5]?|epub[1-5]?|links)(?:@\S+)?$/i.test(text)
         || text.toLowerCase() === "связи";
     const searchInput = /^\//.test(text.split(/\r?\n/).find(l => l.trim() && !l.trimStart().startsWith('#')) || "");
     const anchorInput = !searchInput && (text.split(/\r?\n/).some(l => /^\s*[-+=]/.test(l))
@@ -379,9 +379,25 @@ export default async function (message, ctx) {
 
     // гедком-древо чата (то же выводит кнопка 🧬); ответом на триггер — только
     // текст родни выбранного радиуса (/gedcom2 = 2), без кнопок
-    const gm = text.match(/^\/gedcom([1-5])?(?:@\S+)?$/i);
+    const gm = text.match(/^\/(gedcom|epub)([1-5])?(?:@\S+)?$/i);
     if (gm) {
-        const radius = Number(gm[1]) || 1;
+        const epub = gm[1].toLowerCase() === 'epub';
+        const radius = Number(gm[2]) || 1;
+        if (epub && resolved) {
+            const rows = await personRows(chatId);
+            const skey = resolved.n + ' ' + resolved.d;
+            const hero = rows.find(r => r.n + ' ' + r.d === skey);
+            if (!hero) {
+                await api.sendMessage({ chat_id: chatId, text: REPLY_TARGET_ERROR });
+                return;
+            }
+            const pairs = await linkPairs(chatId), spouses = await focusSpousePairs(chatId);
+            const r = normalizeFocusRadius(radius, focusDepth(pairs, spouses, skey));
+            const sex = new Map(rows.map(p => [p.n + ' ' + p.d, p.sex ?? null]));
+            const keys = focusListKeys(pairs, spouses, skey, r, k => sex.get(k) ?? null);
+            await sendEpub(chatId, keys, focusHead(skey, r, hero.dd), hero.xref, message.message_id);
+            return;
+        }
         if (resolved) {
             const rec = resolved;
             if (rec) {
@@ -409,6 +425,10 @@ export default async function (message, ctx) {
         }
         if (!(await hasTree(chatId))) {
             await api.sendMessage({ chat_id: chatId, text: "связей пока нет" });
+            return;
+        }
+        if (epub) {
+            await sendEpub(chatId, undefined, 'Древо чата', null, message.message_id);
             return;
         }
         // «🧬⏳» ответом; прицепы (.ged+.pdf) — медиа-группой в ответ на
