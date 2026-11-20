@@ -18,7 +18,7 @@ const HELP = "Отправьте событие, покажу лунно-сол�
     + "Цифры задают радиус родни для 🔔 и 🧬; -+= выводит всю ветвь потомков.\n\n"
     + "/today — события сегодня (МСК).\n"
     + "/bell — список событий, /gedcom — древо: в ответ на событие — родня героя, без ответа — весь чат. /bell2 и /gedcom2 — радиус 2.\n"
-    + "/epub — древо одним файлом EPUB; в ответ на персону /epub2 — радиус 2 (от 1 до 5).\n"
+    + "/epub и /pdf — древо одним файлом. В ответ на фокус /gedcom, /epub и /pdf берут радиус из заголовка, иначе 1; суффикс 1–5 задаёт радиус явно.\n"
     + "/links — родословная роспись: в ответ — ветвь героя, без ответа — весь чат.\n"
     + "/fynny0 — обычные названия родства, /fynny1 — цепочки (fynny=0).\n"
     + "/trim1 — импорт .ged/.ged.txt: инициалы, без мест и примечаний; /trim0 — полные данные (trim=0).\n"
@@ -81,4 +81,10 @@ function resolveReplyRecord(records, text, bot = false, context = null) {
     return rec;
 }
 
-module.exports = { REPLY_TARGET_ERROR, HELP, helpText, approxOut, eventDate, findShownRecord, replyHeader, resolveReplyRecord };
+const TREE_EXPORT_COMMAND = /^\/(gedcom|epub|pdf)([1-5])?(?:@\S+)?$/i;
+
+function exportReplyRadius(suffix, botReplyText) {
+    return Number(suffix || /^([1-5]) /.exec(botReplyText ?? '')?.[1] || 1);
+}
+
+module.exports = { REPLY_TARGET_ERROR, HELP, helpText, approxOut, eventDate, findShownRecord, replyHeader, resolveReplyRecord, TREE_EXPORT_COMMAND, exportReplyRadius };

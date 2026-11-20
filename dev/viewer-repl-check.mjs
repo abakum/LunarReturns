@@ -4,8 +4,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { inflateRawSync } from 'node:zlib';
+import { checkChartLimit } from '../tgcloud/lib/chart.cjs';
+import { checkEpubLimit } from '../tgcloud/lib/epub.cjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+const largeGed = '0 @I@ INDI\r\n'.repeat(10000);
+assert.doesNotThrow(() => checkChartLimit(1000));
+assert.throws(() => checkChartLimit(1001), /PDF: лимит 1000 персон.*1001/);
+assert.doesNotThrow(() => checkEpubLimit(largeGed));
+assert.throws(() => checkEpubLimit(largeGed + '0 @LAST@ INDI'), /EPUB: лимит 10000 персон.*10001/);
 const tmp = fs.mkdtempSync('/tmp/kilo/lr-viewer-repl-');
 console.log('Artifacts and logs: ' + tmp);
 const preload = path.join(tmp, 'offline.cjs');
@@ -16,6 +23,14 @@ const fail = process.env.VIEWER_FAIL;
 if (fail === 'generation') {
     const epub = require(${JSON.stringify(path.join(root, 'tgcloud/lib/epub.cjs'))});
     epub.viewerEpub = () => { throw new Error('injected viewer generation'); };
+}
+if (fail === 'limits') {
+    const chart = require(${JSON.stringify(path.join(root, 'tgcloud/lib/chart.cjs'))});
+    const epub = require(${JSON.stringify(path.join(root, 'tgcloud/lib/epub.cjs'))});
+    const checkChart = chart.checkChartLimit, checkEpub = epub.checkEpubLimit;
+    chart.checkChartLimit = () => checkChart(1001);
+    epub.checkEpubLimit = () => checkEpub('0 @I@ INDI\\n'.repeat(10001));
+    chart.chartPdf = epub.viewerEpub = () => { throw new Error('Unexpected render after limit'); };
 }
 Object.defineProperty(globalThis, '__tgdev', { configurable: true, set(value) {
     const original = value.onApi;
@@ -230,6 +245,39 @@ for (const platform of ['tg', 'vk']) {
     }
     const button = [...focus.log.matchAll(/\[4\.(\d+)\] 🧬/g)].at(-1);
     assert.ok(button, focus.log);
+    const radiusButton = [...focus.log.matchAll(/\[4\.(\d+)\] 2(?=\s|$)/g)].at(-1);
+    assert.ok(radiusButton, focus.log);
+    const inherited = run(platform, 'export-radius', [...setup, '/Павел I', '/4 ' + radiusButton[1],
+        '>4 /epub', '>4 /epub1', '>4 /pdf', '>4 /pdf1', '>4 /gedcom', '!wait 300', '>4 /gedcom1', '!wait 300', '/pdf']);
+    const inheritedBooks = inherited.files.filter(f => f.name.endsWith('.epub'));
+    const inheritedGeds = inherited.files.filter(f => f.name.endsWith('.ged'));
+    const inheritedPdfs = inherited.files.filter(f => f.name.endsWith('.pdf'));
+    assert.equal(inheritedBooks.length, 4, inherited.log);
+    assert.equal(inheritedGeds.length, 2, inherited.log);
+    assert.equal(inheritedPdfs.length, 5, inherited.log);
+    assert.equal(inheritedPdfs.filter(f => f.name === 'Древо чата.pdf').length, 1);
+    for (const [r, ged] of [[1, focus.files.find(f => f.name.endsWith('.ged')).bytes.toString()], [2, radiusTwo]]) {
+        const atRadius = files => files.filter(f => f.name.startsWith(r + ' Павел I '));
+        assert.equal(atRadius(inheritedGeds)[0].bytes.toString(), ged);
+        assert.equal(atRadius(inheritedBooks).length, 2);
+        for (const book of atRadius(inheritedBooks)) assert.equal(readBook(book).gedcom, ged);
+        const pdfs = atRadius(inheritedPdfs);
+        assert.equal(pdfs.length, 2);
+        const text = pdfs.map((p, i) => {
+            const file = path.join(tmp, `${platform}-radius-${r}-${i}.pdf`);
+            fs.writeFileSync(file, p.bytes);
+            return execFileSync('pdftotext', ['-layout', file, '-'], { encoding: 'utf8' });
+        });
+        assert.match(text[0], /Павел I/);
+        assert.equal(text[0], text[1]);
+    }
+    const limited = run(platform, 'export-limits', [...setup, '/pdf', '/epub', '/gedcom'], 'limits');
+    assert.doesNotMatch(limited.log, /Unexpected render/);
+    assert.ok(limited.files.some(f => f.name.endsWith('.ged')));
+    assert.ok(limited.files.every(f => !/\.(?:pdf|epub)$/.test(f.name)));
+    const messages = limited.events.map(e => e.params?.text || e.params?.message || '').join('\n');
+    assert.match(messages, /PDF: лимит 1000 персон.*1001/);
+    assert.match(messages, /EPUB: лимит 10000 персон.*10001/);
     const tapped = run(platform, 'focus-button', [...setup, '/Павел I', '/4 ' + button[1]]);
     checkPayloads(platform, tapped, true);
     const finalized = tapped.events.filter(e => ['editMessageText', 'messages.edit'].includes(e.method))

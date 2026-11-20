@@ -46,6 +46,9 @@ function chartRows(rows, rel) {
 }
 
 const CHART_MAX = 1000;  // персон (PDF многостраничный, режется по высоте)
+function checkChartLimit(count) {
+    if (count > CHART_MAX) throw new RangeError(`PDF: лимит ${CHART_MAX} персон, в диаграмме ${count}. Выберите меньший фрагмент.`);
+}
 
 // «диапазон» радиуса: 1 родители-дети, 2 деды-внуки, 3 прадеды-правнуки,
 // 4 пра2деды-пра2внуки, 5 пра3деды-пра3внуки (один «пра» на половину:
@@ -225,6 +228,7 @@ function chartModel(title, rows, links, rel = null, marriages = null,
     // бар от якоря); без якоря строка не рисуется
     const yrOf = r => r.birth != null ? year(r.birth) : (Number.isFinite(r.anchor) ? r.anchor : null);
     rows = rows.filter(r => yrOf(r) !== null);
+    checkChartLimit(rows.length);
     const TODAY_Y = new Date().getFullYear(); // «сегодня» — гранулярность оси (годы)
     // ключи: датированные — «Имя полная дата», бездатные — «Имя якорь»;
     // коллизии (дубли записей, одноимённые заглушки на одном якоре) —
@@ -241,15 +245,6 @@ function chartModel(title, rows, links, rel = null, marriages = null,
         }
     }
     const keyOf = r => keys.get(r);
-    // не более CHART_MAX: берём CHART_MAX МЛАДШИХ (снизу = младшие); связи,
-    // где кто-то из персон отсекся, удаляются; список всегда рисуем (без отказа)
-    if (rows.length > CHART_MAX) {
-        const sorted = [...rows].sort((a, b) => yrOf(a) - yrOf(b)
-            || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-        const keep = new Set(sorted.slice(-CHART_MAX).map(keyOf));
-        rows = rows.filter(r => keep.has(keyOf(r)));
-        links = links.filter(l => keep.has(l.child) && l.parents.every(p => keep.has(p)));
-    }
     const errors = chartDiagnostics(rows, links);
     if (errors.length) throw new Error("chart: " + errors[0]);
     const byKey = new Map(rows.map(r => [keyOf(r), r]));
@@ -748,4 +743,4 @@ function chartFont() {
 
 
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
-module.exports = { CHART_MAX, b64ToBytes, chartFont, chartDiagnostics, chartModel, chartPdf, chartRows, fileBaseOf, parseTtf, rangeLevel };
+module.exports = { CHART_MAX, checkChartLimit, b64ToBytes, chartFont, chartDiagnostics, chartModel, chartPdf, chartRows, fileBaseOf, parseTtf, rangeLevel };

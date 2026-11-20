@@ -41,7 +41,7 @@ const {
 // Канон — tgcloud/lib/chart.cjs (план .kilo/plans/20261107-shared-modules-plan.md): его же импортирует
 // ТГ-копия через ESM-шим; правки — только в .cjs, дословных копий больше нет.
 const {
-    CHART_MAX, b64ToBytes, parseTtf, chartDiagnostics, chartModel, fileBaseOf, chartPdf, chartRows, chartFont, rangeLevel} = reqLib("chart");
+    checkChartLimit, b64ToBytes, parseTtf, chartDiagnostics, chartModel, fileBaseOf, chartPdf, chartRows, chartFont, rangeLevel} = reqLib("chart");
 
 
 // ============================== ПАРСИНГ (общий модуль) ==============================
@@ -68,7 +68,7 @@ const { TZ_MS, moonNew, la, ageSuffix, mskToday} = reqLib("astro");
 // Канон примерных дат — tgcloud/lib/text.cjs (approxOut): его же импортирует
 // ТГ-копия через ESM-шим; юбилейные тексты (jubileeText) платформенные —
 // остаются в копиях (ТГ: tg-spoiler/htmlEsc, ВК: plain).
-const { REPLY_TARGET_ERROR, HELP, helpText, approxOut, eventDate, findShownRecord, resolveReplyRecord } = reqLib("text");
+const { REPLY_TARGET_ERROR, HELP, helpText, approxOut, eventDate, findShownRecord, resolveReplyRecord, TREE_EXPORT_COMMAND, exportReplyRadius } = reqLib("text");
 const { graftError, parseSearchQuery } = reqLib("flat");
 
 // ============================== РОДОСЛОВНАЯ РОСПИСЬ -+= — ЧИСТЫЕ ФУНКЦИИ (общий модуль) =====
@@ -1471,7 +1471,6 @@ function importChartWarnings(peerId) {
 function chartFor(peerId, keys, title, heroKey = null, range = null, diagnose = false) {
     const snapshot = flatRows(peerId);
     const pairs = linkPairs(peerId), spousePairs = focusSpousePairs(peerId);
-    const annotationText = createFlatAnnotationText(snapshot, pairs, spousePairs);
     const xOf = new Map(snapshot[0].filter(p => p.d != null).map(p => [p.name + " " + p.d, p.key]));
     const hasKeys = Array.isArray(keys) && keys.length > 0;
     const recs = personRows(peerId).filter(r => !hasKeys || keys.includes(pkey(r)));
@@ -1537,6 +1536,7 @@ function chartFor(peerId, keys, title, heroKey = null, range = null, diagnose = 
     } : null;
     if (diagnose) return chartDiagnostics(rows, links, chartFont());
     rows = chartRows(rows, rel);
+    checkChartLimit(rows.length);
     const visible = new Set(rows.map(r => r.k ?? r.name + " " + r.birth));
     for (const k of keySet) if (!visible.has(k)) keySet.delete(k);
     for (const [f, k] of famStubKey) if (!visible.has(k)) famStubKey.delete(f);
@@ -1572,14 +1572,30 @@ function chartFor(peerId, keys, title, heroKey = null, range = null, diagnose = 
                     abt: snapshot[0].find(p => p.key === xOf.get(c))?.abt ?? 0 },
             })) });
     }
-    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages, annotationText), persons: Math.min(rows.length, CHART_MAX) };
+    const annotationText = createFlatAnnotationText(snapshot, pairs, spousePairs);
+    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages, annotationText), persons: rows.length };
+}
+
+async function sendPdf(peerId, head, heroKey, radius, msgId, convMsgId) {
+    try {
+        const keys = heroKey ? focusKeys(linkPairs(peerId), heroKey, radius, focusSpousePairs(peerId)) : undefined;
+        const { pdf } = chartFor(peerId, keys, head.replace(/^\d\s+/, ''), heroKey, radius);
+        const attachment = await vkUploadDoc(peerId, fileBaseOf(head) + '.pdf', Buffer.from(pdf, 'latin1'));
+        await messagesSend(peerId, head, msgId, convMsgId, undefined, attachment);
+    } catch (e) {
+        console.error('pdf:', e.message);
+        const text = e.message.startsWith('PDF: лимит ') ? e.message
+            : e.message.includes('персоны пусты') ? 'Нет персон с датами для диаграммы.' : 'Не удалось выгрузить PDF.';
+        await messagesSend(peerId, text, msgId, convMsgId);
+    }
 }
 
 async function sendEpub(peerId, keys, head, heroKey, heroXref, msgId, convMsgId) {
     try {
-        const { viewerEpub, epubBase } = reqLib('epub');
+        const { viewerEpub, epubBase, checkEpubLimit } = reqLib('epub');
         const { viewerAnnotations } = reqLib('viewer');
         const g = gedcomText(peerId, keys);
+        checkEpubLimit(g);
         const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), getSettings(peerId).fynny);
         const title = epubBase(heroKey, parseInt(head, 10) || 1);
         const epub = viewerEpub(g, title, heroXref, annotations);
@@ -1587,7 +1603,7 @@ async function sendEpub(peerId, keys, head, heroKey, heroXref, msgId, convMsgId)
         await messagesSend(peerId, head, msgId, convMsgId, undefined, attachment);
     } catch (e) {
         console.error('epub:', e.message);
-        await messagesSend(peerId, 'Не удалось выгрузить EPUB.', msgId, convMsgId);
+        await messagesSend(peerId, e.message.startsWith('EPUB: лимит ') ? e.message : 'Не удалось выгрузить EPUB.', msgId, convMsgId);
     }
 }
 
@@ -1724,7 +1740,8 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
         const atts = [], uploadErrors = [];
         try {
             const { viewerAnnotations } = reqLib("viewer");
-            const { viewerEpub, epubBase } = reqLib("epub");
+            const { viewerEpub, epubBase, checkEpubLimit } = reqLib("epub");
+            checkEpubLimit(g);
             const hero = heroKey ? personRows(peerId).find(r => pkey(r) === heroKey) : null;
             const heroXref = hero && g.split("\n").includes("0 @" + hero.xref + "@ INDI") ? hero.xref : null;
             const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), getSettings(peerId).fynny);
@@ -2579,8 +2596,9 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     if (process.env.LOG_UPDATES) console.log("msg from", peerId, ":", text);
     if (text.trim().startsWith("/")) console.log("команда:", JSON.stringify(text.trim()), "peer", peerId);
     if (date) markSeen(date);
-    const scopedCommand = isStart(text, payload)
-        || /^\/(?:bell[1-5]?|gedcom[1-5]?|epub[1-5]?|links)(?:@\S+)?$/i.test(text.trim())
+    const exportCommand = TREE_EXPORT_COMMAND.exec(text.trim());
+    const scopedCommand = isStart(text, payload) || exportCommand
+        || /^\/(?:bell[1-5]?|links)(?:@\S+)?$/i.test(text.trim())
         || text.trim().toLowerCase() === "связи";
     if (originalReply && (scopedCommand || anchorInput) && !parseGedcom(text)) {
         if (!resolved) {
@@ -2619,33 +2637,37 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         await messagesSend(peerId, "Родство: " + (mode ? "цепочки." : "обычные названия."), msgId, convMsgId);
         return;
     }
-    const gm = t.match(/^\/(gedcom|epub)([1-5])?(?:@\S+)?$/);
-    if (gm) {
-        const epub = gm[1] === 'epub';
-        const radius = Number(gm[2]) || 1;
-        // ответом на триггер — только текст родни выбранного радиуса, без кнопок
-        // (заголовок фокуса «2 Имя ГГГГ-ММ-ДД» — цифру радиуса снимаем)
+    if (exportCommand) {
+        const format = exportCommand[1].toLowerCase();
+        const radius = exportReplyRadius(exportCommand[2], replyMsg?.from_id < 0 ? replyMsg.text : null);
         if (resolved) {
-            const rec = resolved;
-            if (rec) {
-                const skey = rec.n + " " + rec.d; // показанный ключ → хранимый
-                const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
-                const pairs = linkPairs(peerId), spPairs = focusSpousePairs(peerId);
-                const r = normalizeFocusRadius(radius, focusDepth(pairs, spPairs, skey));
-                const keys = focusListKeys(pairs, spPairs, skey, r, k => sexMap.get(k) ?? null);
-                if (epub) {
-                    const hero = personRows(peerId).find(p => pkey(p) === skey);
-                    if (hero) await sendEpub(peerId, keys, focusHead(skey, r, hero.dd), skey, hero.xref, msgId, convMsgId);
-                    else await messagesSend(peerId, REPLY_TARGET_ERROR, msgId, convMsgId);
-                    return;
-                }
-                await sendGedArtifacts(peerId, keys, focusHead(skey, r, rec.dd), msgId, convMsgId, skey);
-                console.log("focus text:", skey, "радиус", r, "peer", peerId);
+            const skey = pkey(resolved);
+            const rows = personRows(peerId);
+            const hero = rows.find(p => pkey(p) === skey);
+            if (!hero && format !== 'gedcom') {
+                await messagesSend(peerId, REPLY_TARGET_ERROR, msgId, convMsgId);
                 return;
             }
+            const pairs = linkPairs(peerId), spouses = focusSpousePairs(peerId);
+            const r = normalizeFocusRadius(radius, focusDepth(pairs, spouses, skey));
+            const head = focusHead(skey, r, resolved.dd);
+            if (format === 'pdf') {
+                await sendPdf(peerId, head, skey, r, msgId, convMsgId);
+                return;
+            }
+            const sex = new Map(rows.map(p => [pkey(p), p.sex ?? null]));
+            const keys = focusListKeys(pairs, spouses, skey, r, k => sex.get(k) ?? null);
+            if (format === 'epub') {
+                await sendEpub(peerId, keys, head, skey, hero.xref, msgId, convMsgId);
+                return;
+            }
+            await sendGedArtifacts(peerId, keys, head, msgId, convMsgId, skey);
+            console.log("focus text:", skey, "радиус", r, "peer", peerId);
+            return;
         }
         if (!hasTree(peerId)) { await messagesSend(peerId, "связей пока нет", msgId, convMsgId); return; }
-        if (epub) { await sendEpub(peerId, undefined, 'Древо чата', null, null, msgId, convMsgId); return; }
+        if (format === 'epub') { await sendEpub(peerId, undefined, 'Древо чата', null, null, msgId, convMsgId); return; }
+        if (format === 'pdf') { await sendPdf(peerId, 'Древо чата', null, null, msgId, convMsgId); return; }
         // чат-кейс: «🧬⏳» ответом с цитатой на команду, затем .ged+.pdf
         // (при переливе росписи ещё и .ged.txt) комбинированной правкой цепляются
         // в то же сообщение — часы сняты, остаётся «🧬»

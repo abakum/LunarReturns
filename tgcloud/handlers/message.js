@@ -6,11 +6,11 @@ import { fileBaseOf } from '../lib/chart.cjs';
 import { parseSearchQuery } from '../lib/flat.cjs';
 import { jubileeText } from '../lib/text.js';
 import { normalizeFocusRadius, focusListMessage, focusSearch, searchChain, searchRadius, searchProgressHead, prepareReplySearch } from '../lib/tree.cjs';
-import { REPLY_TARGET_ERROR, resolveReplyRecord } from '../lib/text.cjs';
+import { REPLY_TARGET_ERROR, resolveReplyRecord, TREE_EXPORT_COMMAND, exportReplyRadius } from '../lib/text.cjs';
 import {
     helpText, startMarkup, chatAdmin, getSettings, todayText, jubileeMarkup, sendLong,
     recordOf, recordShownOf, recordByXref, replaceWithGedcom,
-    linkPairs, personRows, weddingRows, sendGedPdf, sendEpub, focusHead, focusMarkup,
+    linkPairs, personRows, weddingRows, sendGedPdf, sendEpub, sendPdf, focusHead, focusMarkup,
     focusListKeys, focusSpousePairs, focusDepth, focusListText, mmddToday, upcomingText, upsertPerson, applyTree, cutAndGraft, treeReport,
     editTrigger, hasTree, NOT_FOR_GRAFT,
     chatFlatText, flatSearch, sendFlatPack, flatHitKey, searchHead, cutLines,
@@ -295,8 +295,9 @@ export default async function (message, ctx) {
         return;
     }
 
-    const scopedCommand = start || text === "/"
-        || /^\/(?:bell[1-5]?|gedcom[1-5]?|epub[1-5]?|links)(?:@\S+)?$/i.test(text)
+    const exportCommand = TREE_EXPORT_COMMAND.exec(text);
+    const scopedCommand = start || text === "/" || exportCommand
+        || /^\/(?:bell[1-5]?|links)(?:@\S+)?$/i.test(text)
         || text.toLowerCase() === "связи";
     const searchInput = /^\//.test(text.split(/\r?\n/).find(l => l.trim() && !l.trimStart().startsWith('#')) || "");
     const anchorInput = !searchInput && (text.split(/\r?\n/).some(l => /^\s*[-+=]/.test(l))
@@ -377,58 +378,47 @@ export default async function (message, ctx) {
         return;
     }
 
-    // гедком-древо чата (то же выводит кнопка 🧬); ответом на триггер — только
-    // текст родни выбранного радиуса (/gedcom2 = 2), без кнопок
-    const gm = text.match(/^\/(gedcom|epub)([1-5])?(?:@\S+)?$/i);
-    if (gm) {
-        const epub = gm[1].toLowerCase() === 'epub';
-        const radius = Number(gm[2]) || 1;
-        if (epub && resolved) {
+    if (exportCommand) {
+        const format = exportCommand[1].toLowerCase();
+        const reply = message.reply_to_message;
+        const radius = exportReplyRadius(exportCommand[2], reply?.from?.is_bot ? reply.text : null);
+        if (resolved) {
             const rows = await personRows(chatId);
             const skey = resolved.n + ' ' + resolved.d;
             const hero = rows.find(r => r.n + ' ' + r.d === skey);
-            if (!hero) {
+            if (!hero && format !== 'gedcom') {
                 await api.sendMessage({ chat_id: chatId, text: REPLY_TARGET_ERROR });
                 return;
             }
             const pairs = await linkPairs(chatId), spouses = await focusSpousePairs(chatId);
             const r = normalizeFocusRadius(radius, focusDepth(pairs, spouses, skey));
-            const sex = new Map(rows.map(p => [p.n + ' ' + p.d, p.sex ?? null]));
-            const keys = focusListKeys(pairs, spouses, skey, r, k => sex.get(k) ?? null);
-            await sendEpub(chatId, keys, focusHead(skey, r, hero.dd), skey, hero.xref, message.message_id);
-            return;
-        }
-        if (resolved) {
-            const rec = resolved;
-            if (rec) {
-                const skey = rec.n + " " + rec.d; // показанный ключ → хранимый
-                const pairs = await linkPairs(chatId);
-                const spPairs = await focusSpousePairs(chatId);
-                const r = normalizeFocusRadius(radius, focusDepth(pairs, spPairs, skey));
-                const head = focusHead(skey, r, rec.dd);
-                const hold = await api.sendMessage({ chat_id: chatId, text: head + "\n🧬⏳",
-                    reply_parameters: { message_id: message.message_id, allow_sending_without_reply: true } });
-                try {
-                const sexMap = new Map((await personRows(chatId))
-                    .map(rw => [rw.n + " " + rw.d, rw.sex ?? null]));
-                const keys = focusListKeys(pairs, spPairs, skey, r,
-                    k => sexMap.get(k) ?? null);
-                await sendGedPdf(chatId, keys, head, skey, hold.message_id);
-                } catch (e) {
-                    console.error("gedcom command:", e);
-                    await api.editMessageText({ chat_id: chatId, message_id: hold.message_id,
-                        text: head + "\n💥 Не удалось подготовить древо: " + e.message });
-                }
-                console.log("focus text:", skey, "радиус", r, "chat", chatId);
+            const head = focusHead(skey, r, resolved.dd);
+            if (format === 'pdf') {
+                await sendPdf(chatId, head, skey, r, message.message_id);
                 return;
             }
+            const sex = new Map(rows.map(p => [p.n + ' ' + p.d, p.sex ?? null]));
+            const keys = focusListKeys(pairs, spouses, skey, r, k => sex.get(k) ?? null);
+            if (format === 'epub') {
+                await sendEpub(chatId, keys, head, skey, hero.xref, message.message_id);
+                return;
+            }
+            const hold = await api.sendMessage({ chat_id: chatId, text: head + "\n🧬⏳",
+                reply_parameters: { message_id: message.message_id, allow_sending_without_reply: true } });
+            await sendGedPdf(chatId, keys, head, skey, hold.message_id);
+            console.log("focus text:", skey, "радиус", r, "chat", chatId);
+            return;
         }
         if (!(await hasTree(chatId))) {
             await api.sendMessage({ chat_id: chatId, text: "связей пока нет" });
             return;
         }
-        if (epub) {
+        if (format === 'epub') {
             await sendEpub(chatId, undefined, 'Древо чата', null, null, message.message_id);
+            return;
+        }
+        if (format === 'pdf') {
+            await sendPdf(chatId, 'Древо чата', null, null, message.message_id);
             return;
         }
         // «🧬⏳» ответом; прицепы (.ged+.pdf) — медиа-группой в ответ на

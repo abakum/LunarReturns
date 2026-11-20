@@ -3,6 +3,11 @@ const { deflateSync } = require('./epub-deflate.cjs');
 const { fileBaseOf } = require('./chart.cjs');
 
 const EPUB_TYPE = 'application/epub+zip';
+const EPUB_MAX = 10000;
+function checkEpubLimit(gedcom) {
+    const count = (gedcom.match(/^0 @[^\r\n]+@ INDI\r?$/gm) || []).length;
+    if (count > EPUB_MAX) throw new RangeError(`EPUB: лимит ${EPUB_MAX} персон, в выгрузке ${count}. Выберите меньший фрагмент.`);
+}
 const encoder = new TextEncoder();
 const crcTable = Uint32Array.from({ length: 256 }, (_, n) => {
     for (let bit = 0; bit < 8; bit++) n = (n >>> 1) ^ (n & 1 ? 0xedb88320 : 0);
@@ -86,4 +91,4 @@ function viewerEpub(gedcom, title, heroXref, annotations) {
     ]);
 }
 
-module.exports = { viewerEpub, EPUB_TYPE, epubBase };
+module.exports = { viewerEpub, EPUB_TYPE, epubBase, checkEpubLimit };
