@@ -182,7 +182,7 @@ for (const platform of ['tg', 'vk']) {
     const focus = run(platform, 'focus-reply', [...setup, '/Павел I', '>4 /gedcom1']);
     checkPayloads(platform, focus, true);
     const books = run(platform, 'epub', [...setup, '/Павел I', '/epub', '>4 /epub', '>4 /epub2', '>4 /gedcom2']);
-    const epubs = books.files.filter(f => f.name.endsWith(platform === 'vk' ? '.epub.gz' : '.epub'));
+    const epubs = books.files.filter(f => f.name.endsWith('.epub'));
     assert.equal(epubs.length, 3, books.log);
     assert.equal(books.files.filter(f => f.name.endsWith('.ged')).length, 1, 'Only /gedcom2 attaches GEDCOM');
     assert.equal(books.files.filter(f => f.name.endsWith('.pdf')).length, 1, 'Only /gedcom2 attaches a PDF');
@@ -193,12 +193,7 @@ for (const platform of ['tg', 'vk']) {
     for (const [index, expected] of [outputs[platform], focus.files.find(f => f.name.endsWith('.ged')).bytes.toString(),
         checkPayloads(platform, { ...books, events: books.events.filter(e => !e.params?.document?.filename.endsWith('.epub')) }, true)].entries()) {
         const pathToBook = path.join(tmp, `${platform}-${index}.epub`);
-        const { name, bytes } = epubs[index];
-        if (platform === 'vk') {
-            assert.ok(bytes[3] & 0x08, 'Gzip must carry the EPUB filename');
-            assert.equal(bytes.subarray(10, bytes.indexOf(0, 10)).toString('ascii'), name.slice(0, -3));
-        }
-        const archive = platform === 'vk' ? gunzipSync(bytes) : bytes;
+        const archive = epubs[index].bytes;
         fs.writeFileSync(pathToBook, archive);
         assert.equal(archive.readUInt16LE(8), 0, 'First ZIP entry must be stored');
         const listing = execFileSync('unzip', ['-lv', pathToBook], { encoding: 'utf8' });

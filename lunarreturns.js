@@ -1590,7 +1590,7 @@ async function sendEpub(peerId, keys, head, heroXref, msgId, convMsgId) {
         const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), getSettings(peerId).fynny);
         const epub = viewerEpub(g, head.replace(/^\d\s+/, ''), heroXref, annotations);
         const name = viewerFileBase(fileBaseOf(head)) + '.epub';
-        const attachment = await vkUploadDoc(peerId, name + '.gz', gzipNamed(epub, name));
+        const attachment = await vkUploadDoc(peerId, name, epub);
         await messagesSend(peerId, head, msgId, convMsgId, undefined, attachment);
     } catch (e) {
         console.error('epub:', e.message);

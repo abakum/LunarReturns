@@ -9,5 +9,5 @@ feat(bot): export interactive trees with the epub command
 ## Отчёт
 
 - `/epub` без ответа отправляет всё дерево чата, в ответ на персону `/epub` и `/epub1`–`/epub5` используют правила отбора `/gedcomN`. Отправляется один EPUB, без GED/PDF/HTML-вложений. Нераспознанный ответ отклоняется.
-- EPUB упаковывается в ZIP без сжатия в общем модуле `tgcloud/lib/epub.cjs`; прототип и существующий экспорт `/gedcom` не менялись.
-- Прошли `npm run test:viewer`, `node dev/sync-check.mjs`, `git diff --check`. EPUBCheck 5.3.0 подтвердил выгрузки TG всего дерева и VK радиуса 2 без ошибок и предупреждений. Реальная доставка через API и работа в Android-читалках не проверялись; деплой не выполнялся.
+- EPUB упаковывается в `tgcloud/lib/epub.cjs` в ZIP с Deflate; первая запись `mimetype` хранится без сжатия. TG и VK отправляют обычный `.epub`. Прототип и существующий экспорт `/gedcom` не менялись.
+- Прошли `npm run test:viewer`, `node dev/sync-check.mjs`, `git diff --check`. EPUBCheck 5.3.0 подтвердил выгрузки TG всего дерева и VK радиуса 2 без ошибок и предупреждений. Пользователь подтвердил живую доставку сжатого `.epub` через VK без внешней `.gz`; см. `20261120-epub-deflate.md`.
