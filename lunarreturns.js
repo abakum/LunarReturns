@@ -2670,6 +2670,8 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
     }
     if (exportCommand) {
         const format = exportCommand[1].toLowerCase();
+        const hold = await messagesSend(peerId, (format === 'pdf' ? '🖨️' : format === 'epub' ? '📖' : '🧬') + '⏳', msgId, convMsgId);
+        try {
         const radius = exportReplyRadius(exportCommand[2], replyMsg?.from_id < 0 ? replyMsg.text : null);
         if (resolved) {
             const skey = pkey(resolved);
@@ -2701,12 +2703,37 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         if (format === 'pdf') { await sendPdf(peerId, 'Древо чата', null, null, msgId, convMsgId); return; }
         await sendGedcom(peerId, undefined, "Древо чата", msgId, convMsgId);
         return;
+        } catch (e) {
+            console.error('tree export:', e.message);
+            await messagesSend(peerId, 'Не удалось подготовить файл.', msgId, convMsgId);
+            return;
+        } finally {
+            if (hold) {
+                try {
+                    const result = await vkApi('messages.delete', { peer_id: peerId, message_ids: hold, delete_for_all: 1 });
+                    if (!(result?.[hold] === 1 || result?.[0]?.response === 1 || result === 1))
+                        throw new Error('Не удалось удалить индикатор экспорта');
+                } catch {
+                    await vkApi('messages.edit', { peer_id: peerId, message_id: hold, message: 'Экспорт завершён.' })
+                        .catch(e => console.error('export progress:', e.message));
+                }
+            }
+        }
     }
     // /bellN (в ответ на триггер): список родни в радиусе N — как тап 🔔 на
     // фокусе; без reply — весь список чата (как 🔔 чата), не влезает —
     // отрезаем (целые строки)
     const bm = t.match(/^\/bell([1-5])?(?:@\S+)?$/);
     if (bm) {
+        const sent = await messagesSend(peerId, "🔔⏳", msgId, convMsgId);
+        const finish = async text => {
+            if (sent) {
+                try { await vkApi("messages.edit", { peer_id: peerId, message_id: sent, message: text }); return; }
+                catch (e) { console.error("bell edit:", e.message); }
+            }
+            await messagesSend(peerId, text, msgId, convMsgId);
+        };
+        try {
         const radius = Number(bm[1]) || 1;
         if (resolved) {
             const rec = resolved;
@@ -2715,7 +2742,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
                 // как тап: радиус не глубже имеющихся связей
                 const r = normalizeFocusRadius(radius, focusDepth(linkPairs(peerId), focusSpousePairs(peerId), skey));
                 const txt = focusText(peerId, skey, r, true, rec.dd, false);
-                await messagesSend(peerId, txt, msgId, convMsgId);
+                await finish(txt);
                 console.log("bell text:", skey, "радиус", r, "peer", peerId);
                 return;
             }
@@ -2726,9 +2753,14 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
         // как у 🔔 чата: список «от сегодня» одним сообщением — что не
         // влезает, отрезаем (целые строки)
         const shownList = cutLines(list || "", 4000);
-        await messagesSend(peerId, shownList || "Событий нет", msgId, convMsgId);
+        await finish(shownList || "Событий нет");
         console.log("bell chat:", (list ? list.split("\n").length : 0) + "->" + shownList.split("\n").length, "строк, peer", peerId);
         return;
+        } catch (e) {
+            console.error("bell text:", e.message);
+            await finish("Не удалось подготовить список. Попробуйте ещё раз.");
+            return;
+        }
     }
     // «/links» (в ТГ — кнопка 🔗 под событием): роспись ВЕТВИ героя — как тап
     // «-+=» на фокусе (>4000 — вложением); без reply — роспись
@@ -2739,8 +2771,11 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             const rec = resolved;
             if (rec) { key = rec.n + " " + rec.d; head = focusHead(key, 1, rec.dd); } // показанный ключ → хранимый
         }
+        const sent = await messagesSend(peerId, (head ? head + "\n" : "") + "-+=⏳", msgId, convMsgId);
+        const edit = message => vkApi("messages.edit", { peer_id: peerId, message_id: sent, message });
+        try {
         const pack = key ? branchFlatText(peerId, key) : chatFlatText(peerId);
-        if (!pack) { await messagesSend(peerId, key ? "ветвь пуста" : "связей пока нет", msgId, convMsgId); return; }
+        if (!pack) { await edit(key ? "ветвь пуста" : "связей пока нет"); return; }
         if (!key) {
             // роспись радиуса — ВСЕГДА файлом (зеркало ТГ sendFlatPack key=null):
             // «-+=⏳» ответом с цитатой на команду (⏳ = «выполняю, подождите»),
@@ -2750,7 +2785,6 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             // цитата при ней исчезает — принято); повтор при ошибке; провал
             // выкладки — текстовая правка «💥». Метка NOT_FOR_GRAFT —
             // первой строкой файла (роспись радиуса прививке не подлежит)
-            const sent = await messagesSend(peerId, "-+=⏳", msgId, convMsgId);
             void sendChatFlatArtifacts(peerId, pack, { message_id: sent }, null, "links");
         } else if (head.length + 1 + pack.length > 4000) {
             // голова + ✂️⏳ первым сообщением (полное — в файле); ВСЯ роспись —
@@ -2760,7 +2794,7 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
             const head0 = head || "Древо чата";
             // перелив: порядок строк — герой, метка (правило у NOT_FOR_GRAFT)
             const ngHead0 = head0 + "\n" + NOT_FOR_GRAFT;
-            const sent = await messagesSend(peerId, ngHead0 + "\n✂️⏳", msgId, convMsgId);
+            await edit(ngHead0 + "\n✂️⏳");
             (async () => {
                 try {
                     // ветвь — полная роспись («-+=») без метки; древо чата метку
@@ -2781,10 +2815,18 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
                         await messagesSend(peerId, head0, msgId, convMsgId, null, att);
                     }
                     console.log("links doc:", att, "peer", peerId);
-                } catch (e) { console.error("links doc upload:", e.message); }
+                } catch (e) {
+                    console.error("links doc upload:", e.message);
+                    await edit(ngHead0 + "\n💥 Не удалось выложить роспись.").catch(() => {});
+                }
             })();
         } else {
-            await messagesSend(peerId, (head ? head + "\n" : "") + pack, msgId, convMsgId);
+            await edit((head ? head + "\n" : "") + pack);
+        }
+        } catch (e) {
+            console.error("links flat pack:", e.message);
+            const error = "Не удалось подготовить роспись. Попробуйте ещё раз.";
+            await edit(error).catch(() => messagesSend(peerId, error, msgId, convMsgId));
         }
         console.log("links flat pack:", key || "chat", "peer", peerId);
         return;
@@ -3169,11 +3211,14 @@ async function handleEvent(o) {
             }
             return;
         }
-        const bell = p.c === "foc:bell" || p.c === "foc";
         // список всегда по ММ-ДД (сортировка подписки касается только дампа)
         const byFull = false;
         const head = focusHead(key, radius, rec.dd);
         const kb = await focusKeyboard(peerId, o.user_id, key, radius, depth);
+        if (p.c === "foc") {
+            await editOrigin(o, head, kb);
+            return;
+        }
         const loading = "🔔⏳";
         // Не используем fallback отправки для промежуточных часов.
         await vkApi("messages.edit", {
@@ -3182,7 +3227,7 @@ async function handleEvent(o) {
         }).catch(e => console.error("focus loading:", e.message));
         let text;
         try {
-            text = focusText(peerId, key, radius, bell, rec.dd, byFull);
+            text = focusText(peerId, key, radius, true, rec.dd, byFull);
         } catch (e) {
             console.error("focus list:", e);
             text = head + "\nНе удалось подготовить список. Попробуйте ещё раз.";

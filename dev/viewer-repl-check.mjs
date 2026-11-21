@@ -72,7 +72,7 @@ function run(platform, name, commands, failure = '') {
         cwd: root, encoding: 'utf8', timeout: 120000, maxBuffer: 48 * 1024 * 1024,
         input: [...commands, ...(platform === 'vk' ? ['!wait 6000'] : [])].join('\n') + '\n',
         env: { ...process.env, TG_TOKEN: '', VK_TOKEN: '', TMPDIR: tmp,
-            LR_DEV_DB: prefix + '.json', LR_DB: prefix + '.db', LR_VKOFF: '1453',
+            LR_DEV_DB: prefix + '.json', LR_DB: prefix + '.db', LR_VKOFF: process.env.LR_VKOFF || '1453',
             LR_VK_TRACE: trace, VIEWER_TG_TRACE: trace, VIEWER_FAIL: failure,
             LR_BACKUP_FAIL: '', LR_CSV_FAIL: '', LR_TXT_FAIL: '', LR_UPLOAD_FAIL1: '', LR_EDIT_FAIL1: '' },
     });
@@ -225,6 +225,31 @@ fs.writeFileSync(legacy, Buffer.concat([
 const outputs = {};
 const flatOutputs = {};
 for (const platform of ['tg', 'vk']) {
+    const waiting = run(platform, 'command-loading', [...setup, '/Павел I',
+        '>4 /bell2', '>4 /pdf2', '>4 /epub2', '>4 /gedcom2', '>4 /links']);
+    const messageText = e => e.params?.text || e.params?.message || '';
+    const sendMethod = platform === 'tg' ? 'sendMessage' : 'messages.send';
+    const editMethod = platform === 'tg' ? 'editMessageText' : 'messages.edit';
+    for (const label of ['🔔', '🖨️', '📖', '🧬', '-+=']) {
+        const hold = waiting.events.findIndex(e => e.method === sendMethod && messageText(e).endsWith(label + '⏳'));
+        assert.ok(hold >= 0, 'missing progress for ' + label);
+        const ext = { '🖨️': '.pdf', '📖': '.epub', '🧬': '.ged' }[label];
+        if (ext) {
+            const file = waiting.events.findIndex(e => platform === 'tg'
+                ? e.method === 'sendDocument' && e.params.document.filename.endsWith(ext)
+                : e.method === 'upload' && e.body.includes(ext + '"'));
+            const cleanup = waiting.events.findIndex((e, i) => i > file && e.method === (platform === 'tg' ? 'deleteMessage' : 'messages.delete'));
+            assert.ok(file > hold && cleanup > file, label + ': show progress before upload, then remove it');
+        } else {
+            const final = waiting.events.findIndex((e, i) => i > hold && e.method === editMethod
+                && /^\d Павел I[^\n]*\n/.test(messageText(e)) && !messageText(e).includes('⏳'));
+            assert.ok(final > hold, label + ': replace progress with output');
+        }
+    }
+    if (process.argv.includes('--loading-only')) {
+        console.log(platform + ': command loading indicators and cleanup OK');
+        continue;
+    }
     const verifyMapBook = result => {
         const book = result.files.find(f => f.name.endsWith('.epub'));
         assert.ok(book, result.log);
@@ -296,6 +321,20 @@ for (const platform of ['tg', 'vk']) {
     assert.ok(button, focus.log);
     const radiusButton = [...focus.log.matchAll(/\[4\.(\d+)\] 2(?=\s|$)/g)].at(-1);
     assert.ok(radiusButton, focus.log);
+    const bellButton = [...focus.log.matchAll(/\[4\.(\d+)\] 🔔/g)].at(-1);
+    assert.ok(bellButton, focus.log);
+    const select = '/4 ' + radiusButton[1];
+    const focusEdits = result => result.events.filter(e => platform === 'tg'
+        ? e.method === 'editMessageText' && e.params.message_id === 4
+        : e.method === 'messages.edit' && e.params.conversation_message_id === '12')
+        .map(e => e.params.text || e.params.message);
+    const switched = run(platform, 'select-radius', [...setup, '/Павел I', select]);
+    assert.deepEqual(focusEdits(switched), ['2 Павел I Петрович Романов 1754-09-20 1801-03-11']);
+    const rang = run(platform, 'ring-selected-radius', [...setup, '/Павел I', select, '/4 ' + bellButton[1]]);
+    const bellEdits = focusEdits(rang);
+    assert.match(bellEdits.at(-2), /^2 Павел I[^\n]*\n🔔⏳$/);
+    assert.match(bellEdits.at(-1), /^2 Павел I[^\n]*\n[\s\S]+/);
+    assert.doesNotMatch(bellEdits.at(-1), /⏳/);
     const inherited = run(platform, 'export-radius', [...setup, '/Павел I', '/4 ' + radiusButton[1],
         '>4 /epub', '>4 /epub1', '>4 /pdf', '>4 /pdf1', '>4 /gedcom', '!wait 300', '>4 /gedcom1', '!wait 300', '/pdf']);
     const inheritedBooks = inherited.files.filter(f => f.name.endsWith('.epub'));
@@ -351,6 +390,8 @@ for (const platform of ['tg', 'vk']) {
     }
     console.log(platform + ': Romanov GED/flat import confirmation and bell, full/reply/button GED+PDF+viewer payloads, isolated failures OK');
 }
-assert.equal(outputs.tg, outputs.vk, 'Full GED exports must match between platforms');
-assert.equal(flatOutputs.tg, flatOutputs.vk, 'Full flat-import GED exports must match between platforms');
-console.log('Mirrored viewer REPL checks: OK');
+if (!process.argv.includes('--loading-only')) {
+    assert.equal(outputs.tg, outputs.vk, 'Full GED exports must match between platforms');
+    assert.equal(flatOutputs.tg, flatOutputs.vk, 'Full flat-import GED exports must match between platforms');
+    console.log('Mirrored viewer REPL checks: OK');
+}

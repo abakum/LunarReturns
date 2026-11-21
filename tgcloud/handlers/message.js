@@ -344,6 +344,10 @@ export default async function (message, ctx) {
     // отрезаем (целые строки)
     const bm = text.match(/^\/bell([1-5])?(?:@\S+)?$/i);
     if (bm) {
+        const hold = await api.sendMessage({ chat_id: chatId, text: "🔔⏳",
+            reply_parameters: { message_id: message.message_id, allow_sending_without_reply: true } });
+        const finish = text => api.editMessageText({ chat_id: chatId, message_id: hold.message_id, text });
+        try {
         const radius = Number(bm[1]) || 1;
         if (resolved) {
             const rec = resolved;
@@ -363,8 +367,7 @@ export default async function (message, ctx) {
                 const body = focusListText(items, keys, skey, pairs,
                     spPairs, k => sexMap.get(k) ?? null, false, mmddToday(), r, (await getSettings(chatId)).fynny)
                     || "(в радиусе нет событий)";
-                await api.sendMessage({ chat_id: chatId,
-                    text: focusListMessage(focusHead(skey, r, rec.dd), body) });
+                await finish(focusListMessage(focusHead(skey, r, rec.dd), body));
                 console.log("bell text:", skey, "радиус", r, "chat", chatId);
                 return;
             }
@@ -373,13 +376,21 @@ export default async function (message, ctx) {
         // влезает, отрезаем (целые строки)
         const list = await upcomingText(chatId, false, mmddToday());
         const shownList = cutLines(list || "", 4000);
-        await api.sendMessage({ chat_id: chatId, text: shownList || "Событий нет" });
+        await finish(shownList || "Событий нет");
         console.log("bell chat:", (list ? list.split("\n").length : 0) + "->" + shownList.split("\n").length, "строк, chat", chatId);
         return;
+        } catch (e) {
+            console.error("bell text:", e.message);
+            await finish("Не удалось подготовить список. Попробуйте ещё раз.");
+            return;
+        }
     }
 
     if (exportCommand) {
         const format = exportCommand[1].toLowerCase();
+        const hold = await api.sendMessage({ chat_id: chatId, text: (format === 'pdf' ? '🖨️' : format === 'epub' ? '📖' : '🧬') + '⏳',
+            reply_parameters: { message_id: message.message_id, allow_sending_without_reply: true } });
+        try {
         const reply = message.reply_to_message;
         const radius = exportReplyRadius(exportCommand[2], reply?.from?.is_bot ? reply.text : null);
         if (resolved) {
@@ -421,6 +432,14 @@ export default async function (message, ctx) {
         }
         await sendGedcom(chatId, undefined, "Древо чата", message.message_id);
         return;
+        } catch (e) {
+            console.error('tree export:', e.message);
+            await api.sendMessage({ chat_id: chatId, text: 'Не удалось подготовить файл.' });
+            return;
+        } finally {
+            await api.deleteMessage({ chat_id: chatId, message_id: hold.message_id }).catch(() =>
+                api.editMessageText({ chat_id: chatId, message_id: hold.message_id, text: 'Экспорт завершён.' }).catch(() => {}));
+        }
     }
 
     // «/links» / «связи» (как в VK): роспись ВЕТВИ героя — как «-+=» на фокусе

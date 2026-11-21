@@ -278,25 +278,25 @@ export default async function (cq, ctx) {
         if (!row) { await answer("сообщение устарело — ответьте «/» на триггер заново"); return; }
         const rec = await recordOf(chatId, row.pkey);
         if (!rec) { await answer("персона не найдена"); return; }
-        // foc[1-5] — целевой радиус из кнопки (row.radius мог быть другим):
-        // обновляем focus_view и пересчитываем ключи под НОВЫЙ радиус
-        const wantR = /^foc[1-5]$/.test(data) ? Number(data.slice(3)) : row.radius;
-        // список/цифры — уровневый радиус (bell), 🧬 — кровный ромб (экспорт);
-        // «-+=» ключи родни не использует
-        const bell = data === "focbell" || /^foc[1-5]$/.test(data);
+        const selectRadius = /^foc[1-5]$/.test(data);
+        const wantR = selectRadius ? Number(data.slice(3)) : row.radius;
         const [radius, pairs, spPairs, depth] = await radiusOf(row.pkey, wantR);
         // xref для единых кнопок 👎/👀 (персона — xref, свадьба — fx fam-пары)
         const fxref = rec.xref ?? rec.fx ?? null;
         // список всегда по ММ-ДД (сортировка подписки касается только дампа)
         const byFull = false;
-        if (/^foc[1-5]$/.test(data))
+        if (selectRadius)
             await db.update(focusView).set({ radius }).where(eq(focusView.id, row.id)).run();
         await answer(data === "focbell" ? "список " + focusLabel(radius)
             : (data === "foctree" ? "древо " + focusLabel(radius)
                 : (data === "focflat" ? "пачка ветви " : "") + focusLabel(radius)));
         const head = focusHead(row.pkey, radius, rec.dd);
+        if (selectRadius) {
+            await editText(head, focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth, fxref));
+            return;
+        }
         const loading = "🔔⏳";
-        if (bell) {
+        if (data === "focbell") {
             let kb = cq.message.reply_markup;
             // Не создаём отдельное сообщение с вечными часами, если правка недоступна.
             await api.editMessageText({ chat_id: chatId, message_id: cq.message.message_id,
