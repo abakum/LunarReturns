@@ -218,7 +218,8 @@ try {
         assert.equal(commandData, exported(buttonGed, '.ged'), platform + ': clipped command/button GED');
         assert.match(commandData, /1 NAME ExactSecondary/);
         assert.match(commandData, /1 NAME ApproxPrimary/);
-        assert.match(last(commandGed), /^1 Hero 1950-01-01\n/);
+        assert.deepEqual(commandGed.files.map(f => path.extname(f.name)), ['.ged']);
+        assert.match(commandGed.files[0].name, /^1 Hero 1950-01-01.*\.ged$/);
 
         const children = Array.from({ length: 110 }, (_, i) => ({
             name: 'Descendant' + String(i).padStart(3, '0') + ' Long Given Name For Overflow',

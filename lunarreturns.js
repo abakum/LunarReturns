@@ -48,7 +48,7 @@ const {
 // Канон — tgcloud/lib/parse.cjs (план .kilo/plans/20261107-shared-modules-plan.md): его же импортирует
 // ТГ-копия через ESM-шим; правки — только в .cjs, дословных копий больше нет.
 const {
-    parseTrigger, parseGedcom, gedNoteLines, gedText, gedStats, gedFictiveDates, parseTreeLine, NOT_FOR_GRAFT, withGraftMark, parseTree, packToCsv, chatFlatArtifacts, trimImport} = reqLib("parse");
+    parseTrigger, decodeGedcom, parseGedcom, gedNoteLines, gedText, gedStats, gedFictiveDates, parseTreeLine, NOT_FOR_GRAFT, withGraftMark, parseTree, packToCsv, chatFlatArtifacts, trimImport} = reqLib("parse");
 const { localRecord, mskGedcom } = reqLib("event-time");
 
 
@@ -1289,6 +1289,7 @@ function gedcomText(peerId, keys) {
     const fidOf = new Map(fams.map(f => [f, f.xref]));
     const out = ["0 HEAD", "1 SOUR LunarReturns", "1 GEDC", "2 VERS 5.5.1", "2 FORM LINEAGE-LINKED", "1 CHAR UTF-8"];
     for (const r of persons) {
+        const start = out.length;
         out.push("0 @" + idOf.get(r.xref) + "@ INDI");
         out.push("1 NAME " + cleanName(r.n));
         if (r.sex) out.push("1 SEX " + r.sex);
@@ -1300,7 +1301,7 @@ function gedcomText(peerId, keys) {
             if (r.dsrcH !== undefined) out.push("3 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
             if (r.dp) out.push("2 PLAC " + r.dp);
         }
-        out.push(...gedNoteLines(r.note));
+        out.push(...gedNoteLines(r.note, true, out, start));
         for (const f of fams) {
             if (f.chd.some(c => c.x === r.xref)) {
                 out.push("1 FAMC @" + fidOf.get(f) + "@");
@@ -1311,9 +1312,9 @@ function gedcomText(peerId, keys) {
     }
     // заглушки (бездатные супруги/дети): имя + пол + смерть/место, если известны
     for (const [x, st] of stubInfo) {
+        const start = out.length;
         out.push("0 @" + stubId.get(x) + "@ INDI");
         out.push("1 NAME " + cleanName(st.name));
-        out.push(...gedNoteLines(st.note));
         if (st.sex) out.push("1 SEX " + st.sex);
         if (st.deat) {
             const r = localRecord({ ...st, dd: st.deat });
@@ -1321,12 +1322,14 @@ function gedcomText(peerId, keys) {
             if (r.dsrcH !== undefined) out.push("3 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
             if (st.dp) out.push("2 PLAC " + st.dp);
         }
+        out.push(...gedNoteLines(st.note, true, out, start));
         for (const f of fams) {
             if (f.stubs.some(s => s.xref === x)) out.push("1 FAMS @" + fidOf.get(f) + "@");
             if (f.kstubs.some(s => s.xref === x)) out.push("1 FAMC @" + fidOf.get(f) + "@");
         }
     }
     for (const f of fams) {
+        const start = out.length;
         out.push("0 @" + fidOf.get(f) + "@ FAM");
         // Family slots are independent of SEX.
         const all = [
@@ -1347,7 +1350,7 @@ function gedcomText(peerId, keys) {
             out.push("1 DIV", "2 DATE " + gdateAbt(f.div.d, f.div.abt));
             if (f.div.plac) out.push("2 PLAC " + f.div.plac);
         }
-        out.push(...gedNoteLines(f.fnote, false));
+        out.push(...gedNoteLines(f.fnote, false, out, start));
     }
     out.push("0 TRLR");
     return out.join("\n");
@@ -1576,6 +1579,16 @@ function chartFor(peerId, keys, title, heroKey = null, range = null, diagnose = 
     return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages, annotationText), persons: rows.length };
 }
 
+async function sendGedcom(peerId, keys, head, msgId, convMsgId) {
+    try {
+        const attachment = await vkUploadDoc(peerId, fileBaseOf(head) + '.ged', gedcomText(peerId, keys));
+        await messagesSend(peerId, head, msgId, convMsgId, undefined, attachment);
+    } catch (e) {
+        console.error('gedcom:', e.message);
+        await messagesSend(peerId, 'Не удалось выгрузить GEDCOM.', msgId, convMsgId);
+    }
+}
+
 async function sendPdf(peerId, head, heroKey, radius, msgId, convMsgId) {
     try {
         const keys = heroKey ? focusKeys(linkPairs(peerId), heroKey, radius, focusSpousePairs(peerId)) : undefined;
@@ -1594,13 +1607,23 @@ async function sendEpub(peerId, keys, head, heroKey, heroXref, msgId, convMsgId)
     try {
         const { viewerEpub, epubBase, checkEpubLimit } = reqLib('epub');
         const { viewerAnnotations } = reqLib('viewer');
+        let start = Date.now();
         const g = gedcomText(peerId, keys);
+        console.log('epub ged generate:', (Date.now() - start) + 'ms');
         checkEpubLimit(g);
+        start = Date.now();
         const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), getSettings(peerId).fynny);
+        console.log('epub annotations:', (Date.now() - start) + 'ms');
         const title = epubBase(heroKey, parseInt(head, 10) || 1);
+        start = Date.now();
         const epub = viewerEpub(g, title, heroXref, annotations);
+        console.log('epub package:', (Date.now() - start) + 'ms');
+        start = Date.now();
         const attachment = await vkUploadDoc(peerId, title + '.epub', epub);
+        console.log('epub upload:', (Date.now() - start) + 'ms');
+        start = Date.now();
         await messagesSend(peerId, head, msgId, convMsgId, undefined, attachment);
+        console.log('epub send:', (Date.now() - start) + 'ms');
     } catch (e) {
         console.error('epub:', e.message);
         await messagesSend(peerId, e.message.startsWith('EPUB: лимит ') ? e.message : 'Не удалось выгрузить EPUB.', msgId, convMsgId);
@@ -1658,11 +1681,10 @@ async function vkUploadDoc(peerId, title, content) {
     return "doc" + d.owner_id + "_" + d.id;
 }
 
-// тап 🧬 / «/gedcom» / «/gedcomN»: <имя>.ged всегда, <имя>.pdf (диаграмма,
+// тап 🧬: <имя>.ged всегда, <имя>.pdf (диаграмма,
 // имя из заголовка fileBaseOf); heroKey — pkey героя для колонки «Связь год»;
 // неудача выкладки — только сообщение об ошибке, гедком текстом не дублируем
-// Радиусный вызов (keys — ромб родни: тап 🧬 на фокусе и /gedcomN в ответ
-// на триггер): третий прицеп <имя>.ged.txt — роспись того же радиуса
+// Радиусный вызов (тап 🧬 на фокусе): <имя>.ged.txt — роспись того же радиуса
 // (chatFlatText по keys): форма «-+=», но не только вниз — и вверх, и вниз,
 // в пределах радиуса; всему древу чата росписи нет (его «-+=» и так весь)
 // origin (тап 🧬 на «/»-сообщении) — правка исходного сообщения с вложениями
@@ -1672,7 +1694,9 @@ async function vkUploadDoc(peerId, title, content) {
 // не влезает — метка + голова + ✂️⏳; затем асинхронно строятся/грузятся
 // файлы (это долго) и правкой цепляются к тому же сообщению, ⏳ снимается
 async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = null, origin = null, kb = null) {
+    const gedStart = Date.now();
     const g = gedcomText(peerId, keys);
+    console.log("ged generate:", (Date.now() - gedStart) + "ms");
     // заголовок чарта без цифры радиуса;
     // цифра → range героя для chartFor
     const head0 = head || "Гедком-древо";
@@ -1720,6 +1744,28 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
     // и файлы; тап и радиусы: clique (вложение) + текстовая правка tlex)
     (async () => {
     try {
+        const atts = [], uploadErrors = [];
+        const publish = async (name, content) => {
+            const start = Date.now();
+            try {
+                atts.push(await vkUploadDoc(peerId, name, content));
+                console.log("ged upload:", name, (Date.now() - start) + "ms");
+            } catch (e) {
+                console.error("doc upload:", name, e.message);
+                uploadErrors.push(name + ": " + e.message);
+                return;
+            }
+            // VK replaces attachments, so every edit carries all published files.
+            if (!sent) return;
+            const progress = { peer_id: peerId, attachment: atts.join(","), message: holdTxt,
+                ...(kb ? { keyboard: kb } : {}) };
+            if (origin && sent === -1) progress.conversation_message_id = origin.conversation_message_id;
+            else progress.message_id = sent;
+            try { await vkApi("messages.edit", progress); }
+            catch (e) { console.error("ged progress edit:", e.message); }
+        };
+        await publish(base + ".ged", g);
+
         let pdf = null, persons = 0, chartErr = null;
         let t0 = Date.now();
         try {
@@ -1733,43 +1779,31 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
             persons = res.persons;
             pdf = res.pdf;
         } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
-        if (Date.now() - t0 > 1000) console.log("ged chart:", (Date.now() - t0) + "ms");
-        const files = [[base + ".ged", g]];
-        if (pdf) files.push([base + ".pdf", Buffer.from(pdf, "latin1")]);
-        if (overflow) files.push([base + ".ged.txt", "\uFEFF" + pack]);
-        const atts = [], uploadErrors = [];
+        console.log("ged chart:", (Date.now() - t0) + "ms");
+        // A dateless tree has no chart by design.
+        if (chartErr && !chartErr.includes("персоны пусты")) {
+            try { await messagesSend(peerId, "💥 Диаграмма не построена: " + chartErr); }
+            catch (e) { console.error("ged chart notice:", e.message); }
+        }
+        if (pdf) await publish(base + ".pdf", Buffer.from(pdf, "latin1"));
+        if (overflow) await publish(base + ".ged.txt", "\uFEFF" + pack);
         try {
             const { viewerAnnotations } = reqLib("viewer");
             const { viewerEpub, epubBase, checkEpubLimit } = reqLib("epub");
             checkEpubLimit(g);
             const hero = heroKey ? personRows(peerId).find(r => pkey(r) === heroKey) : null;
             const heroXref = hero && g.split("\n").includes("0 @" + hero.xref + "@ INDI") ? hero.xref : null;
+            t0 = Date.now();
             const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), getSettings(peerId).fynny);
+            console.log("ged epub annotations:", (Date.now() - t0) + "ms");
             const title = epubBase(heroKey, parseInt(head0, 10) || 1);
-            files.push([title + ".epub", viewerEpub(g, title, heroXref, annotations)]);
+            t0 = Date.now();
+            const epub = viewerEpub(g, title, heroXref, annotations);
+            console.log("ged epub package:", (Date.now() - t0) + "ms");
+            await publish(title + ".epub", epub);
         } catch (e) {
             console.error("viewer:", e.message);
             uploadErrors.push("Просмотрщик EPUB: " + e.message);
-        }
-        for (const [name, content] of files) {
-            t0 = Date.now();
-            try {
-                atts.push(await vkUploadDoc(peerId, name, content));
-                console.log("ged upload:", name, (Date.now() - t0) + "ms");
-                // Каждый edit повторяет весь набор: VK заменяет вложения, а не дополняет.
-                const progress = { peer_id: peerId, attachment: atts.join(","), message: holdTxt,
-                    ...(kb ? { keyboard: kb } : {}) };
-                if (origin && sent === -1) progress.conversation_message_id = origin.conversation_message_id;
-                else progress.message_id = sent;
-                try {
-                    await vkApi("messages.edit", progress);
-                } catch (editError) {
-                    console.error("ged progress edit:", editError.message);
-                }
-            } catch (e) {
-                console.error("doc upload:", name, e.message);
-                uploadErrors.push(name + ": " + e.message);
-            }
         }
         const readyTxt = finalTxt + (uploadErrors.length
             ? "\n💥 Не удалось выложить файлы:\n" + uploadErrors.join("\n") : "");
@@ -1820,9 +1854,6 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
         }
         console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : "")
             + (overflow ? " + " + base + ".ged.txt" : ""), "peer", peerId);
-        // бездатное древо — PDF нет по построению («chart: персоны
-        // пусты»), это не ошибка, алерта не шлём
-        if (chartErr && !chartErr.includes("персоны пусты")) await messagesSend(peerId, "💥 Диаграмма не построена: " + chartErr);
         return;
     } catch (e) {
         console.error("doc upload:", e.message);
@@ -2336,13 +2367,13 @@ const gedPending = new Map(); // peerId → {name, text, fromId, ts}
 // скачать текст документа-дропа с ретраями: CDN отдаёт файл не сразу
 // (наблюдалось HTTP 502), поэтому после дропа ждём 3 с, попытка; провал —
 // ещё 3 с и попытка, ещё 3 с и последняя (ТГ-копия: handlers/message.js)
-async function fetchDocText(url) {
+async function fetchDocText(url, ged = false) {
     for (let i = 0; i < 3; i++) {
         await new Promise(r => setTimeout(r, 3000));
         try {
             const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
             if (!res.ok) throw new Error("HTTP " + res.status);
-            return await res.text();
+            return ged ? decodeGedcom(new Uint8Array(await res.arrayBuffer())) : await res.text();
         } catch (e) {
             if (i === 2) throw e;
             console.warn("doc download retry", (i + 1) + "/3:", e.message);
@@ -2355,7 +2386,7 @@ async function handleGedDrop(peerId, doc, msgId, convMsgId, fromId) {
     const name = doc.title || "gedcom.ged";
     let text;
     try {
-        text = await fetchDocText(doc.url);
+        text = await fetchDocText(doc.url, true);
     } catch (e) {
         console.error("ged download:", e.message);
         await messagesSend(peerId, "💥 Не удалось скачать файл " + name + " (трижды; повторите написанием файла в чат)", msgId, convMsgId);
@@ -2363,7 +2394,7 @@ async function handleGedDrop(peerId, doc, msgId, convMsgId, fromId) {
     }
     const g = parseGedcom(text);
     if (!g) {
-        await messagesSend(peerId, "💥 Не удалось разобрать файл " + name + " (ждём GEDCOM в UTF-8)", msgId, convMsgId);
+        await messagesSend(peerId, "💥 Не удалось разобрать GEDCOM-файл " + name, msgId, convMsgId);
         return;
     }
     const s = gedStats(g);
@@ -2661,17 +2692,14 @@ async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, p
                 await sendEpub(peerId, keys, head, skey, hero.xref, msgId, convMsgId);
                 return;
             }
-            await sendGedArtifacts(peerId, keys, head, msgId, convMsgId, skey);
+            await sendGedcom(peerId, keys, head, msgId, convMsgId);
             console.log("focus text:", skey, "радиус", r, "peer", peerId);
             return;
         }
         if (!hasTree(peerId)) { await messagesSend(peerId, "связей пока нет", msgId, convMsgId); return; }
         if (format === 'epub') { await sendEpub(peerId, undefined, 'Древо чата', null, null, msgId, convMsgId); return; }
         if (format === 'pdf') { await sendPdf(peerId, 'Древо чата', null, null, msgId, convMsgId); return; }
-        // чат-кейс: «🧬⏳» ответом с цитатой на команду, затем .ged+.pdf
-        // (при переливе росписи ещё и .ged.txt) комбинированной правкой цепляются
-        // в то же сообщение — часы сняты, остаётся «🧬»
-        await sendGedArtifacts(peerId, undefined, "Древо чата", msgId, convMsgId);
+        await sendGedcom(peerId, undefined, "Древо чата", msgId, convMsgId);
         return;
     }
     // /bellN (в ответ на триггер): список родни в радиусе N — как тап 🔔 на
@@ -3204,6 +3232,7 @@ async function handleEvent(o) {
     // ged:bak остаётся для уже отправленных подтверждений живого дропа.
     // (в группе — только отправивший файл)
     if (payload === "ged:rep" || payload === "ged:bak" || payload === "ged:ign") {
+        const emptyKeyboard = JSON.stringify({ inline: true, buttons: [] });
         const pend = gedPending.get(peerId);
         if (!pend || Date.now() - pend.ts > GED_TTL) {
             gedPending.delete(peerId);
@@ -3221,14 +3250,15 @@ async function handleEvent(o) {
         await answerEvent(o.event_id || o.id, o.user_id, peerId,
             payload === "ged:ign" ? "не добавлено" : "идёт замена древа…");
         if (payload === "ged:ign") {
-            await editOrigin(o, "Файл не добавлен: " + pend.name, JSON.stringify({ inline: true, buttons: [] }));
+            await editOrigin(o, "Файл не добавлен: " + pend.name, emptyKeyboard);
             return;
         }
+        await editOrigin(o, "Идёт замена древа: " + pend.name, emptyKeyboard);
         // роспись .ged.txt: ЗАМЕНА дерева чата (с резервом — прежнее дерево файлом)
         if (/\.ged\.txt$/i.test(pend.name)) {
             if (!(await sendTreeBackup(peerId))) {
                 await editOrigin(o, "💥 Не удалось выложить резерв — замена отменена, прежнее дерево цело",
-                    JSON.stringify({ inline: true, buttons: [] }));
+                    emptyKeyboard);
                 return;
             }
             const tree = parseTree(pend.text);
@@ -3236,19 +3266,19 @@ async function handleEvent(o) {
             clearChatTree(peerId);
             const rep = applyTree(peerId, tree);
             const parts = splitText(treeReport(rep));
-            await editOrigin(o, parts[0], JSON.stringify({ inline: true, buttons: [] }));
+            await editOrigin(o, parts[0], emptyKeyboard);
             for (const part of parts.slice(1)) await messagesSend(peerId, part);
             console.log("txt replace:", rep.persons, "персон,", rep.links, "детей, peer", peerId);
             return;
         }
         const g = parseGedcom(pend.text);
         if (!g) {
-            await editOrigin(o, "Файл не добавлен: " + pend.name + " (ждём GEDCOM в UTF-8)", JSON.stringify({ inline: true, buttons: [] }));
+            await editOrigin(o, "Файл не добавлен: " + pend.name + " (ждём GEDCOM в UTF-8)", emptyKeyboard);
             return;
         }
         const r = await replaceWithGedcom(peerId, getSettings(peerId).trim ? trimImport(g) : g, true);
         const parts = splitText(r.head);
-        await editOrigin(o, parts[0], JSON.stringify({ inline: true, buttons: [] }));
+        await editOrigin(o, parts[0], emptyKeyboard);
         for (const part of parts.slice(1)) await messagesSend(peerId, part);
         console.log("ged replace:", r.head, "peer", peerId);
         return;
@@ -3335,7 +3365,7 @@ async function handleEvent(o) {
             console.error("flat doc:", e.message);
             await editOrigin(o, "💥 Не удалось выложить файл «Древо чата.ged.txt»", kb0);
         }
-    } else if (payload === "tree") { // 🧬 — гедком-древо чата (как /gedcom)
+    } else if (payload === "tree") { // 🧬 — полный комплект экспорта чата
         if (!hasTree(peerId)) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, "связей пока нет");
             return;

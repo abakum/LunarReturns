@@ -133,7 +133,10 @@ try {
         const output = input.replace(/\.ged$/i, '.trim.ged');
         run('trim', [input]);
         const text = read(output), expected = trimImport(parseGedcom(source));
-        assert.deepEqual(parseGedcom(text), expected, name + ': same canonical trim without invented dates');
+        const actual = parseGedcom(text);
+        // BURI DATE is retained and the parser derives its public date label again.
+        for (const p of actual.indis) if (p.note && /^Похоронен: [0-9~?=<>\[\]^-]+$/.test(p.note)) delete p.note;
+        assert.deepEqual(actual, expected, name + ': same canonical trim without invented dates');
         const dates = s => s.split(/\r?\n/).filter(l => /^\d+ (?:DATE|TIME)\b/.test(l));
         assert.deepEqual(dates(text), dates(source), name + ': date/time lines unchanged');
         assert.equal(read(input), source, 'input unchanged');
@@ -169,6 +172,20 @@ try {
     const eventText = read(path.join(tmp, 'event-times.trim.ged'));
     for (const time of ['12:34:56', '01:02:03', '04:05:06']) assert.ok(eventText.includes('3 TIME ' + time));
     assert.deepEqual(parseGedcom(whitelistText), trimImport(parseGedcom(whitelistSource)), 'whitelist preserves imported adoption and date fields');
+    const legacy = path.join(tmp, 'legacy.ged');
+    const body = Buffer.concat([Buffer.from('0 @I@ INDI\n1 NAME '), Buffer.from([0xcf, 0xe5, 0xf2, 0xf0, 0xee, 0xe2]),
+        Buffer.from('\n1 BIRT\n2 DATE 1 JAN 1940\n2 PLAC\n3 MAP\n4 LATI N48.466825\n4 LONG E33.821283\n1 DEAT\n2 CAUS fever\n0 TRLR\n')]);
+    fs.writeFileSync(legacy, Buffer.concat([Buffer.from('0 HEAD\n1 CHAR ANSI\n'), body]));
+    run('ged2txt', [legacy]);
+    assert.match(read(legacy + '.txt'), /Петров 1940-01-01.*pt=33\.821283,48\.466825&z=11.*Причина смерти: fever/);
+    run('txt2ged', [legacy + '.txt']);
+    const exported = read(path.join(tmp, 'legacy.txt.ged'));
+    assert.match(exported, /1 CHAR UTF-8[\s\S]*1 NAME Петров\n(?:1 SEX M\n)?1 BIRT\n2 DATE 1 JAN 1940\n2 PLAC\n3 MAP\n4 LATI N48\.466825\n4 LONG E33\.821283\n1 DEAT\n2 CAUS fever/);
+    run('trim', [legacy]);
+    assert.match(read(path.join(tmp, 'legacy.trim.ged')), /1 CHAR UTF-8[\s\S]*1 NAME П\n/);
+    const misplaced = path.join(tmp, 'misplaced.ged');
+    fs.writeFileSync(misplaced, Buffer.concat([Buffer.from('0 HEAD\n'), body.subarray(0, -7), Buffer.from('1 CHAR ANSI\n0 TRLR\n')]));
+    run('ged2txt', [misplaced], false);
     for (const mode of ['ged2txt', 'txt2ged', 'trim']) {
         run(mode, [], false);
         run(mode, ['a', 'b'], false);

@@ -207,8 +207,8 @@ for (const platform of ['tg', 'vk']) {
             assert.doesNotMatch(commandEdits.filter(m => m[1] === id).at(-1)[2], /⏳/);
         }
         assert.match(commandLog, /-\+=⏳/);
-        assert.match(commandLog, /🧬⏳/);
-        assert.ok([...commandLog.matchAll(/sendDocument:/g)].length >= 6, commandLog);
+        assert.equal([...commandLog.matchAll(/sendDocument: [^\n]+\.ged \(/g)].length, 2, commandLog);
+        assert.doesNotMatch(commandLog, /sendDocument: [^\n]+\.(?:pdf|epub) \(/);
         fs.writeFileSync(path.join(tmp, 'tg-commands.log'), commandLog);
     }
     console.log('A3 ' + platform + ' REPL: Romanov, dateless batch, search, bell, links, overflow OK');

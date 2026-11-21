@@ -213,8 +213,55 @@ function gdateToISO(s) {
 // Валидный гедком → { indis, fams }; BURI также даёт дату/место смерти,
 // если соответствующее поле DEAT отсутствует.
 const gedText = value => String(value).replace(/#/g, "№");
-const gedLabels = { TITL: "Титул", CAST: "Сословие", OCCU: "Занятие", RESI: "Жил", BURI: "Похоронен", EVEN: "Событие" };
-const eventHasValue = tag => tag !== "BURI" && tag !== "RESI";
+function decodeGedcom(bytes, fatal = false) {
+    // GEDCOM header tags and charset names are ASCII in both supported encodings.
+    const bom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
+    let offset = bom;
+    for (let header = false; offset < bytes.length;) {
+        let end = bytes.indexOf(10, offset);
+        if (end < 0) end = bytes.length;
+        const prefix = String.fromCharCode(...bytes.subarray(offset, Math.min(end, offset + 256))).trim();
+        offset = end + 1;
+        if (/^0\s+HEAD$/i.test(prefix)) { header = true; continue; }
+        if (/^0\s/.test(prefix)) break;
+        const char = header && prefix.match(/^1\s+CHAR\s+(\S+)/i);
+        if (!char) continue;
+        if (char[1].toUpperCase() === 'UTF-8') break;
+        const table = 'ЂЃ‚ѓ„…†‡€‰Љ‹ЊЌЋЏђ‘’“”•–—�™љ›њќћџ' +
+            '\u00a0ЎўЈ¤Ґ¦§Ё©Є«¬\u00ad®Ї°±Ііґµ¶·ё№є»јЅѕї';
+        let text = '';
+        for (let i = bom; i < bytes.length; i++) {
+            const b = bytes[i];
+            text += b < 128 ? String.fromCharCode(b) : b < 192 ? table[b - 128] : String.fromCharCode(b + 848);
+        }
+        return text;
+    }
+    return new TextDecoder('utf-8', { fatal }).decode(bytes);
+}
+const gedLabels = { TITL: "Титул", CAST: "Сословие", OCCU: "Занятие", RESI: "Жил", BURI: "Похоронен", EVEN: "Событие",
+    BIRT: "Рождение", DEAT: "Смерть", MARR: "Свадьба", DIV: "Развод", CAUS: "Причина смерти" };
+const primaryPerson = new Set(['BIRT', 'DEAT']);
+const primaryFamily = new Set(['MARR', 'DIV']);
+const isPrimary = tag => primaryPerson.has(tag) || primaryFamily.has(tag);
+const eventHasValue = tag => ['TITL', 'CAST', 'OCCU', 'EVEN'].includes(tag);
+const mapBase = 'https://yandex.ru/maps/?';
+const mapUrl = ({ lat, lon }) => `${mapBase}pt=${lon},${lat}&z=11`;
+const signedCoord = (value, axes, max) => {
+    const m = value.match(/^([NSEW])(\d{1,3}(?:\.\d{1,40})?)$/i);
+    return m && axes.includes(m[1].toUpperCase()) && Number(m[2]) <= max
+        ? (m[1].toUpperCase() === axes[1] ? '-' : '') + m[2] : null;
+};
+function mapTail(note) {
+    const m = note.match(/(?:^|\s)https:\/\/yandex\.ru\/maps\/\?pt=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)&z=11$/);
+    if (!m || Math.abs(Number(m[1])) > 180 || Math.abs(Number(m[2])) > 90) return { note };
+    return { note: note.slice(0, m.index).trimEnd(), map: { lat: m[2], lon: m[1] } };
+}
+function eventMapLink(place, date, map) {
+    if (map) return { label: '(' + (place || `${map.lat}, ${map.lon}`) + ')', href: mapUrl(map) };
+    if (place && Number(date?.slice(0, 4)) > 1920)
+        return { label: '(' + place + ')', href: mapBase + 'text=' + encodeURIComponent(place.toWellFormed()) };
+    return null;
+}
 const eventText = value => (value || "").replace(/[()]/g, "").trim();
 const periodTag = { "[": "FROM", "]": "TO" };
 const eventDateToken = token => {
@@ -243,13 +290,15 @@ function eventGedDate({ iso, abt = 0, period }) {
 function eventNoteText(tag, value, date, place, note) {
     // Protect standalone dates in a literal VALUE; NOTE is never scanned after its boundary.
     value = value.replace(/\S+/g, word => eventDateToken(word) || word.startsWith("\\") ? "\\" + word : word);
-    const boundary = !place && !date && note && (eventHasValue(tag) || eventDateToken(note.split(/\s/, 1)[0]));
+    const boundary = !place && note && (note.startsWith('(') || (!date && (eventHasValue(tag) || eventDateToken(note.split(/\s/, 1)[0]))));
     return [value, date && (approxOut(date.iso, date.abt) + (date.period || "")), place || boundary ? "(" + place + ")" : "", note].filter(Boolean).join(" ");
 }
 function parseEventNote(part) {
-    const m = part.match(/^(Титул|Сословие|Занятие|Жил|Похоронен|Событие): (.*)$/u);
+    const m = part.match(/^([^:]+): (.*)$/u);
     if (!m) return null;
     const [, label, body] = m, tag = Object.keys(gedLabels).find(k => gedLabels[k] === label);
+    if (!tag) return null;
+    if (tag === 'CAUS') return { tag, value: body };
     let value = "", date, offset = 0, valueEnd = 0;
     for (const token of body.matchAll(/\S+/g)) {
         if (token[0].startsWith("(")) break;
@@ -274,7 +323,8 @@ function parseEventNote(part) {
             }
         }
     }
-    return { tag, value, date, place, note, placeStart };
+    const details = mapTail(note);
+    return { tag, value, date, place, ...details, placeStart, noteStart: part.length - note.length };
 }
 function shortenEventPlaces(note, shortPlace) {
     return note.split("^").map(part => {
@@ -300,21 +350,56 @@ function gedShortLine(prefix, value, chars = Infinity) {
     return prefix + (full === value ? full : gedPrefix(value, budget - 3, chars - 1) + "…");
 }
 // Shared by both transports. Caret segments with reserved labels restore INDI attributes.
-function gedNoteLines(note, person = true) {
+function gedEventDetails(place, note, map) {
+    const out = [];
+    if (place || map) out.push(place ? gedShortLine('2 PLAC ', place, 120) : '2 PLAC');
+    if (map) {
+        const coord = (v, positive, negative) => v.startsWith('-') ? negative + v.slice(1) : positive + v;
+        out.push('3 MAP', '4 LATI ' + coord(map.lat, 'N', 'S'), '4 LONG ' + coord(map.lon, 'E', 'W'));
+    }
+    if (note) out.push(gedShortLine('2 NOTE ', note));
+    return out;
+}
+function gedNoteLines(note, person = true, record, recordStart = 0) {
     if (!note) return [];
     const out = [], parts = String(note).split("^");
     let continuing = false, structured = false;
     for (let index = 0; index < parts.length; index++) {
         const part = parts[index];
-        const event = person && parseEventNote(part);
+        const parsed = parseEventNote(part);
+        const event = parsed && (person ? !primaryFamily.has(parsed.tag) : primaryFamily.has(parsed.tag)) ? parsed : null;
         if (event) {
             continuing = false; structured = true;
-            const { tag, value, date, place, note } = event;
+            const { tag, value, date, place, note, map } = event;
+            if (isPrimary(tag) || tag === 'CAUS') {
+                const target = tag === 'CAUS' ? 'DEAT' : tag;
+                const lines = record || out;
+                let start = lines.indexOf('1 ' + target, recordStart);
+                if (start < 0) {
+                    start = lines.length;
+                    lines.push('1 ' + target);
+                    if (date) lines.push('2 DATE ' + eventGedDate(date));
+                }
+                let end = start + 1;
+                while (end < lines.length && /^[2-9] /.test(lines[end])) end++;
+                if (tag === 'CAUS') lines.splice(end, 0, gedShortLine('2 CAUS ', value, 90));
+                else {
+                    let plac = start + 1;
+                    while (plac < end && !/^2 PLAC(?: |$)/.test(lines[plac])) plac++;
+                    if (plac === end) plac = -1;
+                    const details = gedEventDetails(plac < 0 ? place : '', note, map);
+                    if (plac < 0) lines.splice(end, 0, ...details);
+                    else {
+                        if (note) lines.splice(end, 0, details.pop());
+                        if (map) lines.splice(plac + 1, 0, ...details.slice(1));
+                    }
+                }
+                continue;
+            }
             out.push(value && tag !== "EVEN" ? gedShortLine("1 " + tag + " ", value, tag === "TITL" ? 120 : 90) : "1 " + tag);
             if (tag === "EVEN" && value) out.push(gedShortLine("2 TYPE ", value, 90));
             if (date) out.push("2 DATE " + eventGedDate(date));
-            if (place) out.push(gedShortLine("2 PLAC ", place, 120));
-            if (note) out.push(gedShortLine("2 NOTE ", note));
+            out.push(...gedEventDetails(place, note, map));
             continue;
         }
         if (structured && index === parts.length - 1 && !part) continue;
@@ -338,21 +423,31 @@ function parseGedcom(text) {
     // значению (GEDCOM: «Иванов » + 2 CONC «Иван» → «Иванов Иван»), ведущий
     // отступ срезается; табуляции — прочь (росписи из Excel-CSV не ломают
     // грамматику)
-    const lines = String(text).split(/\r?\n/).map(l => l.replace(/^[ \t]+/, "").replace(/\t/g, " "));
+    const lines = String(text).replace(/^\uFEFF/, '').split(/\r?\n/).map(l => l.replace(/^[ \t]+/, "").replace(/\t/g, " "));
     if (!lines.some(l => /^0\s+HEAD\b/i.test(l))) return null;
     if (!lines.some(l => /^1\s+(?:GEDC|FAM|INDI)\b/i.test(l) || /@\s+(?:INDI|FAM)\s*$/i.test(l))) return null;
     const indis = new Map(), fams = new Map();
     let cur = null, curTag = null, entry = null, continuationLevel = null;
     const parents = [];
-    const tails = new Map();
+    const tails = new Map(), deathMaps = new Set();
     const flush = () => {
         if (!entry) return;
-        const { tag, value, dates, place, notes } = entry;
+        const { tag, value, dates, place, notes, map, cause } = entry;
         if (!tails.has(cur)) tails.set(cur, []);
-        if (tag === "NOTE") tails.get(cur).push({ value, structured: false });
-        else for (const date of dates?.length ? dates : [null]) {
-            const text = eventNoteText(tag, eventText(value), date, place || "", eventText(notes.join(" ")));
-            if (text) tails.get(cur).push({ value: gedLabels[tag] + ": " + text, structured: true });
+        const segments = tails.get(cur);
+        const push = (tag, text) => segments.push({ value: gedLabels[tag] + ': ' + text, structured: true });
+        if (tag === "NOTE") segments.push({ value, structured: false });
+        else {
+            const note = isPrimary(tag) ? notes.join(' ').replace(/\^/g, ' ').trim() : eventText(notes.join(' '));
+            const url = map?.lat && map?.lon ? mapUrl(map) : '';
+            if (tag === 'DEAT' && url) deathMaps.add(cur);
+            if (!isPrimary(tag) || note || url) {
+                for (const date of dates?.length ? dates : [null]) {
+                    const text = eventNoteText(tag, eventText(value), date, place || '', [note, url].filter(Boolean).join(' '));
+                    if (text) push(tag, text);
+                }
+            }
+            if (cause) push('CAUS', cause.trim());
         }
         entry = null;
     };
@@ -380,14 +475,14 @@ function parseGedcom(text) {
         if (lvl === 1) {
             if (tag === "NAME") cur.name = valN.replace(/\/(.*?)\//g, "$1").trim().replace(/\s+/g, " ");
             else if (tag === "SEX") cur.sex = /^F/i.test(val) ? "F" : /^M/i.test(val) ? "M" : null;
-            else if (tag === "BIRT") cur.birt = cur.birt || {};
-            else if (tag === "DEAT") cur.deat = cur.deat || {};
-            else if (cur.adopFams && Object.hasOwn(gedLabels, tag)) {
+            else if ((cur.adopFams ? primaryPerson : primaryFamily).has(tag)) {
+                cur[tag.toLowerCase()] ||= {};
+                entry = { tag, notes: [] };
+            }
+            else if (cur.adopFams && Object.hasOwn(gedLabels, tag) && !isPrimary(tag) && tag !== 'CAUS') {
                 if (tag === "BURI") cur.buri = cur.buri || {};
                 entry = { tag, value: eventHasValue(tag) && tag !== "EVEN" ? valN : "", notes: [] };
             }
-            else if (tag === "MARR") cur.marr = cur.marr || {};
-            else if (tag === "DIV") cur.div = cur.div || {};
             else if (tag === "NOTE") {
                 entry = { tag, value: valN };
                 continuationLevel = 2;
@@ -406,7 +501,7 @@ function parseGedcom(text) {
             if (r && cur.adopFams && !cur.adopFams.includes(r[1])) cur.adopFams.push(r[1]);
         } else if (lvl === 2 && tag === "TYPE" && entry?.tag === "EVEN") {
             entry.value = valN;
-        } else if (lvl === 2 && tag === "DATE" && entry?.notes) {
+        } else if (lvl === 2 && tag === "DATE" && entry?.notes && !isPrimary(entry.tag)) {
             const dates = eventGedDates(val);
             if (!dates.length) continue;
             entry.dates = dates;
@@ -419,6 +514,7 @@ function parseGedcom(text) {
         } else if (lvl === 2 && tag === "DATE") {
             const g = gdateToISO(val);
             if (!g) continue;
+            if (isPrimary(curTag) && entry?.notes) entry.dates = [g];
             if (curTag === "BIRT" && cur.birt) { cur.birt.date = g.iso; if (g.abt) cur.birt.abt = g.abt; }
             else if (curTag === "DEAT" && cur.deat) { cur.deat.date = g.iso; if (g.abt) cur.deat.abt = g.abt; }
             else if (curTag === "MARR" && cur.marr) { cur.marr.date = g.iso; if (g.abt) cur.marr.abt = g.abt; }
@@ -432,12 +528,22 @@ function parseGedcom(text) {
             }
         } else if (lvl === 2 && tag === "PLAC") {
             const place = eventText(valN);
-            if (entry?.notes) entry.place = place;
+            if (entry?.notes) { entry.place = place; entry.map = null; }
             if (curTag === "BIRT" && cur.birt) cur.birt.plac = place;
             else if (curTag === "DEAT" && cur.deat) cur.deat.plac = place;
             else if (curTag === "BURI" && cur.buri) cur.buri.plac = place;
             else if (curTag === "MARR" && cur.marr) cur.marr.plac = place;
             else if (curTag === "DIV" && cur.div) cur.div.plac = place;
+        } else if (lvl === 3 && tag === 'MAP' && entry?.notes && (parent === 'PLAC' || parent === undefined)) {
+            entry.map = {};
+        } else if (lvl === 4 && parent === 'MAP' && entry?.map && (parents[2] === 'PLAC' || parents[2] === undefined)) {
+            if (tag === 'LATI') entry.map.lat = signedCoord(val, 'NS', 90);
+            if (tag === 'LONG') entry.map.lon = signedCoord(val, 'EW', 180);
+        } else if (lvl === 2 && tag === 'CAUS' && entry?.tag === 'DEAT' && val) {
+            entry.cause = valN.replace(/\^/g, ' ');
+            continuationLevel = 3;
+        } else if (continuation && lvl === 3 && parents[2] === 'CAUS' && entry?.cause) {
+            entry.cause += (tag === 'CONT' ? ' ' : '') + valN.replace(/\^/g, ' ');
         } else if (lvl === 2 && tag === "NOTE" && entry?.notes) {
             entry.notes.push(valN);
             continuationLevel = 3;
@@ -460,7 +566,7 @@ function parseGedcom(text) {
             ind.deat.date = b.date;
             if (b.abt) ind.deat.abt = b.abt;
         }
-        if (!ind.deat.plac && b.plac) ind.deat.plac = b.plac;
+        if (!ind.deat.plac && b.plac && !deathMaps.has(ind)) ind.deat.plac = b.plac;
     }
     if (!indis.size && !fams.size) return null;
     return { indis: [...indis.values()], fams: [...fams.values()] };
@@ -978,4 +1084,4 @@ function trimImport(data) {
 // NOT_FOR_GRAFT экспортируется: роспись метит платформенный chatFlatText
 // (bot.js для ТГ, инлайн ВК), sendGedArtifacts ВК режет перелив по метке;
 // у bot.js своя идентичная копия как точка реэкспорта для ТГ-хендлеров
-module.exports = { zoneDiff, eventToMsk, localEvent, NOT_FOR_GRAFT, chatFlatArtifacts, gedNoteLines, gedText, gedFictiveDates, gedStats, packToCsv, parseGedcom, parseTree, parseTreeLine, parseTrigger, shortenEventPlaces, trimImport, withGraftMark };
+module.exports = { zoneDiff, eventToMsk, localEvent, NOT_FOR_GRAFT, chatFlatArtifacts, decodeGedcom, eventMapLink, gedNoteLines, gedText, gedFictiveDates, gedStats, packToCsv, parseEventNote, parseGedcom, parseTree, parseTreeLine, parseTrigger, shortenEventPlaces, trimImport, withGraftMark };

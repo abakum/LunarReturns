@@ -34,7 +34,7 @@ for (const platform of ['tg', 'vk']) {
             assert.ok(reply.includes(mode ? 'Родство: цепочки.' : 'Родство: обычные названия.'), reply);
             assert.doesNotMatch(reply, /Радиус всегда/);
         }
-        const rendered = run(['Hero 2000-01-01', '>1 /bell2', '>1 /gedcom2', '!wait 300'],
+        const rendered = run(['Hero 2000-01-01', '>1 /bell2', '>1 /pdf2', '!wait 300'],
             'render-' + mode + '-' + set);
         const label = mode ? 'отец отца' : 'дедушка';
         assert.ok(rendered.log.includes('Grandfather 1950-01-01 ' + label), rendered.log);

@@ -14,13 +14,24 @@ function closeAnnotation() {
 function showAnnotation(id, node, people, navigate) {
     const rows = Object.hasOwn(input.annotations ?? {}, id) ? input.annotations[id] : [];
     annotationText.replaceChildren();
-    for (const [i, { text, hero, xref, kinship, prefix = '' }] of rows.entries()) {
+    for (const [i, { text, hero, xref, kinship, links, prefix = '' }] of rows.entries()) {
         if (i) annotationText.append('\n');
         if (prefix) annotationText.append(prefix);
-        if (hero) {
-            const strong = document.createElement('strong');
-            strong.textContent = text;
-            annotationText.append(strong);
+        if (hero || links?.length) {
+            const container = hero ? document.createElement('strong') : annotationText;
+            let offset = 0;
+            for (const { start, end, href } of links || []) {
+                container.append(text.slice(offset, start));
+                const link = document.createElement('a');
+                link.href = href;
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                link.textContent = text.slice(start, end);
+                container.append(link);
+                offset = end;
+            }
+            container.append(text.slice(offset));
+            if (hero) annotationText.append(container);
         } else if (people.has(xref)) {
             const link = document.createElement('a');
             link.href = '#person=' + encodeURIComponent(xref);

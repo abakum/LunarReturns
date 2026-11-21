@@ -208,12 +208,12 @@ const handle = async raw => {
     if (gm) {
         // дроп .ged-файла: контент регистрируется в моке как file_id
         let content;
-        try { content = fs.readFileSync(path.resolve(gm[1]), 'utf8'); }
+        try { content = fs.readFileSync(path.resolve(gm[1])); }
         catch (e) { console.log('ERROR: ' + e.message); return; }
         const fileName = path.basename(gm[1]);
         const fid = 'dev-' + fileName;
         globalThis.__tgdev.files = globalThis.__tgdev.files || {};
-        globalThis.__tgdev.files[fid] = new TextEncoder().encode(content);
+        globalThis.__tgdev.files[fid] = content;
         const msg = {
             chat: { id: CHAT, type: CHAT_TYPE },
             from: { id: 1, first_name: 'dev' },

@@ -174,17 +174,46 @@ if (typeof P.gedNoteLines !== 'function') {
 
     await check('import accumulates repeated NOTE and attributes in order; continuations stay scoped', () => {
         const p = person(['1 NOTE first ', '2 CONC joined', '2 CONT', '2 CONT last',
-            '1 BIRT', '2 NOTE ignored', '3 CONT ignored too', '1 NOTE second',
+            '1 BIRT', '2 NOTE birth', '3 CONC place', '3 CONT detail', '1 NOTE second',
             '1 TITL Duke', '2 CONT must not leak', '1 TITL Count',
             '1 CAST Noble', '1 CAST Citizen', '1 OCCU Writer', '1 OCCU Teacher',
             '1 RESI', '2 PLAC Town', '1 RESI', '2 PLAC Village',
             '1 NOTE final', '1 OCCU Farmer', '2 CONC must not leak']);
-        assert.equal(p.note, 'first joined^^last^second^' + title + 'Duke^' + title + 'Count^'
+        assert.equal(p.note, 'first joined^^last^Рождение: birthplace detail^second^' + title + 'Duke^' + title + 'Count^'
             + caste + 'Noble^' + caste + 'Citizen^' + occupation + 'Writer^' + occupation + 'Teacher^'
             + residence + '(Town)^' + residence + '(Village)^final^' + occupation + 'Farmer^');
         const f = P.parseGedcom(ged(['0 @F1@ FAM', '1 NOTE first', '2 CONT line',
-            '1 MARR', '2 NOTE ignored', '1 NOTE second', '2 CONC joined'])).fams[0];
-        assert.equal(f.note, 'first^line^secondjoined');
+            '1 MARR', '2 NOTE wed ', '3 CONC here', '1 NOTE second', '2 CONC joined'])).fams[0];
+        assert.equal(f.note, 'first^line^Свадьба: wed here^secondjoined');
+    });
+
+    const map = ['3 MAP', '4 LATI S48.466825', '4 LONG W33.821283'];
+    await check('all supported places restore independent MAP records; bad pairs are ignored', () => {
+        const pair = 'https://yandex.ru/maps/?pt=-33.821283,-48.466825&z=11';
+        for (const tag of ['BIRT', 'DEAT', 'BURI', 'EVEN', 'RESI', 'TITL', 'OCCU', 'CAST', 'MARR', 'DIV']) {
+            const family = tag === 'MARR' || tag === 'DIV';
+            const parse = lines => family ? P.parseGedcom(ged(['0 @F@ FAM', ...lines])).fams[0] : person(lines);
+            for (const plac of ['2 PLAC Town', '2 PLAC', null]) {
+                const input = ['1 ' + tag, ...(plac ? [plac] : []), ...map, '2 NOTE place note'];
+                const p = parse(input);
+                assert.ok(p.note.endsWith('place note ' + pair + '^'), p.note);
+                const exported = exportNote(p.note, !family);
+                assert.deepEqual(exported, ['1 ' + tag, plac || '2 PLAC', ...map, '2 NOTE place note']);
+                assert.equal(parse(exported).note, p.note);
+            }
+        }
+        assert.equal(person(['1 BIRT', '2 PLAC Town', '3 MAP', '4 LATI N91', '4 LONG E180']).note, undefined);
+        assert.equal(person(['1 BIRT', '2 PLAC Town', '3 MAP', '4 LATI N0', '3 MAP', '4 LONG E180']).note, undefined);
+        assert.equal(person(['1 BIRT', '2 PLAC Town', '2 NOTE a', '3 MAP', '4 LATI N0', '4 LONG E180']).note, 'Рождение: (Town) a^');
+        assert.equal(person(['1 BIRT', '2 PLAC Town', '3 MAP', '4 LATI N0', '4 LONG E180']).note,
+            'Рождение: (Town) https://yandex.ru/maps/?pt=180,0&z=11^');
+        const noDeathPlace = person(['1 DEAT', '2 PLAC', ...map, '2 NOTE (keep this)', '1 BURI', '2 PLAC Cemetery']);
+        assert.ok(!noDeathPlace.deat.plac, 'Burial place must not label an unnamed death map');
+        assert.deepEqual(exportNote(noDeathPlace.note), ['1 DEAT', '2 PLAC', ...map, '2 NOTE (keep this)', '1 BURI', '2 PLAC Cemetery']);
+        assert.deepEqual(exportNote(person(['1 DEAT', '2 CAUS sudden', '3 CONC ly']).note), ['1 DEAT', '2 CAUS suddenly']);
+        const privateTree = P.trimImport(P.parseGedcom(ged(['0 @I@ INDI', '1 NAME Full Name', '1 BURI', '2 PLAC Town', ...map])));
+        assert.equal(privateTree.indis[0].note, undefined);
+        assert.equal(privateTree.indis[0].deat.plac, undefined);
     });
 
     await check('import repeated BURI notes join with spaces and retain fallback DEAT', () => {
@@ -224,18 +253,18 @@ if (typeof P.gedNoteLines !== 'function') {
             fs.cpSync(path.join(ROOT, 'dev/sdk-mock'), path.join(ROOT, 'node_modules/sdk'), { recursive: true });
             const TG = await import('../tgcloud/lib/bot.js');
             const source = ged(['0 @I1@ INDI', '1 NAME Parent', '1 BIRT', '2 DATE 1 JAN 1950',
-                '2 PLAC Town (District)', '1 DEAT', '2 DATE 1 JAN 2000', '2 PLAC City (District)',
+                '2 PLAC Town (District)', ...map, '2 NOTE birth', '1 DEAT', '2 DATE 1 JAN 2000', '2 PLAC City (District)', '2 CAUS fever',
                 '1 NOTE first (keep)', '1 NOTE second', '2 CONT line', '1 TITL Duke', '1 TITL Count',
                 '1 CAST Noble', '1 OCCU Writer', '1 RESI', '2 PLAC Town',
                 '1 EVEN', '2 TYPE Move', '2 DATE FROM 1970 TO 1980', '2 PLAC Town', '2 NOTE family',
                 '1 BURI', '2 PLAC Cemetery', '2 NOTE stone',
                 '0 @I2@ INDI', '1 NAME Dateless', '1 NOTE stub', '1 OCCU Teacher',
-                '0 @I3@ INDI', '1 NAME Unanchored', '1 NOTE undated', '1 TITL Baron',
+                '0 @I3@ INDI', '1 NAME Unanchored', '1 DEAT', '2 CAUS unknown', '1 NOTE undated', '1 TITL Baron',
                 '0 @I4@ INDI', '1 NAME UnanchoredPartner', '1 RESI', '2 PLAC Village',
                 '0 @F1@ FAM', '1 HUSB @I1@', '1 WIFE @I2@', '1 MARR', '2 DATE 1 JAN 1970',
-                '2 PLAC Village (District)', '1 DIV', '2 DATE 1 JAN 1980', '2 PLAC Capital (District)',
+                '2 PLAC Village (District)', ...map, '1 DIV', '2 DATE 1 JAN 1980', '2 PLAC Capital (District)',
                 '1 NOTE family (keep)', '1 NOTE ' + title + 'ordinary family text',
-                '0 @F2@ FAM', '1 HUSB @I3@', '1 WIFE @I4@', '1 NOTE undated family']);
+                '0 @F2@ FAM', '1 HUSB @I3@', '1 WIFE @I4@', '1 MARR', '2 PLAC', ...map, '1 NOTE undated family']);
             const expected = P.parseGedcom(source);
             assert.equal(expected.indis[0].birt.plac, 'Town District');
             assert.equal(expected.indis[0].deat.plac, 'City District');
@@ -267,6 +296,9 @@ if (typeof P.gedNoteLines !== 'function') {
                 }
                 assert.match(text, /1 TITL Duke\n1 TITL Count/);
                 assert.match(text, /1 BURI\n2 PLAC Cemetery\n2 NOTE stone/);
+                assert.match(text, /1 DEAT\n2 CAUS unknown/);
+                assert.equal(text.match(/^3 MAP$/gm)?.length, 3);
+                assert.equal(text.match(/^1 MARR$/gm)?.length, 2);
                 await api.importGedcom(id, restored);
                 const again = P.parseGedcom(await api.gedcomText(id));
                 snapshots.push({ people: again.indis.map(p => [p.name, p.note]).sort(),

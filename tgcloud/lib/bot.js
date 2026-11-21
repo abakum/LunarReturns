@@ -1168,6 +1168,7 @@ export async function gedcomText(chatId, keys) {
     const fidOf = new Map(fams.map(f => [f, f.xref]));
     const out = ["0 HEAD", "1 SOUR LunarReturns", "1 GEDC", "2 VERS 5.5.1", "2 FORM LINEAGE-LINKED", "1 CHAR UTF-8"];
     for (const r of persons) {
+        const start = out.length;
         out.push("0 @" + idOf.get(r.xref) + "@ INDI");
         out.push("1 NAME " + cleanName(r.n));
         if (r.sex) out.push("1 SEX " + r.sex);
@@ -1179,7 +1180,7 @@ export async function gedcomText(chatId, keys) {
             if (r.dsrcH !== undefined) out.push("3 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
             if (r.dp) out.push("2 PLAC " + r.dp);
         }
-        out.push(...gedNoteLines(r.note));
+        out.push(...gedNoteLines(r.note, true, out, start));
         for (const f of fams) {
             if (f.chd.some(c => c.x === r.xref)) {
                 out.push("1 FAMC @" + fidOf.get(f) + "@");
@@ -1190,9 +1191,9 @@ export async function gedcomText(chatId, keys) {
     }
     // заглушки (бездатные супруги/дети): имя + пол + смерть/место, если известны
     for (const [x, st] of stubInfo) {
+        const start = out.length;
         out.push("0 @" + stubId.get(x) + "@ INDI");
         out.push("1 NAME " + cleanName(st.name));
-        out.push(...gedNoteLines(st.note));
         if (st.sex) out.push("1 SEX " + st.sex);
         if (st.deat) {
             const r = localRecord({ ...st, dd: st.deat });
@@ -1200,12 +1201,14 @@ export async function gedcomText(chatId, keys) {
             if (r.dsrcH !== undefined) out.push("3 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
             if (st.dp) out.push("2 PLAC " + st.dp);
         }
+        out.push(...gedNoteLines(st.note, true, out, start));
         for (const f of fams) {
             if (f.stubs.some(s => s.xref === x)) out.push("1 FAMS @" + fidOf.get(f) + "@");
             if (f.kstubs.some(s => s.xref === x)) out.push("1 FAMC @" + fidOf.get(f) + "@");
         }
     }
     for (const f of fams) {
+        const start = out.length;
         out.push("0 @" + fidOf.get(f) + "@ FAM");
         // Family slots are independent of SEX.
         const all = [
@@ -1226,7 +1229,7 @@ export async function gedcomText(chatId, keys) {
             out.push("1 DIV", "2 DATE " + gdateAbt(f.div.d, f.div.abt));
             if (f.div.plac) out.push("2 PLAC " + f.div.plac);
         }
-        out.push(...gedNoteLines(f.fnote, false));
+        out.push(...gedNoteLines(f.fnote, false, out, start));
     }
     out.push("0 TRLR");
     return out.join("\n");
@@ -1512,6 +1515,18 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
 // в пределах радиуса; всему древу чата росписи нет (его «-+=» и так весь).
 // markup — клавиатура, которую надо сохранить при правке текста росписью
 // (editMessageText без reply_markup в TG клавиатуру снимает)
+export async function sendGedcom(chatId, keys, head, replyTo) {
+    const reply_parameters = { message_id: replyTo, allow_sending_without_reply: true };
+    try {
+        const bytes = new TextEncoder().encode(await gedcomText(chatId, keys));
+        await api.sendDocument({ chat_id: chatId, reply_parameters, caption: head,
+            document: new InputFile(bytes, fileBaseOf(head) + '.ged', { type: 'text/plain' }) });
+    } catch (e) {
+        console.error('gedcom:', e.message);
+        await api.sendMessage({ chat_id: chatId, reply_parameters, text: 'Не удалось выгрузить GEDCOM.' });
+    }
+}
+
 export async function sendPdf(chatId, head, heroKey, radius, replyTo) {
     const reply_parameters = { message_id: replyTo, allow_sending_without_reply: true };
     try {
@@ -1552,7 +1567,7 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
     const chartHead = head0.replace(/^\d\s+/, "");
     const rm = /^(\d)\s/.exec(head0);
     const base = fileBaseOf(head0);
-    // третий файл (радиусные 🧬 и /gedcomN): роспись радиуса — chatFlatText по keys;
+    // радиусная кнопка 🧬: роспись радиуса — chatFlatText по keys;
     // она идёт только файлом (роспись <4000 — текстом правки сообщения)
     let packFinal = null;
     try {
@@ -1603,6 +1618,11 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
             persons = res.persons;
             pdf = res.pdf;
         } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
+        if (chartErr && !chartErr.includes("персоны пусты")) {
+            const notice = "Диаграмма не построена: " + chartErr;
+            try { await api.sendMessage({ chat_id: chatId, text: "💥 " + notice }); }
+            catch (e) { console.error("ged chart notice:", e.message); errors.push(notice); }
+        }
         if (pdf) await sendFile(Uint8Array.from(pdf, c => c.charCodeAt(0)), ".pdf", "application/pdf");
         const epubTitle = epubBase(heroKey, parseInt(head0, 10) || 1);
         try {
@@ -1616,7 +1636,6 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
             console.error("viewer:", e.message);
             errors.push(epubTitle + ".epub: " + e.message);
         }
-        if (chartErr && !chartErr.includes("персоны пусты")) errors.push("Диаграмма не построена: " + chartErr);
         const errorText = errors.length ? "\n💥 Не удалось выложить файлы:\n" + errors.join("\n") : "";
         if (replyTo) await api.editMessageText({ chat_id: chatId, message_id: replyTo,
             text: (packFinal || (heroKey ? head : "🧬")) + errorText, ...(markup !== undefined ? { reply_markup: markup } : {}) });

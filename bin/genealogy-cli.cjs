@@ -14,8 +14,9 @@ module.exports = function (mode) {
         const output = mode === 'ged2txt' ? input + '.txt' : input.replace(/\.ged\.txt$/i, '.txt.ged');
         if (input === output) throw new Error('Input and output must differ');
         if (!fs.statSync(input).isFile()) throw new Error('Input is not a regular file: ' + input);
-        // Reject malformed UTF-8 rather than silently replacing genealogy text.
-        const text = new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(input));
+        const bytes = fs.readFileSync(input);
+        const text = mode === 'ged2txt' ? require('../tgcloud/lib/parse.cjs').decodeGedcom(bytes, true)
+            : new TextDecoder('utf-8', { fatal: true }).decode(bytes);
         process.env.LR_DB = ':memory:';
         const { convertGenealogy } = require('../lunarreturns.js');
         const converted = convertGenealogy(mode, text);

@@ -3,7 +3,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { parseGedcom, trimImport } = require('../tgcloud/lib/parse.cjs');
+const { decodeGedcom, parseGedcom, trimImport } = require('../tgcloud/lib/parse.cjs');
 
 try {
     const args = process.argv.slice(2);
@@ -11,7 +11,7 @@ try {
     const input = path.resolve(args[0]);
     const output = input.replace(/\.ged$/i, '.trim.ged');
     if (!fs.statSync(input).isFile()) throw new Error('Input is not a regular file: ' + input);
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(input));
+    const text = decodeGedcom(fs.readFileSync(input), true);
     const parsed = parseGedcom(text);
     if (!parsed) throw new Error('Input is not GEDCOM');
     const names = new Map(trimImport(parsed).indis.map(p => [p.__xref, p.name]));
@@ -46,7 +46,8 @@ try {
         kept[level] = tag;
         if (tag === 'NAME' && person !== null) {
             lines.push(m[1] + level + ' NAME ' + (names.get(person) || ''));
-        } else lines.push(line);
+        } else if (level === 1 && root === 'HEAD' && tag === 'CHAR') lines.push(m[1] + '1 CHAR UTF-8');
+        else lines.push(line);
     }
     // Keep original date records rather than round-tripping through the bot DB.
     fs.writeFileSync(output, '\uFEFF' + lines.join(newline), { encoding: 'utf8', flag: 'wx' });

@@ -168,7 +168,8 @@ function flatTreeText(persons, fams, canonical = false, structured = false, hero
         r.note ? "^" + r.note : null,
     ].filter(Boolean).join(" ");
     const out = [], printed = new Set(), famsDone = new Set();
-    const emit = (prefix, text, person) => out.push(structured ? { prefix, text, person } : prefix + text);
+    const emit = (prefix, text, person, family, nameLength) => out.push(structured
+        ? { prefix, text, person, family, nameLength } : prefix + text);
     // канонические ключи (canonical — рецепт): семья — дата свадьбы, без
     // неё — дата рождения старшего супруга (раньше старше); без дат — в
     // конец, стабильно. Порядок перестаёт зависеть от порядка вставки:
@@ -196,7 +197,7 @@ function flatTreeText(persons, fams, canonical = false, structured = false, hero
         const m = bare ? "" : (male ? "-" : "=").repeat(d + 1);
         emit(m, r.name
             + (r.nameOnly ? (r.dd ? " * " + tail(r) : r.note ? " ^" + r.note : "")
-                : (r.d != null || r.dd != null || r.note ? " " + tail(r) : "")), person);
+                 : (r.d != null || r.dd != null || r.note ? " " + tail(r) : "")), person, undefined, r.name.length);
         if (typeof r.key === "string") printed.add(r.key);
     };
     // Места сразу за своими датами; начальный пробел оставляет свадьбу неизвестной.
@@ -221,7 +222,7 @@ function flatTreeText(persons, fams, canonical = false, structured = false, hero
             ? (f.wKey != null ? byKey.get(f.wKey) : f.wName != null ? { name: f.wName, nameOnly: true } : null)
             : (f.hKey != null ? byKey.get(f.hKey) : f.hName != null ? { name: f.hName, nameOnly: true } : null);
         // Keep the boundary even when an opening family has no dated events.
-        emit("+".repeat(d + 1), other || f.marr || f.div || f.note ? wedPlus(f) : "");
+        emit("+".repeat(d + 1), other || f.marr || f.div || f.note ? wedPlus(f) : "", undefined, f);
         if (other) {
             // «другая половина» — ребёнок включённого семейства? Печатаем её
             // полную строку (с событием) под свадьбой, но НЕ закрываем её

@@ -1,7 +1,7 @@
 import { api, db, InputFile } from 'sdk';
 import { eq } from 'sdk/db';
 import { gedDrops, focusView, settings } from '../schema.js';
-import { parseTrigger, parseGedcom, gedStats, parseTree } from '../lib/parse.cjs';
+import { parseTrigger, decodeGedcom, parseGedcom, gedStats, parseTree } from '../lib/parse.cjs';
 import { fileBaseOf } from '../lib/chart.cjs';
 import { parseSearchQuery } from '../lib/flat.cjs';
 import { jubileeText } from '../lib/text.js';
@@ -10,7 +10,7 @@ import { REPLY_TARGET_ERROR, resolveReplyRecord, TREE_EXPORT_COMMAND, exportRepl
 import {
     helpText, startMarkup, chatAdmin, getSettings, todayText, jubileeMarkup, sendLong,
     recordOf, recordShownOf, recordByXref, replaceWithGedcom,
-    linkPairs, personRows, weddingRows, sendGedPdf, sendEpub, sendPdf, focusHead, focusMarkup,
+    linkPairs, personRows, weddingRows, sendGedcom, sendEpub, sendPdf, focusHead, focusMarkup,
     focusListKeys, focusSpousePairs, focusDepth, focusListText, mmddToday, upcomingText, upsertPerson, applyTree, cutAndGraft, treeReport,
     editTrigger, hasTree, NOT_FOR_GRAFT,
     chatFlatText, flatSearch, sendFlatPack, flatHitKey, searchHead, cutLines,
@@ -82,12 +82,12 @@ const dropKb = () => ({
 // скачать текст документа-дропа с ретраями: файл отдаётся не сразу
 // (ВК: HTTP 502 от CDN) — после дропа ждём 3 с, попытка; провал — ещё 3 с и
 // попытка, ещё 3 с и последняя (ВК-копия: lunarreturns.js, fetchDocText)
-async function downloadDoc(doc) {
+async function downloadDoc(doc, ged = false) {
     for (let i = 0; i < 3; i++) {
         await new Promise(r => setTimeout(r, 3000));
         try {
             const bytes = await api.getFileContent(doc.file_id);
-            return new TextDecoder().decode(bytes);
+            return ged ? decodeGedcom(bytes) : new TextDecoder().decode(bytes);
         } catch (e) {
             if (i === 2) throw e;
             console.warn("doc download retry", (i + 1) + "/3:", e.message);
@@ -99,7 +99,7 @@ async function gedDrop(chatId, doc, fromId) {
     const name = doc.file_name || "gedcom.ged";
     let content;
     try {
-        content = await downloadDoc(doc);
+        content = await downloadDoc(doc, true);
     } catch (e) {
         console.error("ged download:", e.message);
         await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось скачать файл " + name + " (трижды; повторите отправку файла в чат)" });
@@ -107,7 +107,7 @@ async function gedDrop(chatId, doc, fromId) {
     }
     const g = parseGedcom(content);
     if (!g) {
-        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось разобрать файл " + name + " (ждём GEDCOM в UTF-8)" });
+        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось разобрать GEDCOM-файл " + name });
         return;
     }
     const s = gedStats(g);
@@ -403,9 +403,7 @@ export default async function (message, ctx) {
                 await sendEpub(chatId, keys, head, skey, hero.xref, message.message_id);
                 return;
             }
-            const hold = await api.sendMessage({ chat_id: chatId, text: head + "\n🧬⏳",
-                reply_parameters: { message_id: message.message_id, allow_sending_without_reply: true } });
-            await sendGedPdf(chatId, keys, head, skey, hold.message_id);
+            await sendGedcom(chatId, keys, head, message.message_id);
             console.log("focus text:", skey, "радиус", r, "chat", chatId);
             return;
         }
@@ -421,12 +419,7 @@ export default async function (message, ctx) {
             await sendPdf(chatId, 'Древо чата', null, null, message.message_id);
             return;
         }
-        // «🧬⏳» ответом; прицепы (.ged+.pdf) — медиа-группой в ответ на
-        // /gedcom (цитата — на само сообщение); по готовности — «🧬»
-        const hold = await api.sendMessage({
-            chat_id: chatId, text: "🧬⏳",
-            reply_parameters: { message_id: message.message_id, allow_sending_without_reply: true } });
-        await sendGedPdf(chatId, undefined, "🧬 Гедком-древо чата", null, hold.message_id);
+        await sendGedcom(chatId, undefined, "Древо чата", message.message_id);
         return;
     }
 

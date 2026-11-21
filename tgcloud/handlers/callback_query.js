@@ -353,6 +353,7 @@ export default async function (cq, ctx) {
     // ged:bak остаётся для уже отправленных подтверждений живого дропа.
     // (в группе — только отправивший файл)
     if (data === "ged:rep" || data === "ged:bak" || data === "ged:ign") {
+        const emptyMarkup = { inline_keyboard: [] };
         const row = await db.select().from(gedDrops).where(eq(gedDrops.chatId, chatId)).get();
         if (!row || Date.now() - row.ts > GED_TTL) {
             if (row) await db.delete(gedDrops).where(eq(gedDrops.chatId, chatId)).run();
@@ -368,13 +369,14 @@ export default async function (cq, ctx) {
         // идёт дольше — поздний answer теряется, «вращение» висит на кнопке
         await answer(data === "ged:ign" ? "не добавлено" : "идёт замена древа…");
         if (data === "ged:ign") {
-            await editText("Файл не добавлен: " + row.fileName, undefined);
+            await editText("Файл не добавлен: " + row.fileName, emptyMarkup);
             return;
         }
+        await editMarkup(emptyMarkup);
         // роспись .ged.txt: ЗАМЕНА дерева чата (с резервом сначала файлом)
         if (/\.ged\.txt$/i.test(row.fileName)) {
             if (!(await sendTreeBackup(chatId))) {
-                await editText("💥 Не удалось выложить резерв — замена отменена, прежнее дерево цело", undefined);
+                await editText("💥 Не удалось выложить резерв — замена отменена, прежнее дерево цело", emptyMarkup);
                 return;
             }
             const tree = parseTree(row.content);
@@ -382,7 +384,7 @@ export default async function (cq, ctx) {
             await clearChatTree(chatId);
             const rep = await applyTree(chatId, tree);
             const parts = splitText(treeReport(rep));
-            await editText(parts[0], undefined);
+            await editText(parts[0], emptyMarkup);
             for (const part of parts.slice(1)) await api.sendMessage({ chat_id: chatId, text: part });
             console.log("txt replace:", rep.persons, "персон,", rep.links, "детей, chat", chatId);
             return;
@@ -390,7 +392,7 @@ export default async function (cq, ctx) {
         const g = parseGedcom(row.content);
         const r = await replaceWithGedcom(chatId, (await getSettings(chatId)).trim ? trimImport(g) : g, true);
         const parts = splitText(r.head);
-        await editText(parts[0], undefined);
+        await editText(parts[0], emptyMarkup);
         for (const part of parts.slice(1)) await api.sendMessage({ chat_id: chatId, text: part });
         console.log("ged replace:", data, "chat", chatId);
         return;

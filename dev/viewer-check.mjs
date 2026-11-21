@@ -37,20 +37,25 @@ assert(!JSON.stringify(annotations).includes('НЕ_ЭКСПОРТИРОВАН'))
 assert.deepEqual(annotations.I1, [
     { prefix: '=', text: 'Мать Тест', xref: 'I3', kinship: 'мать' }, { text: '+' },
     { prefix: '', text: 'Отец Тест', xref: 'I2', kinship: 'отец' },
-    { hero: true, text: '--Иван Тест 1980-01-01 (SECRET_PLACE)\nПервая\nВторая' },
+    { hero: true, text: '--Иван Тест 1980-01-01 (SECRET_PLACE)\nПервая\nВторая', links: [
+        { start: 23, end: 37, href: 'https://yandex.ru/maps/?text=SECRET_PLACE' },
+    ] },
 ]);
 assert.equal(annotations.I2[0].text, '-Отец Тест');
 assert.equal(annotations.I2.find(row => row.xref === 'I1').kinship, 'сын');
 {
     const [persons, fams] = structuredClone(snapshot);
-    persons[0].note += 'Жил: 2000 (Первый район Город) <личная заметка>^Титул: Герой 2001[^Титул: Герой 2002]^';
+    const coords = 'https://yandex.ru/maps/?pt=33.821283,48.466825&z=11';
+    persons[0].note += 'Жил: 2000 (Первый район Город) <личная заметка>^Титул: Герой 2001[^Титул: Герой 2002]^'
+        + `Рождение: 1980-01-01 (SECRET_PLACE) справка ${coords}^Похоронен: ${coords}^Жил: 1920 (Старый)^Жил: 1921 (Город & край)^Жил: (Недатированный)^`;
     persons[1].note = 'чужая заметка';
     persons.push({ key: 'I4', name: 'Тёзка', nameOnly: true },
         { key: 'I5', name: 'Ребёнок', d: '2000-01-01', abt: 1, plac: 'чужое место' },
         { key: 'I6', name: 'Тёзка', nameOnly: true });
     fams[0].marr = { d: '1979-01-01', plac: 'чужая свадьба' };
     fams.push({ xref: 'F2', hKey: 'I1', wKey: 'I4', children: ['I5'],
-        marr: { d: '2001-01-01', plac: 'Город, Область' }, div: { d: '2002-01-01' }, note: 'семейная заметка' },
+        marr: { d: '2001-01-01', plac: 'Город, Область' }, div: { d: '2002-01-01' },
+        note: `семейная заметка^Свадьба: 2001-01-01 (Город, Область) ${coords}^` },
     { xref: 'F3', hKey: 'I1', wKey: 'I6', children: [] });
     const extended = gedcom.replace('0 TRLR', '0 @I4@ INDI\n0 @I5@ INDI\n0 @I6@ INDI\n0 @F2@ FAM\n0 @F3@ FAM\n0 TRLR');
     const before = structuredClone([persons, fams]);
@@ -58,11 +63,71 @@ assert.equal(annotations.I2.find(row => row.xref === 'I1').kinship, 'сын');
     assert.match(byId.I1.find(row => row.hero).text,
         /Жил: 2000 \(Первый район Город\) <личная заметка>\nТитул: Герой 2001\[\nТитул: Герой 2002\]/);
     assert.doesNotMatch(byId.I1.map(row => row.text).join('\n'), /чужая|чужое|семейная заметка|НЕ_ЭКСПОРТИРОВАН/);
-    assert.ok(byId.I1.some(row => row.text === '++2001-01-01 (Город, Область) 2002-01-01'));
+    const wedding = byId.I1.find(row => row.text.startsWith('++2001-01-01 (Город, Область) 2002-01-01'));
+    assert.ok(wedding);
+    assert.deepEqual(wedding.links.map(l => [wedding.text.slice(l.start, l.end), l.href]),
+        [['(Город, Область)', coords]]);
+    assert.doesNotMatch(wedding.text, /Свадьба:/);
+    const hero = byId.I1.find(row => row.hero);
+    assert.doesNotMatch(hero.text, /https:\/\//);
+    assert.match(hero.text, /\(SECRET_PLACE\) справка\nПохоронен: \(48\.466825, 33\.821283\)/);
+    assert.deepEqual(hero.links.map(l => [hero.text.slice(l.start, l.end), l.href]), [
+        ['(SECRET_PLACE)', coords],
+        ['(Первый район Город)', 'https://yandex.ru/maps/?text=' + encodeURIComponent('Первый район Город')],
+        ['(SECRET_PLACE)', coords], ['(48.466825, 33.821283)', coords],
+        ['(Город & край)', 'https://yandex.ru/maps/?text=' + encodeURIComponent('Город & край')],
+        ['(Недатированный)', 'https://yandex.ru/maps/?text=' + encodeURIComponent('Недатированный')],
+    ]);
     assert.deepEqual(byId.I1.filter(row => row.text === 'Тёзка').map(row => row.xref).sort(), ['I4', 'I6']);
     assert.deepEqual(byId.I1.find(row => row.xref === 'I5'), { prefix: '---', text: 'Ребёнок 2000-01', xref: 'I5', kinship: 'ребёнок' });
     assert.equal(byId.I1.find(row => row.xref === 'I4').kinship, 'супруг');
     assert.deepEqual([persons, fams], before);
+    for (const d of ['1919-01-01', '1920-01-01', undefined]) {
+        const old = viewerAnnotations(extended, [[{ ...persons[0], d, nameOnly: !d }, ...persons.slice(1)], fams]);
+        const row = old.I1.find(row => row.hero);
+        assert.ok(!row.links.some(l => row.text.slice(l.start, l.end) === '(Недатированный)'));
+        assert.ok(row.links.some(l => row.text.slice(l.start, l.end) === '(48.466825, 33.821283)' && l.href === coords));
+    }
+}
+{
+    const coords = 'https://yandex.ru/maps/?pt=33.821283,48.466825&z=11';
+    const other = 'https://yandex.ru/maps/?pt=34,49&z=11';
+    const [persons, fams] = structuredClone(snapshot);
+    Object.assign(persons[0], { dd: '1969-03-07', dp: 'Миллерово', note: [
+        `Рождение: 1980-01-01 (SECRET_PLACE) ${coords}`,
+        `Смерть: 1969-03-07 (Миллерово) ${coords}`,
+        `Похоронен: 1969-03-07 (Миллерово) ${coords}`,
+        `Похоронен: 1969-03-09 (Миллерово) ${coords}`,
+        `Похоронен: 1969-03-07 (Миллерово) ${other}`,
+        'Похоронен: 1969-03-07 (Миллерово) участок 3',
+    ].join('^') });
+    Object.assign(fams[0], { hKey: 'I1', wKey: 'I2', children: [],
+        marr: { d: '2001-01-01', plac: 'Город' }, div: { d: '2002-01-01', plac: 'Город' },
+        note: `Свадьба: 2001-01-01 (Город) ${coords}^Развод: 2002-01-01 (Город) ${other}^Развод: 2003-01-01 (Город) решение суда`,
+    });
+    const rows = viewerAnnotations(gedcom, [persons, fams]).I1;
+    const hero = rows.find(row => row.hero);
+    assert.doesNotMatch(hero.text, /Рождение:|Смерть:/);
+    assert.equal(hero.text.match(/^Похоронен:/gm).length, 3);
+    assert.match(hero.text, /Похоронен: 1969-03-09.*\nПохоронен: 1969-03-07.*\nПохоронен: 1969-03-07 \(Миллерово\) участок 3/);
+    assert.deepEqual(hero.links.slice(0, 2).map(l => l.href), [coords, coords]);
+    const family = rows.find(row => row.text.startsWith('+'));
+    assert.doesNotMatch(family.text, /Свадьба:|Развод: 2002/);
+    assert.match(family.text, /Развод: 2003-01-01 \(Город\) решение суда/);
+    assert.deepEqual(family.links.slice(0, 2).map(l => l.href), [coords, other]);
+}
+{
+    const [persons, fams] = structuredClone(snapshot);
+    const place = 'Россия, Ростовская область, Каменский район, станция Лихая';
+    const href = 'https://yandex.ru/maps/?text=' + encodeURIComponent(place);
+    Object.assign(persons[0], { d: '1909-04-11', dd: '1976-12-04', dp: place });
+    for (const [date, linked] of [['', true], ['1920 ', false]]) {
+        const burial = `Похоронен: ${date}(${place}) старое кладбище в районе парка Победы`;
+        persons[0].note = burial + '^';
+        const row = viewerAnnotations(gedcom, [persons, fams]).I1.find(row => row.hero);
+        assert.ok(row.text.endsWith('\n' + burial));
+        assert.deepEqual(row.links.filter(l => l.start >= row.text.indexOf('Похоронен:')).map(l => l.href), linked ? [href] : []);
+    }
 }
 const html = viewerHtml(gedcom, 'Тест <дерева>', 'I1', annotations);
 const data = JSON.parse(html.match(/<script id="tree-data" type="application\/json">(.*?)<\/script>/s)[1]);
@@ -131,6 +196,9 @@ try {
         else await firstName.click();
         assert(await tip.isHidden());
         assert(await page.locator('#annotation').isVisible());
+        const place = page.locator('#annotation').getByRole('link', { name: '(SECRET_PLACE)', exact: true });
+        assert.equal(await place.getAttribute('href'), 'https://yandex.ru/maps/?text=SECRET_PLACE');
+        assert.equal(await place.getAttribute('target'), '_blank');
         assert.equal(await chartTransform(), beforeName);
         assert.equal(hash(), '');
         await page.reload();

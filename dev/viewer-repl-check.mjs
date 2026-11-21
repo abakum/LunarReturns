@@ -20,6 +20,14 @@ const preload = path.join(tmp, 'offline.cjs');
 fs.writeFileSync(preload, `
 const fs = require('node:fs');
 const fail = process.env.VIEWER_FAIL;
+if (process.env.LR_VK_TRACE && process.argv[1]?.endsWith('vk-repl.mjs')) {
+    const viewer = require(${JSON.stringify(path.join(root, 'tgcloud/lib/viewer.cjs'))});
+    const annotate = viewer.viewerAnnotations;
+    viewer.viewerAnnotations = (...args) => {
+        fs.appendFileSync(process.env.LR_VK_TRACE, JSON.stringify({ method: 'viewerAnnotations' }) + '\\n');
+        return annotate(...args);
+    };
+}
 if (fail === 'generation') {
     const epub = require(${JSON.stringify(path.join(root, 'tgcloud/lib/epub.cjs'))});
     epub.viewerEpub = () => { throw new Error('injected viewer generation'); };
@@ -206,37 +214,78 @@ function checkPayloads(platform, result, focused, radius = 1) {
 }
 
 const setup = ['!ged dev/fixtures/Romanov_family.ged', '/2 2'];
+const legacy = path.join(tmp, 'maps-ansi.ged');
+const coords = 'https://yandex.ru/maps/?pt=33.821283,48.466825&z=11';
+fs.writeFileSync(legacy, Buffer.concat([
+    Buffer.from('0 HEAD\n1 CHAR ANSI\n0 @I@ INDI\n1 NAME '), Buffer.from([0xcf, 0xe5, 0xf2, 0xf0, 0xee, 0xe2]),
+    Buffer.from('\n1 BIRT\n2 DATE 1 JAN 1940\n2 PLAC\n3 MAP\n4 LATI N48.466825\n4 LONG E33.821283\n'
+        + '2 NOTE birthnote\n1 DEAT\n2 CAUS fever\n1 RESI\n2 DATE 1921\n2 PLAC Town & district\n'
+        + '0 @C@ INDI\n1 NAME Child\n1 BIRT\n2 DATE 1 JAN 1970\n0 @F@ FAM\n1 HUSB @I@\n1 CHIL @C@\n0 TRLR\n'),
+]));
 const outputs = {};
 const flatOutputs = {};
 for (const platform of ['tg', 'vk']) {
+    const verifyMapBook = result => {
+        const book = result.files.find(f => f.name.endsWith('.epub'));
+        assert.ok(book, result.log);
+        const data = readBook(book);
+        assert.match(data.gedcom, /1 NAME Петров[\s\S]*2 PLAC\n3 MAP\n4 LATI N48\.466825\n4 LONG E33\.821283\n2 NOTE birthnote\n1 DEAT\n2 CAUS fever/);
+        const row = Object.values(data.annotations).flat().find(row => row.hero && row.text.includes('Петров'));
+        assert.doesNotMatch(row.text, /https:\/\//);
+        assert.deepEqual(row.links.map(l => [row.text.slice(l.start, l.end), l.href]), [
+            ['(48.466825, 33.821283)', coords], ['(Town & district)', 'https://yandex.ru/maps/?text=Town%20%26%20district'],
+        ]);
+    };
+    const mapped = run(platform, 'maps-ansi', [`!ged ${legacy}`, '/2 2', '/bell', '/links', '/gedcom', '/epub']);
+    verifyMapBook(mapped);
+    const flat = mapped.files.find(f => f.name.endsWith('.ged.txt'));
+    assert.ok(flat?.bytes.toString().includes(coords));
+    const flatMap = path.join(tmp, platform + '-maps.ged.txt');
+    fs.writeFileSync(flatMap, flat.bytes);
+    verifyMapBook(run(platform, 'maps-flat', [`!txt ${flatMap}`, '/2 2', '/epub']));
+    const onlyGed = result => {
+        assert.equal(result.files.length, 1, result.log);
+        assert.match(result.files[0].name, /\.ged$/);
+        assert.ok(!result.events.some(e => e.method === 'viewerAnnotations'));
+        return result.files[0].bytes.toString();
+    };
     const full = run(platform, 'full', [...setup, '/bell', '/gedcom']);
     assert.match(full.log, /✅ древо: персон 57, семей 13, детей 43/);
     assert.match(full.log, /bell chat: 67->67 строк/);
-    outputs[platform] = checkPayloads(platform, full, false);
+    outputs[platform] = onlyGed(full);
     const menu = run(platform, 'chat-menu', [...setup, '/']);
     const chatButton = [...menu.log.matchAll(/\[(\d+)\.(\d+)\] 🧬/g)].at(-1);
     assert.ok(chatButton, menu.log);
-    const chatTap = run(platform, 'chat-button', [...setup, '/', `/${chatButton[1]} ${chatButton[2]}`]);
+    const tap = `/${chatButton[1]} ${chatButton[2]}`;
+    const chatTap = run(platform, 'chat-button', [...setup, '/', tap]);
     assert.equal(checkPayloads(platform, chatTap, false), outputs[platform]);
+    if (platform === 'vk') {
+        const progress = chatTap.events.filter(e => e.method === 'messages.edit' && e.params?.attachment && e.params.message?.includes('⏳'));
+        assert.deepEqual(progress.map(e => e.params.attachment.split(',').length), [1, 2, 3]);
+        const annotationStart = chatTap.events.findIndex(e => e.method === 'viewerAnnotations');
+        assert.ok(annotationStart > chatTap.events.indexOf(progress[1]), 'GED and PDF are attached before EPUB generation');
+        assert.ok(annotationStart < chatTap.events.indexOf(progress[2]));
+    } else assert.deepEqual(chatTap.files.map(f => path.extname(f.name)), ['.ged', '.pdf', '.epub']);
     assert.match(outputs[platform], /1 EVEN\n2 TYPE Постриг\n2 DATE 1698\n2 NOTE в монашестве Маргарита/);
     assert.match(outputs[platform], /1 TITL Царь всея Руси\n2 DATE FROM 1682\n2 NOTE соправитель Петра I\n1 TITL Царь всея Руси\n2 DATE TO 1696\n2 NOTE соправитель Петра I/);
-    const flat = run(platform, 'flat-full', ['!txt dev/fixtures/Romanov_family.ged.txt', '/2 2', '/bell', '/gedcom']);
-    assert.match(flat.log, /✅ древо: персон 57, семей 13, детей 43/);
-    assert.match(flat.log, /bell chat: 67->67 строк/);
-    flatOutputs[platform] = checkPayloads(platform, flat, false);
+    const romanovFlat = run(platform, 'flat-full', ['!txt dev/fixtures/Romanov_family.ged.txt', '/2 2', '/bell', '/gedcom']);
+    assert.match(romanovFlat.log, /✅ древо: персон 57, семей 13, детей 43/);
+    assert.match(romanovFlat.log, /bell chat: 67->67 строк/);
+    flatOutputs[platform] = onlyGed(romanovFlat);
     const focus = run(platform, 'focus-reply', [...setup, '/Павел I', '>4 /gedcom1']);
-    checkPayloads(platform, focus, true);
+    const radiusOne = onlyGed(focus);
     const books = run(platform, 'epub', [...setup, '/Павел I', '/epub', '>4 /epub', '>4 /epub2', '>4 /gedcom2']);
+    if (platform === 'vk') assert.match(books.log, /epub ged generate: \d+ms[\s\S]*epub annotations: \d+ms[\s\S]*epub package: \d+ms[\s\S]*epub upload: \d+ms[\s\S]*epub send: \d+ms/);
     const epubs = books.files.filter(f => f.name.endsWith('.epub'));
-    assert.equal(epubs.length, 4, books.log);
+    assert.equal(epubs.length, 3, books.log);
     assert.equal(books.files.filter(f => f.name.endsWith('.ged')).length, 1, 'Only /gedcom2 attaches GEDCOM');
-    assert.equal(books.files.filter(f => f.name.endsWith('.pdf')).length, 1, 'Only /gedcom2 attaches a PDF');
+    assert.equal(books.files.filter(f => f.name.endsWith('.pdf')).length, 0);
     if (platform === 'tg') {
         const docs = books.events.filter(e => e.method === 'sendDocument' && e.params.document.filename.endsWith('.epub'));
         assert.ok(docs.every(e => e.params.document.type === 'application/epub+zip' && e.params.reply_parameters?.message_id));
     }
-    const radiusTwo = checkPayloads(platform, { ...books, files: books.files.filter(f => !epubs.slice(0, 3).includes(f)) }, true, 2);
-    for (const [index, expected] of [outputs[platform], focus.files.find(f => f.name.endsWith('.ged')).bytes.toString(), radiusTwo].entries()) {
+    const radiusTwo = books.files.find(f => f.name.endsWith('.ged')).bytes.toString();
+    for (const [index, expected] of [outputs[platform], radiusOne, radiusTwo].entries()) {
         assert.equal(epubs[index].name, index ? `${index} Павел I Петрович Романов 1754-09-20.epub` : 'Древо чата.epub');
         const payload = readBook(epubs[index]);
         assert.equal(payload.gedcom, expected);
@@ -252,34 +301,36 @@ for (const platform of ['tg', 'vk']) {
     const inheritedBooks = inherited.files.filter(f => f.name.endsWith('.epub'));
     const inheritedGeds = inherited.files.filter(f => f.name.endsWith('.ged'));
     const inheritedPdfs = inherited.files.filter(f => f.name.endsWith('.pdf'));
-    assert.equal(inheritedBooks.length, 4, inherited.log);
+    assert.equal(inheritedBooks.length, 2, inherited.log);
     assert.equal(inheritedGeds.length, 2, inherited.log);
-    assert.equal(inheritedPdfs.length, 5, inherited.log);
+    assert.equal(inheritedPdfs.length, 3, inherited.log);
     assert.equal(inheritedPdfs.filter(f => f.name === 'Древо чата.pdf').length, 1);
-    for (const [r, ged] of [[1, focus.files.find(f => f.name.endsWith('.ged')).bytes.toString()], [2, radiusTwo]]) {
+    for (const [r, ged] of [[1, radiusOne], [2, radiusTwo]]) {
         const atRadius = files => files.filter(f => f.name.startsWith(r + ' Павел I '));
         assert.equal(atRadius(inheritedGeds)[0].bytes.toString(), ged);
-        assert.equal(atRadius(inheritedBooks).length, 2);
+        assert.equal(atRadius(inheritedBooks).length, 1);
         for (const book of atRadius(inheritedBooks)) assert.equal(readBook(book).gedcom, ged);
         const pdfs = atRadius(inheritedPdfs);
-        assert.equal(pdfs.length, 2);
+        assert.equal(pdfs.length, 1);
         const text = pdfs.map((p, i) => {
             const file = path.join(tmp, `${platform}-radius-${r}-${i}.pdf`);
             fs.writeFileSync(file, p.bytes);
             return execFileSync('pdftotext', ['-layout', file, '-'], { encoding: 'utf8' });
         });
         assert.match(text[0], /Павел I/);
-        assert.equal(text[0], text[1]);
     }
-    const limited = run(platform, 'export-limits', [...setup, '/pdf', '/epub', '/gedcom'], 'limits');
+    const limited = run(platform, 'export-limits', [...setup, '/', tap], 'limits');
     assert.doesNotMatch(limited.log, /Unexpected render/);
     assert.ok(limited.files.some(f => f.name.endsWith('.ged')));
     assert.ok(limited.files.every(f => !/\.(?:pdf|epub)$/.test(f.name)));
     const messages = limited.events.map(e => e.params?.text || e.params?.message || '').join('\n');
     assert.match(messages, /PDF: лимит 1000 персон.*1001/);
     assert.match(messages, /EPUB: лимит 10000 персон.*10001/);
+    const notice = limited.events.findIndex(e => (e.params?.message || e.params?.text)?.startsWith('💥 Диаграмма не построена:'));
+    const finished = limited.events.findIndex(e => (e.params?.message || e.params?.text)?.includes('EPUB: лимит'));
+    assert.ok(notice >= 0 && notice < finished, 'PDF failure notice must precede the final export edit');
     const tapped = run(platform, 'focus-button', [...setup, '/Павел I', '/4 ' + button[1]]);
-    checkPayloads(platform, tapped, true);
+    assert.equal(checkPayloads(platform, tapped, true), radiusOne);
     const finalized = tapped.events.filter(e => ['editMessageText', 'messages.edit'].includes(e.method))
         .filter(e => platform === 'tg' ? e.params.message_id === 4 : e.params.conversation_message_id === '12');
     assert.ok(finalized.length);

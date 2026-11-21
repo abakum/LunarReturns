@@ -13,7 +13,7 @@ const persons = indis.map(({ __xref: key, name, sex, birt, deat, note }) => ({
     dd: deat?.date, dabt: deat?.abt, dp: deat?.plac,
 }));
 const families = fams.map(f => ({ xref: f.__xref, hKey: f.husb, wKey: f.wife, children: f.chil,
-    marr: event(f.marr), div: event(f.div) }));
+    marr: event(f.marr), div: event(f.div), note: f.note }));
 const hero = persons.find(p => p.name.startsWith('Пётр I Алексеевич'));
 const title = epubBase(hero && (hero.name + ' ' + hero.d));
 const dir = mkdtempSync('/tmp/kilo/lr-epub-');

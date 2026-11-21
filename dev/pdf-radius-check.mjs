@@ -419,7 +419,7 @@ for (const exact of [false, true, 3, 4, 5, 'Husband', 'Wife']) {
         const name = `${platform}-${exact}-${radius}`;
         const trace = path.join(tmp, name + '.jsonl');
         const commands = ['!ged ' + file, '/2 2', policy ? key(exact) : long ? 'Предок0 2000-01-01' : 'Иван 1975-04-15',
-            '>3 /gedcom' + radius, '!wait 300'];
+            '>3 /pdf' + radius, ...(policy ? ['>3 /gedcom' + radius] : []), '!wait 300'];
         const result = spawnSync(process.execPath, [platform === 'tg' ? 'dev/repl.mjs' : 'dev/vk-repl.mjs',
             '--fresh', ...(platform === 'tg' ? ['--private'] : [])], {
             encoding: 'utf8', input: commands.join('\n') + '\n', timeout: 120000, maxBuffer: 16 * 1024 * 1024,
@@ -500,7 +500,7 @@ for (const platform of ['tg', 'vk']) for (const radius of [1, 2, 5]) for (const 
         input: [fs.readFileSync('dev/fixtures/Romanov_family.ged.txt', 'utf8').trim().replaceAll('\n', '\\n'),
             wife ? '/Анна Петровна' : '/Карл Фридрих',
             hero, '>5 /bell' + radius,
-            '>5 /gedcom' + radius, '!wait 300'].join('\n') + '\n',
+             '>5 /gedcom' + radius, '>5 /pdf' + radius, '!wait 300'].join('\n') + '\n',
         env: { ...process.env, LR_DB: path.join(tmp, name + '.db'), LR_DEV_DB: path.join(tmp, name + '.json'),
             LR_VKOFF: '951', LR_VK_TRACE: path.join(tmp, name + '.jsonl') },
     });
@@ -512,11 +512,11 @@ for (const platform of ['tg', 'vk']) for (const radius of [1, 2, 5]) for (const 
     assert.match(bellLog, wife ? /Карл Фридрих[^\n]* муж/ : /Анна Петровна Романова[^\n]* жена/);
     if (!wife) assert.doesNotMatch(bellLog, /(?:отец|мать|брат|сестра) жены/);
     let exportLog = log.slice(log.indexOf('    /gedcom' + radius));
-    const txtPath = exportLog.match(/→ (.+\.ged\.txt)/);
-    if (txtPath) exportLog += fs.readFileSync(txtPath[1], 'utf8');
+    const gedPath = exportLog.match(/→ (.+\.ged)\n/);
+    if (gedPath) exportLog += fs.readFileSync(gedPath[1], 'utf8');
     if (platform === 'vk') {
         const calls = fs.readFileSync(path.join(tmp, name + '.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-        exportLog += calls.filter(c => c.method === 'upload' && c.body.includes('.ged.txt"')).map(c => c.body).join('\n');
+        exportLog += calls.filter(c => c.method === 'upload' && c.body.includes('.ged"')).map(c => c.body).join('\n');
     }
     const relatives = /Пётр I Алексеевич|Екатерина I Алексеевна|Елизавета Петровна/;
     if (wife) {
@@ -540,7 +540,7 @@ for (const platform of ['tg', 'vk']) for (const radius of [1, 2, 5]) for (const 
         .map(m => Buffer.from(m[1], 'hex').swap16().toString('utf16le')).join('\n');
     assert.ok(annotationTexts.includes('(Москва…царство)'), name + ': PDF abbreviates places');
     assert.ok(!annotationTexts.includes('(Москва, Русское царство)'), name + ': PDF omits full places');
-    assert.ok(exportLog.includes('(Москва, Русское царство)'), name + ': text export keeps full places');
+    assert.ok(exportLog.includes('Москва, Русское царство'), name + ': GEDCOM keeps full places');
     if (platform === 'tg') {
         assert.ok(pdfPath, log);
         const text = spawnSync('pdftotext', ['-layout', pdfPath[1], '-'], { encoding: 'utf8' });
