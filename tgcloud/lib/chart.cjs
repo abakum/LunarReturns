@@ -547,7 +547,7 @@ function fileBaseOf(head) {
 
 // диаграмма → PDF (строка latin1, байт на символ): страницы A4 landscape
 // режут единое полотно чарта на горизонтальные полосы (Form XObject + клип)
-function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, annotationText = null) {
+function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, annotationText = null, metadata = {}) {
     const f = parseTtf(fontBytes);
     const glyphs = fontGlyphs(f);
     const m = chartModel(title, rows, links, rel, marriages, glyphs);
@@ -733,12 +733,16 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, a
     stream(f4, "", tu.join("\n"));
     stream(axisObj, "/Type /XObject /Subtype /Form /BBox [0 0 " + n(m.W) + " " + footer + "]"
         + " /Resources << /Font << /F1 " + f0 + " 0 R >> >>", axis);
+    const info = add("<< /Title " + pdfString(metadata.title ?? title)
+        + (metadata.creationDate ? " /CreationDate (D:" + metadata.creationDate + ")" : "")
+        + (metadata.author ? " /Author " + pdfString(metadata.author) : "")
+        + (metadata.subject ? " /Subject " + pdfString(metadata.subject) : "") + " >>");
     for (const [id, body] of extra) obj(id, body);
     const xref = len;
     push("xref\n0 " + (lastObj + 1) + "\n0000000000 65535 f \n");
     for (let i = 1; i <= lastObj; i++)
         push(String(off[i]).padStart(10, "0") + " 00000 n \n");
-    push("trailer\n<< /Size " + (lastObj + 1) + " /Root 1 0 R >>\nstartxref\n" + xref + "\n%%EOF");
+    push("trailer\n<< /Size " + (lastObj + 1) + " /Root 1 0 R /Info " + info + " 0 R >>\nstartxref\n" + xref + "\n%%EOF");
     return parts.join("");
 }
 

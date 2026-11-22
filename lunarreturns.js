@@ -77,7 +77,7 @@ const { graftError, parseSearchQuery } = reqLib("flat");
 const {
     flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey,
     treeReport, rootOf, searchHead, cutLines} = reqLib("flat");
-const { createPdfAnnotationText } = reqLib("annotations");
+const { createPdfAnnotationText, pdfPersonMetadata } = reqLib("annotations");
 
 
 // ============================== ВЫВОД ==============================
@@ -1577,7 +1577,8 @@ function chartFor(peerId, keys, title, heroKey = null, range = null, diagnose = 
             })) });
     }
     const annotationText = createPdfAnnotationText(snapshot, pairs, spousePairs, rel?.fynny ?? getSettings(peerId).fynny);
-    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages, annotationText), persons: rows.length };
+    const metadata = pdfPersonMetadata(snapshot, heroKey, xOf.get(heroKey), range);
+    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages, annotationText, metadata), persons: rows.length };
 }
 
 async function sendGedcom(peerId, keys, head, msgId, convMsgId) {

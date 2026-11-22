@@ -230,25 +230,39 @@ const flatOutputs = {};
 const metadataOnly = process.argv.includes('--metadata-only');
 for (const platform of ['tg', 'vk']) {
     if (metadataOnly) {
-        const result = run(platform, 'epub-metadata', [...setup, '/Павел I', '/epub', '>4 /epub1', '>4 /epub2']);
+        const result = run(platform, 'export-metadata', [...setup, '/Павел I', '/epub', '>4 /epub1', '>4 /epub2',
+            '/pdf', '>4 /pdf1', '>4 /pdf2']);
         const books = result.files.filter(f => f.name.endsWith('.epub'));
+        const pdfs = result.files.filter(f => f.name.endsWith('.pdf'));
         assert.equal(books.length, 3, result.log);
+        assert.equal(pdfs.length, 3, result.log);
         for (const [radius, label] of ['Древо чата', 'родители-дети', 'деды-внуки'].entries()) {
             const book = books[radius];
             readBook(book);
             const opf = execFileSync('unzip', ['-p', path.join(tmp, `book-${bookCount}.epub`), 'EPUB/package.opf'], { encoding: 'utf8' });
+            const info = execFileSync('pdfinfo', ['-'], { input: pdfs[radius].bytes, encoding: 'utf8' });
             if (radius) {
                 assert.equal(book.name, `${radius} Павел I Петрович Романов 1754-09-20.epub`);
-                assert.match(opf, /<dc:title id="main-title">Павел I Петрович Романов<\/dc:title>\s*<meta refines="#main-title" property="title-type">main<\/meta>/);
-                assert.match(opf, /<dc:title id="subtitle">1754-09-20<\/dc:title>\s*<meta refines="#subtitle" property="title-type">subtitle<\/meta>/);
+                assert.match(opf, /<dc:title>Павел I Петрович Романов<\/dc:title>/);
+                assert.match(opf, /<dc:date>1754-09-20<\/dc:date>/);
+                assert.doesNotMatch(opf, /subtitle|title-type/);
+                assert.deepEqual([...opf.matchAll(/<dc:creator>(.*?)<\/dc:creator>/g)].map(m => m[1]),
+                    ['Пётр III Фёдорович Романов', 'Екатерина II Алексеевна Великая Ангальт-Цербстская']);
                 assert.ok(opf.includes(`<dc:description>Радиус родства ${radius}: ${label}.</dc:description>`));
+                assert.match(pdfs[radius].bytes.toString('latin1'), /<< \/Title <FEFF[a-f0-9]+> \/CreationDate \(D:17540920\)/);
+                assert.match(info, /^Title:\s+Павел I Петрович Романов$/m);
+                assert.match(info, /^CreationDate:.*\b1754\b/m);
+                assert.match(info, /^Author:\s+Пётр III Фёдорович Романов; Екатерина II Алексеевна Великая Ангальт-Цербстская$/m);
+                assert.ok(info.match(/^Subject:\s+(.*)$/m)?.[1] === `Радиус родства ${radius}: ${label}.`, info);
             } else {
                 assert.equal(book.name, `${label}.epub`);
                 assert.ok(opf.includes(`<dc:title>${label}</dc:title>`));
-                assert.doesNotMatch(opf, /title-type|<dc:description>/);
+                assert.doesNotMatch(opf, /title-type|<dc:description>|<dc:creator>|<dc:date>/);
+                assert.match(info, /^Title:\s+Древо чата$/m);
+                assert.doesNotMatch(info, /^(Author|Subject|CreationDate):/m);
             }
         }
-        console.log(platform + ': EPUB metadata for the full tree and radii 1 and 2: OK');
+        console.log(platform + ': EPUB and PDF metadata for the full tree and radii 1 and 2: OK');
         continue;
     }
     const waiting = run(platform, 'command-loading', [...setup, '/Павел I',
@@ -287,8 +301,14 @@ for (const platform of ['tg', 'vk']) {
             ['(48.466825, 33.821283)', coords], ['(Town & district)', 'https://ya.ru/maps/?text=Town%20%26%20district'],
         ]);
     };
-    const mapped = run(platform, 'maps-ansi', [`!ged ${legacy}`, '/2 2', '/bell', '/links', '/gedcom', '/epub']);
+    const mapped = run(platform, 'maps-ansi', [`!ged ${legacy}`, '/2 2', '/bell', '/links', '/gedcom', '/epub', '/pdf']);
     verifyMapBook(mapped);
+    const mapPdf = mapped.files.find(f => f.name.endsWith('.pdf'));
+    assert.ok(mapPdf, mapped.log);
+    const comments = [...mapPdf.bytes.toString('latin1').matchAll(/\n<FEFF([a-f0-9]+)>\nendobj/g)]
+        .map(([, hex]) => Buffer.from(hex, 'hex').swap16().toString('utf16le')).join('\n');
+    assert.ok(comments.includes('(48.466825, 33.821283) ' + coords));
+    assert.doesNotMatch(comments, /https:\/\/ya\.ru\/maps\/\?text=/);
     const flat = mapped.files.find(f => f.name.endsWith('.ged.txt'));
     assert.ok(flat?.bytes.toString().includes(coords));
     const flatMap = path.join(tmp, platform + '-maps.ged.txt');

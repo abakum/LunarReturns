@@ -41,10 +41,12 @@ const tmp = fs.mkdtempSync('/tmp/kilo/lr-pdf-radius-');
 }
 {
     const map = 'https://ya.ru/maps/?pt=33.821283,48.466825&z=13';
-    const person = { key: 'a', name: 'Person', sex: 'M', d: '1950-01-01', plac: 'Россия, Пермский край, Пермь',
-        note: `Note (keep these words)^Похоронен: ${map}^` };
+    const weddingMap = 'https://ya.ru/maps/?pt=44,56&z=13';
+    const person = { key: 'a', name: 'Person', sex: 'M', d: '1900-01-01', plac: 'Россия, Пермский край, Пермь',
+        note: `Рождение: 1900-01-01 (Россия, Пермский край, Пермь) ${map}^Note (keep these words)^Жил: 1950 (Пермь, край)^Похоронен: ${map}^` };
     const snapshot = [[person, { key: 'b', name: 'Spouse', sex: 'F', nameOnly: true, note: 'Личное' }],
-        [{ hKey: 'a', wKey: 'b', children: [], marr: { d: '1970-01-01', plac: 'Нижний Новгород' }, note: 'Семейное' }]];
+        [{ hKey: 'a', wKey: 'b', children: [], marr: { d: '1970-01-01', plac: 'Нижний Новгород' },
+            note: `Семейное^Свадьба: 1970-01-01 (Нижний Новгород) ${weddingMap}^` }]];
     const before = structuredClone(snapshot);
     const textOf = createPdfAnnotationText(snapshot, [], []);
     const pdf = chartPdf('Places', [{ ...person, xref: 'a', birth: person.d }], [], chartFont(), null, null, textOf);
@@ -54,9 +56,9 @@ const tmp = fs.mkdtempSync('/tmp/kilo/lr-pdf-radius-');
     const decoded = Buffer.from(encoded, 'hex').swap16().toString('utf16le');
     const epub = viewerAnnotations('0 @a@ INDI', snapshot).a;
     assert.ok(epub.some(row => row.links?.some(link => link.href === map)));
-    assert.equal(decoded, epub.map(row => (row.prefix || '') + row.text + (row.kinship ? ' · ' + row.kinship : '')).join('\n'));
-    assert.equal(decoded, '-Person 1950-01-01 (Россия, Пермский край, Пермь)\nNote (keep these words)\n'
-        + 'Похоронен: (48.466825, 33.821283)\n+1970-01-01 (Нижний Новгород)\nSpouse · жена');
+    assert.equal(decoded, `-Person 1900-01-01 (Россия, Пермский край, Пермь) ${map}\nNote (keep these words)\n`
+        + `Жил: 1950 (Пермь, край)\nПохоронен: (48.466825, 33.821283) ${map}\n`
+        + `+1970-01-01 (Нижний Новгород) ${weddingMap}\nSpouse · жена`);
     assert.doesNotMatch(pdf, /\/Subtype \/Link\b|\/URI\b/);
     assert.deepEqual(snapshot, before);
 }

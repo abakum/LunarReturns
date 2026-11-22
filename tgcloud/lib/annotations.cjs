@@ -1,6 +1,7 @@
 const { createFlatAnnotationScope, flatTreeText } = require('./flat.cjs');
 const { approxOut } = require('./text.cjs');
 const { eventMapLink, parseEventNote } = require('./parse.cjs');
+const { rangeLevel } = require('./chart.cjs');
 
 function annotationRow(text, note, events, birthDate, fieldStart = 0) {
     const tail = (note || '').split('^').map(part => ({ part, event: parseEventNote(part) }));
@@ -94,8 +95,25 @@ function createAnnotationRows(snapshot, pairs, spouses, chain) {
 
 function createPdfAnnotationText(snapshot, pairs, spouses, chain) {
     const rowsOf = createAnnotationRows(snapshot, pairs, spouses, chain);
-    return ({ xref }) => rowsOf(xref).map(({ prefix = '', text, kinship }) =>
-        prefix + text + (kinship ? ' · ' + kinship : '')).join('\n');
+    return ({ xref }) => rowsOf(xref).map(({ prefix = '', text, kinship, links = [] }) => {
+        // Work backwards so the offsets still refer to the original text.
+        for (const { end, href } of [...links].reverse()) {
+            if (href.startsWith('https://ya.ru/maps/?pt='))
+                text = text.slice(0, end) + ' ' + href + text.slice(end);
+        }
+        return prefix + text + (kinship ? ' · ' + kinship : '');
+    }).join('\n');
 }
 
-module.exports = { createAnnotationRows, createPdfAnnotationText };
+function pdfPersonMetadata([persons, fams], heroKey, xref, radius) {
+    if (!heroKey) return {};
+    const parents = new Set(xref ? fams.filter(f => f.children.includes(xref)).flatMap(f => [f.hKey, f.wKey]) : []);
+    parents.delete(xref);
+    const names = new Map(persons.map(p => [p.key, p.name]));
+    const date = heroKey.match(/ (\d{4})-(\d{2})-(\d{2})$/);
+    return { title: date ? heroKey.slice(0, date.index) : heroKey, creationDate: date?.slice(1).join(''),
+        author: [...parents].map(key => names.get(key)).filter(Boolean).join('; '),
+        subject: radius != null ? `Радиус родства ${radius}: ${rangeLevel(radius)}.` : '' };
+}
+
+module.exports = { createAnnotationRows, createPdfAnnotationText, pdfPersonMetadata };

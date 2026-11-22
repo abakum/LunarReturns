@@ -1,6 +1,7 @@
 const { viewerHtml } = require('./viewer.cjs');
 const { deflateSync } = require('./epub-deflate.cjs');
 const { fileBaseOf, rangeLevel } = require('./chart.cjs');
+const { parseGedcom } = require('./parse.cjs');
 
 const EPUB_TYPE = 'application/epub+zip';
 const EPUB_MAX = 10000;
@@ -60,15 +61,22 @@ function epubBase(heroKey, radius = 1) {
 function viewerEpub(gedcom, title, heroXref, annotations, { heroKey, radius = 1 } = {}) {
     const html = viewerHtml(gedcom, title, heroXref, annotations);
     const escapedTitle = html.match(/<title>(.*?)<\/title>/s)[1];
-    let titles = `<dc:title>${escapedTitle}</dc:title>`;
+    let metadata = `<dc:title>${escapedTitle}</dc:title>`;
     if (heroKey) {
-        const split = heroKey.lastIndexOf(' ');
         const escapeText = s => s.replace(/[\x00-\x1f\x7f]/g, ' ').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        titles = `<dc:title id="main-title">${escapeText(heroKey.slice(0, split))}</dc:title>
-<meta refines="#main-title" property="title-type">main</meta>
-<dc:title id="subtitle">${escapeText(heroKey.slice(split + 1))}</dc:title>
-<meta refines="#subtitle" property="title-type">subtitle</meta>
-<dc:description>Радиус родства ${radius}: ${rangeLevel(radius)}.</dc:description>`;
+        const date = heroKey.match(/ (\d{4}-\d{2}-\d{2})$/);
+        metadata = `<dc:title>${escapeText(date ? heroKey.slice(0, date.index) : heroKey)}</dc:title>`;
+        if (heroXref) {
+            const tree = parseGedcom(gedcom);
+            const parents = new Set(tree?.fams.filter(f => f.chil.includes(heroXref)).flatMap(f => [f.husb, f.wife]));
+            const names = new Map(tree?.indis.map(p => [p.__xref, p.name]));
+            for (const xref of parents) {
+                const name = names.get(xref);
+                if (name && xref !== heroXref) metadata += `\n<dc:creator>${escapeText(name)}</dc:creator>`;
+            }
+        }
+        if (date) metadata += `\n<dc:date>${date[1]}</dc:date>`;
+        metadata += `\n<dc:description>Радиус родства ${radius}: ${rangeLevel(radius)}.</dc:description>`;
     }
     const filename = title + '.xhtml';
     const href = encodeURIComponent(filename);
@@ -89,7 +97,7 @@ function viewerEpub(gedcom, title, heroXref, annotations, { heroKey, radius = 1 
         ['EPUB/package.opf', `<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id" xml:lang="ru">
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
 <dc:identifier id="pub-id">urn:lunarreturns:${now.getTime()}-${Math.random().toString(36).slice(2)}</dc:identifier>
-${titles}
+${metadata}
 <dc:language>ru</dc:language>
 <meta property="dcterms:modified">${now.toISOString().replace(/\.\d+Z$/, 'Z')}</meta>
 <meta property="rendition:flow">scrolled-doc</meta></metadata>

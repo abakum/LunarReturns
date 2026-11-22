@@ -38,6 +38,16 @@ const snapshot = [[{ key: 'I1', name: 'Иван Тест', d: '1980-01-01', plac
     [{ xref: 'F1', hKey: 'I2', wKey: 'I3', children: ['I1', 'OUT'] },
         { xref: 'FOUT', hKey: 'I1', children: ['OUTCHILD'] }]];
 const annotations = viewerAnnotations(gedcom, snapshot);
+{
+    const family = gedcom.replace('1 NAME Отец /Тест/', '1 NAME Отец & /Тест/').replace('1 WIFE @I3@\n', '');
+    const opf = new TextDecoder().decode(unzipSync(viewerEpub(family, 'Тест', 'I1', {}, {
+        heroKey: 'Иван & Тест 1980-01-01',
+    }))['EPUB/package.opf']);
+    assert.match(opf, /<dc:title>Иван &amp; Тест<\/dc:title>/);
+    assert.match(opf, /<dc:date>1980-01-01<\/dc:date>/);
+    assert.doesNotMatch(opf, /subtitle|title-type/);
+    assert.deepEqual([...opf.matchAll(/<dc:creator>(.*?)<\/dc:creator>/g)].map(m => m[1]), ['Отец &amp; Тест']);
+}
 assert.doesNotMatch(JSON.stringify(annotations.I1), /НЕ_ЭКСПОРТИРОВАН|чужая|чужое|OUT/);
 assert.deepEqual(Object.keys(annotations).sort(), ['I1', 'I2', 'I3']);
 assert.deepEqual(annotations.I1.slice(0, 4), [

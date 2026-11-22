@@ -10,7 +10,7 @@ import { findShownRecord, REPLY_TARGET_ERROR } from './text.cjs';
 import { graftError } from './flat.cjs';
 import { localRecord, mskGedcom } from './event-time.cjs';
 import { viewerAnnotations } from './viewer.cjs';
-import { createPdfAnnotationText } from './annotations.cjs';
+import { createPdfAnnotationText, pdfPersonMetadata } from './annotations.cjs';
 import { viewerEpub, EPUB_TYPE, epubBase, checkEpubLimit } from './epub.cjs';
 import { chatFlatArtifacts, gedNoteLines, gedText, gedFictiveDates, trimImport } from './parse.cjs';
 import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText, isExactEvent } from './tree.cjs';
@@ -1504,7 +1504,8 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
             })) });
     }
     const annotationText = createPdfAnnotationText(snapshot, pairs, spousePairs, rel?.fynny ?? (await getSettings(chatId)).fynny);
-    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages, annotationText), persons: rows.length };
+    const metadata = pdfPersonMetadata(snapshot, heroKey, xOf.get(heroKey), range);
+    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages, annotationText, metadata), persons: rows.length };
 }
 
 // тап 🧬 / «/gedcom» / «/gedcomN»: <имя>.ged всегда, <имя>.pdf (диаграмма,
