@@ -189,7 +189,7 @@ if (typeof P.gedNoteLines !== 'function') {
 
     const map = ['3 MAP', '4 LATI S48.466825', '4 LONG W33.821283'];
     await check('all supported places restore independent MAP records; bad pairs are ignored', () => {
-        const pair = 'https://yandex.ru/maps/?pt=-33.821283,-48.466825&z=11';
+        const pair = 'https://ya.ru/maps/?pt=-33.821283,-48.466825&z=13';
         for (const tag of ['BIRT', 'DEAT', 'BURI', 'EVEN', 'RESI', 'TITL', 'OCCU', 'CAST', 'MARR', 'DIV']) {
             const family = tag === 'MARR' || tag === 'DIV';
             const parse = lines => family ? P.parseGedcom(ged(['0 @F@ FAM', ...lines])).fams[0] : person(lines);
@@ -206,7 +206,9 @@ if (typeof P.gedNoteLines !== 'function') {
         assert.equal(person(['1 BIRT', '2 PLAC Town', '3 MAP', '4 LATI N0', '3 MAP', '4 LONG E180']).note, undefined);
         assert.equal(person(['1 BIRT', '2 PLAC Town', '2 NOTE a', '3 MAP', '4 LATI N0', '4 LONG E180']).note, 'Рождение: (Town) a^');
         assert.equal(person(['1 BIRT', '2 PLAC Town', '3 MAP', '4 LATI N0', '4 LONG E180']).note,
-            'Рождение: (Town) https://yandex.ru/maps/?pt=180,0&z=11^');
+             'Рождение: (Town) https://ya.ru/maps/?pt=180,0&z=13^');
+        const legacy = 'https://yandex.ru/maps/?pt=180,0&z=11';
+        assert.deepEqual(exportNote(`Рождение: (Town) ${legacy}^`), ['1 BIRT', '2 PLAC Town', '2 NOTE ' + legacy]);
         const noDeathPlace = person(['1 DEAT', '2 PLAC', ...map, '2 NOTE (keep this)', '1 BURI', '2 PLAC Cemetery']);
         assert.ok(!noDeathPlace.deat.plac, 'Burial place must not label an unnamed death map');
         assert.deepEqual(exportNote(noDeathPlace.note), ['1 DEAT', '2 PLAC', ...map, '2 NOTE (keep this)', '1 BURI', '2 PLAC Cemetery']);

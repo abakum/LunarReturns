@@ -124,7 +124,10 @@ function readBook(book) {
         at += 46 + nameLength + bytes.readUInt16LE(at + 30) + bytes.readUInt16LE(at + 32);
     }
     assert.ok(xhtml, 'Missing Unicode XHTML entry');
-    assert.ok(xhtml.includes(`открыть <code>EPUB/${filename}</code>`));
+    const fallback = xhtml.match(/<p id="status" role="status">(.*?)<\/p>/s)?.[1];
+    assert.ok(fallback?.includes(`<code>EPUB/${filename}</code>`));
+    assert.ok(fallback.includes('href="https://github.com/readium/kotlin-toolkit/releases"'));
+    assert.ok(fallback.includes('href="https://www.thoriumreader.com/en/download/"'));
     assert.match(xhtml, /connect-src 'none'/);
     return JSON.parse(xhtml.match(/<script id="tree-data" type="application\/json"><!\[CDATA\[(.*?)\]\]><\/script>/s)[1]);
 }
@@ -215,7 +218,7 @@ function checkPayloads(platform, result, focused, radius = 1) {
 
 const setup = ['!ged dev/fixtures/Romanov_family.ged', '/2 2'];
 const legacy = path.join(tmp, 'maps-ansi.ged');
-const coords = 'https://yandex.ru/maps/?pt=33.821283,48.466825&z=11';
+const coords = 'https://ya.ru/maps/?pt=33.821283,48.466825&z=13';
 fs.writeFileSync(legacy, Buffer.concat([
     Buffer.from('0 HEAD\n1 CHAR ANSI\n0 @I@ INDI\n1 NAME '), Buffer.from([0xcf, 0xe5, 0xf2, 0xf0, 0xee, 0xe2]),
     Buffer.from('\n1 BIRT\n2 DATE 1 JAN 1940\n2 PLAC\n3 MAP\n4 LATI N48.466825\n4 LONG E33.821283\n'
@@ -224,7 +227,30 @@ fs.writeFileSync(legacy, Buffer.concat([
 ]));
 const outputs = {};
 const flatOutputs = {};
+const metadataOnly = process.argv.includes('--metadata-only');
 for (const platform of ['tg', 'vk']) {
+    if (metadataOnly) {
+        const result = run(platform, 'epub-metadata', [...setup, '/Павел I', '/epub', '>4 /epub1', '>4 /epub2']);
+        const books = result.files.filter(f => f.name.endsWith('.epub'));
+        assert.equal(books.length, 3, result.log);
+        for (const [radius, label] of ['Древо чата', 'родители-дети', 'деды-внуки'].entries()) {
+            const book = books[radius];
+            readBook(book);
+            const opf = execFileSync('unzip', ['-p', path.join(tmp, `book-${bookCount}.epub`), 'EPUB/package.opf'], { encoding: 'utf8' });
+            if (radius) {
+                assert.equal(book.name, `${radius} Павел I Петрович Романов 1754-09-20.epub`);
+                assert.match(opf, /<dc:title id="main-title">Павел I Петрович Романов<\/dc:title>\s*<meta refines="#main-title" property="title-type">main<\/meta>/);
+                assert.match(opf, /<dc:title id="subtitle">1754-09-20<\/dc:title>\s*<meta refines="#subtitle" property="title-type">subtitle<\/meta>/);
+                assert.ok(opf.includes(`<dc:description>Радиус родства ${radius}: ${label}.</dc:description>`));
+            } else {
+                assert.equal(book.name, `${label}.epub`);
+                assert.ok(opf.includes(`<dc:title>${label}</dc:title>`));
+                assert.doesNotMatch(opf, /title-type|<dc:description>/);
+            }
+        }
+        console.log(platform + ': EPUB metadata for the full tree and radii 1 and 2: OK');
+        continue;
+    }
     const waiting = run(platform, 'command-loading', [...setup, '/Павел I',
         '>4 /bell2', '>4 /pdf2', '>4 /epub2', '>4 /gedcom2', '>4 /links']);
     const messageText = e => e.params?.text || e.params?.message || '';
@@ -258,7 +284,7 @@ for (const platform of ['tg', 'vk']) {
         const row = Object.values(data.annotations).flat().find(row => row.hero && row.text.includes('Петров'));
         assert.doesNotMatch(row.text, /https:\/\//);
         assert.deepEqual(row.links.map(l => [row.text.slice(l.start, l.end), l.href]), [
-            ['(48.466825, 33.821283)', coords], ['(Town & district)', 'https://yandex.ru/maps/?text=Town%20%26%20district'],
+            ['(48.466825, 33.821283)', coords], ['(Town & district)', 'https://ya.ru/maps/?text=Town%20%26%20district'],
         ]);
     };
     const mapped = run(platform, 'maps-ansi', [`!ged ${legacy}`, '/2 2', '/bell', '/links', '/gedcom', '/epub']);
@@ -390,7 +416,7 @@ for (const platform of ['tg', 'vk']) {
     }
     console.log(platform + ': Romanov GED/flat import confirmation and bell, full/reply/button GED+PDF+viewer payloads, isolated failures OK');
 }
-if (!process.argv.includes('--loading-only')) {
+if (!metadataOnly && !process.argv.includes('--loading-only')) {
     assert.equal(outputs.tg, outputs.vk, 'Full GED exports must match between platforms');
     assert.equal(flatOutputs.tg, flatOutputs.vk, 'Full flat-import GED exports must match between platforms');
     console.log('Mirrored viewer REPL checks: OK');

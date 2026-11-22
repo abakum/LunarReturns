@@ -177,7 +177,7 @@ try {
         Buffer.from('\n1 BIRT\n2 DATE 1 JAN 1940\n2 PLAC\n3 MAP\n4 LATI N48.466825\n4 LONG E33.821283\n1 DEAT\n2 CAUS fever\n0 TRLR\n')]);
     fs.writeFileSync(legacy, Buffer.concat([Buffer.from('0 HEAD\n1 CHAR ANSI\n'), body]));
     run('ged2txt', [legacy]);
-    assert.match(read(legacy + '.txt'), /Петров 1940-01-01.*pt=33\.821283,48\.466825&z=11.*Причина смерти: fever/);
+    assert.match(read(legacy + '.txt'), /Петров 1940-01-01.*https:\/\/ya\.ru\/maps\/\?pt=33\.821283,48\.466825&z=13.*Причина смерти: fever/);
     run('txt2ged', [legacy + '.txt']);
     const exported = read(path.join(tmp, 'legacy.txt.ged'));
     assert.match(exported, /1 CHAR UTF-8[\s\S]*1 NAME Петров\n(?:1 SEX M\n)?1 BIRT\n2 DATE 1 JAN 1940\n2 PLAC\n3 MAP\n4 LATI N48\.466825\n4 LONG E33\.821283\n1 DEAT\n2 CAUS fever/);

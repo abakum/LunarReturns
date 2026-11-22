@@ -4,9 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { chromium } from '@playwright/test';
+import { unzipSync } from 'fflate';
 import { pathToFileURL } from 'node:url';
 const require = createRequire(import.meta.url);
 const { viewerHtml, viewerAnnotations } = require('../tgcloud/lib/viewer.cjs');
+const { viewerEpub } = require('../tgcloud/lib/epub.cjs');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lr-viewer-'));
 const gedcom = `0 HEAD
 1 CHAR UTF-8
@@ -38,14 +40,14 @@ assert.deepEqual(annotations.I1, [
     { prefix: '=', text: 'Мать Тест', xref: 'I3', kinship: 'мать' }, { text: '+' },
     { prefix: '', text: 'Отец Тест', xref: 'I2', kinship: 'отец' },
     { hero: true, text: '--Иван Тест 1980-01-01 (SECRET_PLACE)\nПервая\nВторая', links: [
-        { start: 23, end: 37, href: 'https://yandex.ru/maps/?text=SECRET_PLACE' },
+        { start: 23, end: 37, href: 'https://ya.ru/maps/?text=SECRET_PLACE' },
     ] },
 ]);
 assert.equal(annotations.I2[0].text, '-Отец Тест');
 assert.equal(annotations.I2.find(row => row.xref === 'I1').kinship, 'сын');
 {
     const [persons, fams] = structuredClone(snapshot);
-    const coords = 'https://yandex.ru/maps/?pt=33.821283,48.466825&z=11';
+    const coords = 'https://ya.ru/maps/?pt=33.821283,48.466825&z=13';
     persons[0].note += 'Жил: 2000 (Первый район Город) <личная заметка>^Титул: Герой 2001[^Титул: Герой 2002]^'
         + `Рождение: 1980-01-01 (SECRET_PLACE) справка ${coords}^Похоронен: ${coords}^Жил: 1920 (Старый)^Жил: 1921 (Город & край)^Жил: (Недатированный)^`;
     persons[1].note = 'чужая заметка';
@@ -73,10 +75,10 @@ assert.equal(annotations.I2.find(row => row.xref === 'I1').kinship, 'сын');
     assert.match(hero.text, /\(SECRET_PLACE\) справка\nПохоронен: \(48\.466825, 33\.821283\)/);
     assert.deepEqual(hero.links.map(l => [hero.text.slice(l.start, l.end), l.href]), [
         ['(SECRET_PLACE)', coords],
-        ['(Первый район Город)', 'https://yandex.ru/maps/?text=' + encodeURIComponent('Первый район Город')],
+        ['(Первый район Город)', 'https://ya.ru/maps/?text=' + encodeURIComponent('Первый район Город')],
         ['(SECRET_PLACE)', coords], ['(48.466825, 33.821283)', coords],
-        ['(Город & край)', 'https://yandex.ru/maps/?text=' + encodeURIComponent('Город & край')],
-        ['(Недатированный)', 'https://yandex.ru/maps/?text=' + encodeURIComponent('Недатированный')],
+        ['(Город & край)', 'https://ya.ru/maps/?text=' + encodeURIComponent('Город & край')],
+        ['(Недатированный)', 'https://ya.ru/maps/?text=' + encodeURIComponent('Недатированный')],
     ]);
     assert.deepEqual(byId.I1.filter(row => row.text === 'Тёзка').map(row => row.xref).sort(), ['I4', 'I6']);
     assert.deepEqual(byId.I1.find(row => row.xref === 'I5'), { prefix: '---', text: 'Ребёнок 2000-01', xref: 'I5', kinship: 'ребёнок' });
@@ -90,8 +92,8 @@ assert.equal(annotations.I2.find(row => row.xref === 'I1').kinship, 'сын');
     }
 }
 {
-    const coords = 'https://yandex.ru/maps/?pt=33.821283,48.466825&z=11';
-    const other = 'https://yandex.ru/maps/?pt=34,49&z=11';
+    const coords = 'https://ya.ru/maps/?pt=33.821283,48.466825&z=13';
+    const other = 'https://ya.ru/maps/?pt=34,49&z=13';
     const [persons, fams] = structuredClone(snapshot);
     Object.assign(persons[0], { dd: '1969-03-07', dp: 'Миллерово', note: [
         `Рождение: 1980-01-01 (SECRET_PLACE) ${coords}`,
@@ -119,7 +121,7 @@ assert.equal(annotations.I2.find(row => row.xref === 'I1').kinship, 'сын');
 {
     const [persons, fams] = structuredClone(snapshot);
     const place = 'Россия, Ростовская область, Каменский район, станция Лихая';
-    const href = 'https://yandex.ru/maps/?text=' + encodeURIComponent(place);
+    const href = 'https://ya.ru/maps/?text=' + encodeURIComponent(place);
     Object.assign(persons[0], { d: '1909-04-11', dd: '1976-12-04', dp: place });
     for (const [date, linked] of [['', true], ['1920 ', false]]) {
         const burial = `Похоронен: ${date}(${place}) старое кладбище в районе парка Победы`;
@@ -190,14 +192,14 @@ try {
         await page.evaluate(() => sessionStorage.removeItem('lunarreturns.viewer.touch-tip-dismissed'));
         await page.reload();
         assert(await tip.isVisible());
-        const firstName = page.locator('#chart .indi').filter({ hasText: 'Иван' }).first().locator('a.name-link').first();
+        const firstName = page.getByRole('button', { name: /Роспись: Иван/ }).first();
         const beforeName = await chartTransform();
         if (viewport.width < 500) await firstName.tap();
         else await firstName.click();
         assert(await tip.isHidden());
         assert(await page.locator('#annotation').isVisible());
         const place = page.locator('#annotation').getByRole('link', { name: '(SECRET_PLACE)', exact: true });
-        assert.equal(await place.getAttribute('href'), 'https://yandex.ru/maps/?text=SECRET_PLACE');
+        assert.equal(await place.getAttribute('href'), 'https://ya.ru/maps/?text=SECRET_PLACE');
         assert.equal(await place.getAttribute('target'), '_blank');
         assert.equal(await chartTransform(), beforeName);
         assert.equal(hash(), '');
@@ -244,13 +246,20 @@ try {
         assert.equal(await page.locator('#status').textContent(), '');
         await page.locator('#fit').click();
         const card = page.locator('#chart .indi').filter({ hasText: 'Иван' }).first().locator('rect.border');
-        const name = page.locator('#chart .indi').filter({ hasText: 'Иван' }).first().locator('a.name-link').first();
+        const name = page.getByRole('button', { name: /Роспись: Иван/ }).first();
         assert.equal(await card.evaluate(node => getComputedStyle(node).cursor), 'pointer');
         assert.equal(await name.locator('.name').evaluate(node => getComputedStyle(node).cursor), 'help');
         await name.hover();
         assert(await page.locator('#annotation').isHidden());
         await name.click();
         assert(await page.locator('#annotation').isVisible());
+        for (const key of ['Enter', 'Space']) {
+            await name.press('Escape');
+            assert(await page.locator('#annotation').isHidden());
+            await name.press(key);
+            assert(await page.locator('#annotation').isVisible());
+            assert.equal(hash(), '#person=I2');
+        }
         const hero = page.locator('#annotation-text strong');
         assert.match(await hero.textContent(), /^--Иван Тест .*\(SECRET_PLACE\)\nПервая\nВторая$/);
         assert.equal(await hero.evaluate(node => getComputedStyle(node).fontWeight), '700');
@@ -291,19 +300,19 @@ try {
             await page.locator('header').tap({ position: { x: 2, y: 2 } });
             assert(await page.locator('#annotation').isHidden());
         }
-        for (const viaKeyboard of [false, true]) {
+        for (const key of [null, 'Enter', 'Space']) {
             await name.click();
-            const mother = page.locator('#annotation-text a[href="#person=I3"]');
+            const mother = page.locator('#annotation-text').getByRole('button', { name: 'Мать Тест', exact: true });
             assert.equal(await mother.textContent(), 'Мать Тест');
             assert.equal(await mother.evaluate(node => node.nextSibling.textContent), ' · мать');
-            if (viaKeyboard) await mother.press('Enter');
+            if (key) await mother.press(key);
             else if (viewport.width < 500) await mother.tap();
             else await mother.click();
             assert.equal(hash(), '#person=I3');
             assert.match(await picker.inputValue(), /\(I3\)$/);
             assert(await page.locator('#annotation').isVisible());
             assert.match(await hero.textContent(), /Мать Тест/);
-            assert.equal(await page.locator('#annotation-text a[href="#person=I1"]').textContent(), 'Иван Тест 1980-01-01');
+            assert(await page.locator('#annotation-text').getByRole('button', { name: 'Иван Тест 1980-01-01', exact: true }).isVisible());
             await page.goBack();
             await page.waitForFunction(() => document.getElementById('person').value.endsWith('(I1)'));
             assert(await page.locator('#annotation').isHidden());
@@ -388,5 +397,43 @@ try {
         await context.close();
     }
     console.log('Chromium file:// offline desktop/mobile, person search/history, focus, zoom/pan/fit, Romanov, escaping: OK');
+
+    const title = 'Тест & дерево';
+    const bookPath = path.join(dir, 'tree.xhtml');
+    fs.writeFileSync(bookPath, unzipSync(viewerEpub(gedcom, title, 'I1', annotations))[`EPUB/${title}.xhtml`]);
+    const bookUrl = pathToFileURL(bookPath).href;
+    const noScript = await browser.newPage({ javaScriptEnabled: false, offline: true });
+    await noScript.goto(bookUrl);
+    const fallback = noScript.getByRole('status');
+    assert(await fallback.isVisible());
+    assert.equal(await fallback.getByRole('link', { name: /Readium/ }).getAttribute('href'), 'https://github.com/readium/kotlin-toolkit/releases');
+    assert.equal(await fallback.getByRole('link', { name: 'Thorium Reader' }).getAttribute('href'), 'https://www.thoriumreader.com/en/download/');
+    assert.equal(await fallback.locator('code').textContent(), `EPUB/${title}.xhtml`);
+    await noScript.close();
+
+    const reader = await browser.newPage({ offline: true });
+    await reader.addInitScript(() => {
+        // Thorium handles book hyperlinks before their target handlers receive the click.
+        document.addEventListener('click', event => {
+            if (event.target.closest('a[href]')) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+        }, true);
+    });
+    await reader.goto(bookUrl);
+    assert(await reader.locator('#status').isHidden());
+    await reader.getByRole('button', { name: /Роспись: Иван/ }).first().click();
+    const panel = reader.locator('#annotation');
+    assert(await panel.isVisible());
+    assert.equal(new URL(reader.url()).hash, '');
+    await panel.getByRole('button', { name: 'Мать Тест', exact: true }).click();
+    assert.equal(new URL(reader.url()).hash, '#person=I3');
+    assert.match(await panel.locator('strong').textContent(), /Мать Тест/);
+    await reader.goBack();
+    await reader.waitForFunction(() => document.getElementById('person').value.endsWith('(I1)'));
+    assert(await panel.isHidden());
+    await reader.close();
+    console.log('EPUB fallback without JavaScript and annotation actions under reader link interception: OK');
 } finally { await browser.close(); }
 console.log('Browser fixtures:', dir);

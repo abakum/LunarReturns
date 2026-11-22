@@ -1549,8 +1549,9 @@ export async function sendEpub(chatId, keys, head, heroKey, heroXref, replyTo) {
         checkEpubLimit(g);
         const annotations = viewerAnnotations(g, await flatRows(chatId), await linkPairs(chatId),
             await focusSpousePairs(chatId), (await getSettings(chatId)).fynny);
-        const title = epubBase(heroKey, parseInt(head, 10) || 1);
-        const epub = viewerEpub(g, title, heroXref, annotations);
+        const radius = parseInt(head, 10) || 1;
+        const title = epubBase(heroKey, radius);
+        const epub = viewerEpub(g, title, heroXref, annotations, { heroKey, radius });
         await api.sendDocument({ chat_id: chatId, reply_parameters, caption: head,
             document: new InputFile(epub, title + '.epub', { type: EPUB_TYPE }) });
     } catch (e) {
@@ -1624,14 +1625,15 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
             catch (e) { console.error("ged chart notice:", e.message); errors.push(notice); }
         }
         if (pdf) await sendFile(Uint8Array.from(pdf, c => c.charCodeAt(0)), ".pdf", "application/pdf");
-        const epubTitle = epubBase(heroKey, parseInt(head0, 10) || 1);
+        const radius = parseInt(head0, 10) || 1;
+        const epubTitle = epubBase(heroKey, radius);
         try {
             checkEpubLimit(g);
             const hero = heroKey ? (await personRows(chatId)).find(r => pkey(r) === heroKey) : null;
             const heroXref = hero && g.split("\n").includes("0 @" + hero.xref + "@ INDI") ? hero.xref : null;
             const annotations = viewerAnnotations(g, await flatRows(chatId), await linkPairs(chatId),
                 await focusSpousePairs(chatId), (await getSettings(chatId)).fynny);
-            await sendFile(viewerEpub(g, epubTitle, heroXref, annotations), ".epub", EPUB_TYPE, epubTitle + ".epub");
+            await sendFile(viewerEpub(g, epubTitle, heroXref, annotations, { heroKey, radius }), ".epub", EPUB_TYPE, epubTitle + ".epub");
         } catch (e) {
             console.error("viewer:", e.message);
             errors.push(epubTitle + ".epub: " + e.message);

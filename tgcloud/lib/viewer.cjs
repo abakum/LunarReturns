@@ -27,7 +27,7 @@ function annotationRow(text, note, events, birthDate, fieldStart = 0) {
             if (note) text += '\n';
             continue;
         }
-        let visible = event?.map ? part.replace(/\s*https:\/\/yandex\.ru\/maps\/\?pt=\S+$/, '') : part;
+        let visible = event?.map ? part.slice(0, event.noteStart + event.note.length).trimEnd() : part;
         const fallbackDate = event?.tag === 'BURI' ? deathDate ?? birthDate : birthDate;
         const link = eventMapLink(event?.place, event?.date?.iso ?? fallbackDate, event?.map);
         const main = shown.get(event?.tag === 'BURI' ? 'DEAT' : event?.tag);
@@ -109,7 +109,8 @@ function viewerHtml(gedcom, title, heroXref = null, annotations = {}) {
 @media (hover:none) and (pointer:coarse){#person{font-size:16px}}
 #annotation{position:fixed;z-index:2;width:min(560px,calc(100vw - 24px));max-height:min(65vh,600px);overflow:auto;background:#fffdf7;border:1px solid #b7aea0;border-radius:8px;box-shadow:0 8px 30px #0003;padding:12px}#annotation[hidden]{display:none}#annotation pre{font:13px/1.5 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere;margin:0;user-select:text}
 #annotation{background:#fffbdc}
-.indi{cursor:pointer}.name-link,.name-link .name{cursor:help}.name-link .name{fill:#175c9c;text-decoration:underline}
+ .indi{cursor:pointer}.name-button,.name-button .name{cursor:help}.name-button .name{fill:#175c9c;text-decoration:underline}
+ #annotation .relative-button{border:0;background:none;padding:0;font:inherit;color:#175c9c;text-align:start;text-decoration:underline;cursor:pointer;max-width:100%;white-space:inherit;overflow-wrap:anywhere}.name-button:focus-visible,.relative-button:focus-visible{outline:2px solid #175c9c;outline-offset:2px}
 </style></head><body><header><div id="person-picker"><input id="person" type="text" role="combobox" aria-label="Центральная персона" aria-autocomplete="list" aria-expanded="false" aria-controls="person-results" placeholder="Найти человека" autocomplete="off" spellcheck="false"><ul id="person-results" role="listbox" aria-label="Персоны" hidden></ul></div><button id="minus" aria-label="Уменьшить">−</button><button id="plus" aria-label="Увеличить">+</button><button id="fit">Вписать</button></header>
 <div id="touch-tip" hidden><span>Нажмите на карточку, чтобы перестроить <a href="https://pewu.github.io/topola-viewer/" target="_blank" rel="noopener noreferrer">дерево</a> вокруг человека, или на имя, чтобы увидеть его <a href="https://github.com/abakum/LunarReturns/blob/main/-%2B%3D.md" target="_blank" rel="noopener noreferrer">родственные связи</a>.</span><button type="button" aria-label="Закрыть подсказку">×</button></div>
 <p id="status" role="status"></p><noscript>Для просмотра включите JavaScript и откройте файл в браузере.</noscript>

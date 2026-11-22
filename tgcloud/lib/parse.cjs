@@ -244,15 +244,15 @@ const primaryPerson = new Set(['BIRT', 'DEAT']);
 const primaryFamily = new Set(['MARR', 'DIV']);
 const isPrimary = tag => primaryPerson.has(tag) || primaryFamily.has(tag);
 const eventHasValue = tag => ['TITL', 'CAST', 'OCCU', 'EVEN'].includes(tag);
-const mapBase = 'https://yandex.ru/maps/?';
-const mapUrl = ({ lat, lon }) => `${mapBase}pt=${lon},${lat}&z=11`;
+const mapBase = 'https://ya.ru/maps/?';
+const mapUrl = ({ lat, lon }) => `${mapBase}pt=${lon},${lat}&z=13`;
 const signedCoord = (value, axes, max) => {
     const m = value.match(/^([NSEW])(\d{1,3}(?:\.\d{1,40})?)$/i);
     return m && axes.includes(m[1].toUpperCase()) && Number(m[2]) <= max
         ? (m[1].toUpperCase() === axes[1] ? '-' : '') + m[2] : null;
 };
 function mapTail(note) {
-    const m = note.match(/(?:^|\s)https:\/\/yandex\.ru\/maps\/\?pt=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)&z=11$/);
+    const m = note.match(/(?:^|\s)https:\/\/ya\.ru\/maps\/\?pt=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)&z=13$/);
     if (!m || Math.abs(Number(m[1])) > 180 || Math.abs(Number(m[2])) > 90) return { note };
     return { note: note.slice(0, m.index).trimEnd(), map: { lat: m[2], lon: m[1] } };
 }

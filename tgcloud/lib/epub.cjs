@@ -1,6 +1,6 @@
 const { viewerHtml } = require('./viewer.cjs');
 const { deflateSync } = require('./epub-deflate.cjs');
-const { fileBaseOf } = require('./chart.cjs');
+const { fileBaseOf, rangeLevel } = require('./chart.cjs');
 
 const EPUB_TYPE = 'application/epub+zip';
 const EPUB_MAX = 10000;
@@ -57,9 +57,19 @@ function epubBase(heroKey, radius = 1) {
     return prefix + [...name].slice(0, 64 - prefix.length - date.length).join('').trimEnd() + date;
 }
 
-function viewerEpub(gedcom, title, heroXref, annotations) {
+function viewerEpub(gedcom, title, heroXref, annotations, { heroKey, radius = 1 } = {}) {
     const html = viewerHtml(gedcom, title, heroXref, annotations);
     const escapedTitle = html.match(/<title>(.*?)<\/title>/s)[1];
+    let titles = `<dc:title>${escapedTitle}</dc:title>`;
+    if (heroKey) {
+        const split = heroKey.lastIndexOf(' ');
+        const escapeText = s => s.replace(/[\x00-\x1f\x7f]/g, ' ').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        titles = `<dc:title id="main-title">${escapeText(heroKey.slice(0, split))}</dc:title>
+<meta refines="#main-title" property="title-type">main</meta>
+<dc:title id="subtitle">${escapeText(heroKey.slice(split + 1))}</dc:title>
+<meta refines="#subtitle" property="title-type">subtitle</meta>
+<dc:description>Радиус родства ${radius}: ${rangeLevel(radius)}.</dc:description>`;
+    }
     const filename = title + '.xhtml';
     const href = encodeURIComponent(filename);
     const htmlRoot = '<html xmlns="http://www.w3.org/1999/xhtml" lang="ru" xml:lang="ru"';
@@ -69,7 +79,7 @@ function viewerEpub(gedcom, title, heroXref, annotations) {
         .replace(/<(meta|input)\b[^>]+>/g, tag => tag.slice(0, -1) + ' />')
         .replace(/ hidden(?=[ >])/g, ' hidden="hidden"')
         .replace('<p id="status" role="status"></p><noscript>Для просмотра включите JavaScript и откройте файл в браузере.</noscript>',
-            () => `<p id="status" role="status">Без ридера с JavaScript книгу можно распаковать как ZIP и открыть <code>EPUB/${escapedTitle}.xhtml</code> в браузере.</p>`)
+            () => `<p id="status" role="status">Для просмотра дерева нужен JavaScript. Android: <a href="https://github.com/readium/kotlin-toolkit/releases">Readium (APK в разделе Assets)</a>. Windows, macOS, Linux, iOS и iPadOS: <a href="https://www.thoriumreader.com/en/download/">Thorium Reader</a>. Если не удаётся открыть дерево или роспись, распакуйте EPUB как ZIP и откройте <code>EPUB/${escapedTitle}.xhtml</code> в браузере.</p>`)
         + html.slice(scriptStart).replace(/(<script\b[^>]*>)([\s\S]*?)<\/script>/g,
             (_, tag, content) => tag + '<![CDATA[' + content.replaceAll(']]>', ']]]]><![CDATA[>') + ']]></script>');
     const now = new Date();
@@ -79,7 +89,8 @@ function viewerEpub(gedcom, title, heroXref, annotations) {
         ['EPUB/package.opf', `<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id" xml:lang="ru">
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
 <dc:identifier id="pub-id">urn:lunarreturns:${now.getTime()}-${Math.random().toString(36).slice(2)}</dc:identifier>
-<dc:title>${escapedTitle}</dc:title><dc:language>ru</dc:language>
+${titles}
+<dc:language>ru</dc:language>
 <meta property="dcterms:modified">${now.toISOString().replace(/\.\d+Z$/, 'Z')}</meta>
 <meta property="rendition:flow">scrolled-doc</meta></metadata>
 <manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>

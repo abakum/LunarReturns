@@ -33,15 +33,12 @@ function showAnnotation(id, node, people, navigate) {
             container.append(text.slice(offset));
             if (hero) annotationText.append(container);
         } else if (people.has(xref)) {
-            const link = document.createElement('a');
-            link.href = '#person=' + encodeURIComponent(xref);
-            link.textContent = text;
-            link.onclick = event => {
-                if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-                event.preventDefault();
-                navigate(xref, true);
-            };
-            annotationText.append(link);
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'relative-button';
+            button.textContent = text;
+            button.onclick = () => navigate(xref, true);
+            annotationText.append(button);
             if (kinship) annotationText.append(' · ' + kinship);
         } else annotationText.append(text);
     }
@@ -99,7 +96,7 @@ try {
     function render(refocus = false, openAnnotation = false) {
         try {
             closeAnnotation();
-            for (const link of group.querySelectorAll('a.name-link')) link.replaceWith(...link.childNodes);
+            for (const button of group.querySelectorAll('.name-button')) button.replaceWith(...button.childNodes);
             group.removeAttribute('transform');
             const info = chart.render({ startIndi: currentId });
             size = info.size;
@@ -108,17 +105,25 @@ try {
                 const person = node.__data__;
                 if ((refocus || openAnnotation) && person.indi.id === currentId && (!selected || person.generation === 0)) selected = node;
                 for (const text of node.querySelectorAll('text.name')) {
-                    const link = document.createElementNS('http://www.w3.org/2000/svg', 'a');
-                    link.setAttribute('href', '#annotation');
-                    link.setAttribute('class', 'name-link');
-                    link.setAttribute('aria-label', 'Роспись: ' + text.textContent);
+                    const button = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                    button.setAttribute('class', 'name-button');
+                    button.setAttribute('role', 'button');
+                    button.setAttribute('tabindex', '0');
+                    button.setAttribute('aria-label', 'Роспись: ' + text.textContent);
                     // Raise names above Topola's transparent click border.
-                    node.append(link);
-                    link.append(text);
-                    link.onclick = event => {
-                        event.preventDefault(); event.stopPropagation();
+                    node.append(button);
+                    button.append(text);
+                    const open = event => {
+                        event.stopPropagation();
                         dismissTip();
                         showAnnotation(node.__data__.indi.id, node, people, navigate);
+                    };
+                    button.onclick = open;
+                    button.onkeydown = event => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        if (!event.repeat) open(event);
                     };
                 }
             }

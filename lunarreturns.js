@@ -1614,9 +1614,10 @@ async function sendEpub(peerId, keys, head, heroKey, heroXref, msgId, convMsgId)
         start = Date.now();
         const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), getSettings(peerId).fynny);
         console.log('epub annotations:', (Date.now() - start) + 'ms');
-        const title = epubBase(heroKey, parseInt(head, 10) || 1);
+        const radius = parseInt(head, 10) || 1;
+        const title = epubBase(heroKey, radius);
         start = Date.now();
-        const epub = viewerEpub(g, title, heroXref, annotations);
+        const epub = viewerEpub(g, title, heroXref, annotations, { heroKey, radius });
         console.log('epub package:', (Date.now() - start) + 'ms');
         start = Date.now();
         const attachment = await vkUploadDoc(peerId, title + '.epub', epub);
@@ -1796,9 +1797,10 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
             t0 = Date.now();
             const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), getSettings(peerId).fynny);
             console.log("ged epub annotations:", (Date.now() - t0) + "ms");
-            const title = epubBase(heroKey, parseInt(head0, 10) || 1);
+            const radius = parseInt(head0, 10) || 1;
+            const title = epubBase(heroKey, radius);
             t0 = Date.now();
-            const epub = viewerEpub(g, title, heroXref, annotations);
+            const epub = viewerEpub(g, title, heroXref, annotations, { heroKey, radius });
             console.log("ged epub package:", (Date.now() - t0) + "ms");
             await publish(title + ".epub", epub);
         } catch (e) {

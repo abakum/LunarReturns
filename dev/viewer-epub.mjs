@@ -15,8 +15,9 @@ const persons = indis.map(({ __xref: key, name, sex, birt, deat, note }) => ({
 const families = fams.map(f => ({ xref: f.__xref, hKey: f.husb, wKey: f.wife, children: f.chil,
     marr: event(f.marr), div: event(f.div), note: f.note }));
 const hero = persons.find(p => p.name.startsWith('Пётр I Алексеевич'));
-const title = epubBase(hero && (hero.name + ' ' + hero.d));
+const heroKey = hero && (hero.name + ' ' + hero.d);
+const title = epubBase(heroKey);
 const dir = mkdtempSync('/tmp/kilo/lr-epub-');
 const epub = join(dir, title + '.epub');
-writeFileSync(epub, viewerEpub(gedcom, title, hero?.key, viewerAnnotations(gedcom, [persons, families])));
+writeFileSync(epub, viewerEpub(gedcom, title, hero?.key, viewerAnnotations(gedcom, [persons, families]), { heroKey }));
 console.log(epub);
