@@ -447,6 +447,7 @@ function chartModel(title, rows, links, rel = null, marriages = null,
         slotOf.set(kk, yearCount.get(mg.year) || 0);
         yearCount.set(mg.year, (yearCount.get(mg.year) || 0) + 1);
     }
+    const parentPoints = new Set(), pointRegions = [];
     for (const l of links) {
         const fam = famStr(l);
         const col = famColor(fam);
@@ -459,8 +460,14 @@ function chartModel(title, rows, links, rel = null, marriages = null,
         const ys = [...ps.map(p => p.cy), chY];
         annotationRegions.push({ r: ch0.r, x: x - 0.75, y: Math.min(...ys),
             w: 1.5, h: Math.max(...ys) - Math.min(...ys) });
-        for (const cy of new Set(ys))
-            annotationRegions.push({ r: ch0.r, x: x - 3.5, y: cy - 3.5, w: 7, h: 7 });
+        pointRegions.push({ r: ch0.r, x: x - 3.5, y: chY - 3.5, w: 7, h: 7 });
+        for (const p of ps) {
+            if (p.cy === chY) continue;
+            const point = JSON.stringify([fam, y, p.key]);
+            if (parentPoints.has(point)) continue;
+            parentPoints.add(point);
+            pointRegions.push({ r: ch0.r, x: x - 3.5, y: p.cy - 3.5, w: 7, h: 7 });
+        }
         // прямая между двумя родителями и к ребёнку — всегда вертикали на x семьи
         if (ps.length === 2 && ps[0].cy !== ps[1].cy)
             draws.push({ k: "line", x1: x, y1: ps[0].cy, x2: x, y2: ps[1].cy, stroke: col, w: 1.5 });
@@ -489,7 +496,7 @@ function chartModel(title, rows, links, rel = null, marriages = null,
             if (!p2 || p1.cy !== p2.cy)
                 annotationRegions.push({ r: ph.r, x: x - 0.75, y: y0, w: 1.5, h: y1 - y0 });
             for (const cy of new Set([p1.cy, p2?.cy ?? p1.cy]))
-                annotationRegions.push({ r: ph.r, x: x - 3.5, y: cy - 3.5, w: 7, h: 7 });
+                pointRegions.push({ r: ph.r, x: x - 3.5, y: cy - 3.5, w: 7, h: 7 });
         }
         if (!p2) { // второй супруг вне чарта — точка + зарубка вниз от бара
             draws.push({ k: "dot", x, y: p1.cy, r: 3.5, fill: col });
@@ -515,6 +522,8 @@ function chartModel(title, rows, links, rel = null, marriages = null,
         }
         draws.push({ k: "line", x1: x, y1: p1.cy, x2: x, y2: p2.cy, stroke: famColor(mg.fam), w: 1.5 });
     }
+    // Shared parent points use the first child. Keep point targets above verticals.
+    annotationRegions.push(...pointRegions);
     // Put person targets last: at a parent's bar start, prefer their own R1.
     for (const p of people)
         annotationRegions.push({ r: p.r, x: p.bar.x, y: p.cy - ROW_H / 2, w: 16, h: ROW_H });
@@ -646,7 +655,7 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, a
         const normal = add("<< /Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << >> /Length 0 >>\nstream\n\nendstream");
         const textOf = new Map();
         for (const p of m.annotationRegions) {
-            if (!textOf.has(p.r)) textOf.set(p.r, annotationText(p.r)?.replace(/\^+$/gm, "").replace(/\^/g, "\n"));
+            if (!textOf.has(p.r)) textOf.set(p.r, annotationText(p.r));
             const text = textOf.get(p.r);
             if (!text) continue;
             const birth = p.r.birth != null ? approxOut(p.r.birth, p.r.abt ?? 0) : "";

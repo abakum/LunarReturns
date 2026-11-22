@@ -76,7 +76,8 @@ const { graftError, parseSearchQuery } = reqLib("flat");
 // ТГ-копия напрямую из bot.js (`import … from './flat.cjs'`, как tree.cjs); правки — только в .cjs.
 const {
     flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey,
-    treeReport, rootOf, searchHead, cutLines, createFlatAnnotationText} = reqLib("flat");
+    treeReport, rootOf, searchHead, cutLines} = reqLib("flat");
+const { createPdfAnnotationText } = reqLib("annotations");
 
 
 // ============================== ВЫВОД ==============================
@@ -1575,7 +1576,7 @@ function chartFor(peerId, keys, title, heroKey = null, range = null, diagnose = 
                     abt: snapshot[0].find(p => p.key === xOf.get(c))?.abt ?? 0 },
             })) });
     }
-    const annotationText = createFlatAnnotationText(snapshot, pairs, spousePairs);
+    const annotationText = createPdfAnnotationText(snapshot, pairs, spousePairs, rel?.fynny ?? getSettings(peerId).fynny);
     return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages, annotationText), persons: rows.length };
 }
 

@@ -10,6 +10,7 @@ import { findShownRecord, REPLY_TARGET_ERROR } from './text.cjs';
 import { graftError } from './flat.cjs';
 import { localRecord, mskGedcom } from './event-time.cjs';
 import { viewerAnnotations } from './viewer.cjs';
+import { createPdfAnnotationText } from './annotations.cjs';
 import { viewerEpub, EPUB_TYPE, epubBase, checkEpubLimit } from './epub.cjs';
 import { chatFlatArtifacts, gedNoteLines, gedText, gedFictiveDates, trimImport } from './parse.cjs';
 import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText, isExactEvent } from './tree.cjs';
@@ -18,7 +19,7 @@ import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusW
 // чистые функции родословной росписи -+= — общий канон tgcloud/lib/flat.cjs
 // (волна A2): handlers берут flatSearch/flatHitKey/treeReport реэкспортом
 // ниже; правки — только в .cjs
-import { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, treeReport, rootOf, cutLines, createFlatAnnotationText } from './flat.cjs';
+import { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, treeReport, rootOf, cutLines } from './flat.cjs';
 // реэкспорт: точки импорта handlers не менялись с волны A
 export { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, treeReport, rootOf } from './flat.cjs';
 export { searchHead, cutLines } from './flat.cjs';
@@ -1502,7 +1503,7 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
                     abt: snapshot[0].find(p => p.key === xOf.get(c))?.abt ?? 0 },
             })) });
     }
-    const annotationText = createFlatAnnotationText(snapshot, pairs, spousePairs);
+    const annotationText = createPdfAnnotationText(snapshot, pairs, spousePairs, rel?.fynny ?? (await getSettings(chatId)).fynny);
     return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages, annotationText), persons: rows.length };
 }
 

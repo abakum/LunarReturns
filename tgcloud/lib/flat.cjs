@@ -384,32 +384,8 @@ function flatSearch(flat, query, fullList = false) {
 
 // Full-chat snapshot; chart keys (especially anchored stubs) are not identities.
 // Textual edge endpoints are usable only when they resolve unambiguously.
-function createFlatAnnotationText([persons, fams], linkPairs, focusSpousePairs, radius = 1) {
-    const { shortenEventPlaces } = require('./parse.cjs');
-    const shortPlace = place => {
-        if (!place) return place;
-        const words = place.split(/\s+/).map(word => word.replace(/^,+|,+$/g, "")).filter(Boolean);
-        return words.length > 1 ? words[0] + "…" + words.at(-1) : (words[0] || "");
-    };
-    // Annotation-only copies: keep full places and structured tails in text exports.
-    persons = persons.map(p => ({ ...p, plac: shortPlace(p.plac), dp: shortPlace(p.dp),
-        note: p.note && shortenEventPlaces(p.note, shortPlace),
-    }));
-    const { keysOf } = createFlatAnnotationScope([persons, fams], linkPairs, focusSpousePairs, radius);
-    fams = fams.map(f => ({ ...f,
-        marr: f.marr ? { ...f.marr, plac: shortPlace(f.marr.plac) } : f.marr,
-        div: f.div ? { ...f.div, plac: shortPlace(f.div.plac) } : f.div,
-    }));
-    return function annotationText(row) {
-        const keys = keysOf(row.xref);
-        return flatTreeText(persons.filter(p => keys.has(p.key)), radius === 0 ? [] : fams.filter(f =>
-            [f.hKey, f.wKey, ...f.children].some(k => k != null && keys.has(k))), true);
-    };
-}
-
-function createFlatAnnotationScope([persons, fams], linkPairs, focusSpousePairs, radius = 1) {
+function createFlatAnnotationScope([persons, fams], linkPairs, focusSpousePairs) {
     const byXref = new Map(persons.map(p => [p.key, p]));
-    if (radius === 0) return { keysOf: key => new Set(byXref.has(key) ? [key] : []), labelOf: () => "" };
     const xOf = new Map();
     for (const p of persons) {
         if (p.d == null) continue;
@@ -431,8 +407,8 @@ function createFlatAnnotationScope([persons, fams], linkPairs, focusSpousePairs,
     for (const [a, b] of focusSpousePairs) put(spouses, seenSpouses, xOf.get(a), xOf.get(b), true);
     const sexOf = key => byXref.get(key)?.sex ?? null;
     return {
-        keysOf: key => new Set(byXref.has(key) ? focusListKeys(pairs, spouses, key, radius, sexOf, false) : []),
-        labelOf: (from, to, chain) => kinLabel(pairs, spouses, sexOf, from, to, radius, chain),
+        keysOf: key => new Set(focusListKeys(pairs, spouses, key, 1, sexOf, false)),
+        labelOf: (from, to, chain) => kinLabel(pairs, spouses, sexOf, from, to, 1, chain),
     };
 }
 
@@ -503,4 +479,4 @@ function cutLines(text, budget, reserved = 0, joinReserve = true) {
     return acc;
 }
 
-module.exports = { flatTreeText, subsetBranch, parseSearchQuery, flatSearch, flatHitPerson, flatHitKey, searchHead, cutLines, datePlusYears, treeReport, rootOf, graftError, createFlatAnnotationText, createFlatAnnotationScope };
+module.exports = { flatTreeText, subsetBranch, parseSearchQuery, flatSearch, flatHitPerson, flatHitKey, searchHead, cutLines, datePlusYears, treeReport, rootOf, graftError, createFlatAnnotationScope };

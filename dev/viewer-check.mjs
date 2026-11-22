@@ -32,17 +32,23 @@ const gedcom = `0 HEAD
 0 TRLR`;
 const snapshot = [[{ key: 'I1', name: 'Иван Тест', d: '1980-01-01', plac: 'SECRET_PLACE', sex: 'M', note: 'Первая^Вторая^' },
     { key: 'I2', name: 'Отец Тест', sex: 'M' }, { key: 'I3', name: 'Мать Тест', sex: 'F' },
-    { key: 'OUT', name: 'НЕ_ЭКСПОРТИРОВАН', d: '2000-01-01' }],
-    [{ xref: 'F1', hKey: 'I2', wKey: 'I3', children: ['I1', 'OUT'] }]];
+    { key: 'OUT', name: 'Брат вне файла', sex: 'M', d: '2000-01-01', plac: 'чужое место', note: 'чужая заметка' },
+    { key: 'OUTCHILD', name: 'Сын вне файла', sex: 'M', d: '2020-01-01' },
+    { key: 'UNRELATED', name: 'НЕ_ЭКСПОРТИРОВАН', d: '2000-01-01' }],
+    [{ xref: 'F1', hKey: 'I2', wKey: 'I3', children: ['I1', 'OUT'] },
+        { xref: 'FOUT', hKey: 'I1', children: ['OUTCHILD'] }]];
 const annotations = viewerAnnotations(gedcom, snapshot);
-assert(!JSON.stringify(annotations).includes('НЕ_ЭКСПОРТИРОВАН'));
-assert.deepEqual(annotations.I1, [
+assert.doesNotMatch(JSON.stringify(annotations.I1), /НЕ_ЭКСПОРТИРОВАН|чужая|чужое|OUT/);
+assert.deepEqual(Object.keys(annotations).sort(), ['I1', 'I2', 'I3']);
+assert.deepEqual(annotations.I1.slice(0, 4), [
     { prefix: '=', text: 'Мать Тест', xref: 'I3', kinship: 'мать' }, { text: '+' },
     { prefix: '', text: 'Отец Тест', xref: 'I2', kinship: 'отец' },
     { hero: true, text: '--Иван Тест 1980-01-01 (SECRET_PLACE)\nПервая\nВторая', links: [
         { start: 23, end: 37, href: 'https://ya.ru/maps/?text=SECRET_PLACE' },
     ] },
 ]);
+assert.deepEqual(annotations.I1.filter(row => row.text.includes('вне файла')).map(({ text, kinship }) => [text, kinship]),
+    [['Сын вне файла 2020-01-01', 'сын'], ['Брат вне файла 2000-01-01', 'брат']]);
 assert.equal(annotations.I2[0].text, '-Отец Тест');
 assert.equal(annotations.I2.find(row => row.xref === 'I1').kinship, 'сын');
 {
@@ -113,7 +119,7 @@ assert.equal(annotations.I2.find(row => row.xref === 'I1').kinship, 'сын');
     assert.equal(hero.text.match(/^Похоронен:/gm).length, 3);
     assert.match(hero.text, /Похоронен: 1969-03-09.*\nПохоронен: 1969-03-07.*\nПохоронен: 1969-03-07 \(Миллерово\) участок 3/);
     assert.deepEqual(hero.links.slice(0, 2).map(l => l.href), [coords, coords]);
-    const family = rows.find(row => row.text.startsWith('+'));
+    const family = rows.find(row => row.text.includes('2001-01-01 (Город)'));
     assert.doesNotMatch(family.text, /Свадьба:|Развод: 2002/);
     assert.match(family.text, /Развод: 2003-01-01 \(Город\) решение суда/);
     assert.deepEqual(family.links.slice(0, 2).map(l => l.href), [coords, other]);
@@ -426,6 +432,15 @@ try {
     await reader.getByRole('button', { name: /Роспись: Иван/ }).first().click();
     const panel = reader.locator('#annotation');
     assert(await panel.isVisible());
+    assert.match(await panel.textContent(), /Брат вне файла 2000-01-01 · брат/);
+    assert.match(await panel.textContent(), /Сын вне файла 2020-01-01 · сын/);
+    assert.equal(await panel.getByRole('button', { name: /вне файла/ }).count(), 0);
+    assert.doesNotMatch(await reader.locator('#chart').textContent(), /вне файла/);
+    const search = reader.getByRole('combobox');
+    await search.fill('Брат вне файла');
+    assert.match(await reader.locator('#person-results').textContent(), /Никого не найдено/);
+    await search.press('Escape');
+    if (await panel.isHidden()) await reader.getByRole('button', { name: /Роспись: Иван/ }).first().click();
     assert.equal(new URL(reader.url()).hash, '');
     await panel.getByRole('button', { name: 'Мать Тест', exact: true }).click();
     assert.equal(new URL(reader.url()).hash, '#person=I3');

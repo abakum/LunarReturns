@@ -326,14 +326,6 @@ function parseEventNote(part) {
     const details = mapTail(note);
     return { tag, value, date, place, ...details, placeStart, noteStart: part.length - note.length };
 }
-function shortenEventPlaces(note, shortPlace) {
-    return note.split("^").map(part => {
-        const event = parseEventNote(part);
-        if (!event?.place) return part;
-        const { place, placeStart } = event;
-        return part.slice(0, placeStart) + shortPlace(place) + part.slice(placeStart + place.length);
-    }).join("^");
-}
 const utf8Size = c => c.codePointAt(0) <= 0x7f ? 1 : c.codePointAt(0) <= 0x7ff ? 2 : c.codePointAt(0) <= 0xffff ? 3 : 4;
 function gedPrefix(value, bytes, chars = Infinity) {
     let out = "", count = 0;
@@ -1084,4 +1076,4 @@ function trimImport(data) {
 // NOT_FOR_GRAFT экспортируется: роспись метит платформенный chatFlatText
 // (bot.js для ТГ, инлайн ВК), sendGedArtifacts ВК режет перелив по метке;
 // у bot.js своя идентичная копия как точка реэкспорта для ТГ-хендлеров
-module.exports = { zoneDiff, eventToMsk, localEvent, NOT_FOR_GRAFT, chatFlatArtifacts, decodeGedcom, eventMapLink, gedNoteLines, gedText, gedFictiveDates, gedStats, packToCsv, parseEventNote, parseGedcom, parseTree, parseTreeLine, parseTrigger, shortenEventPlaces, trimImport, withGraftMark };
+module.exports = { zoneDiff, eventToMsk, localEvent, NOT_FOR_GRAFT, chatFlatArtifacts, decodeGedcom, eventMapLink, gedNoteLines, gedText, gedFictiveDates, gedStats, packToCsv, parseEventNote, parseGedcom, parseTree, parseTreeLine, parseTrigger, trimImport, withGraftMark };

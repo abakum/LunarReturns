@@ -39,8 +39,8 @@ function showAnnotation(id, node, people, navigate) {
             button.textContent = text;
             button.onclick = () => navigate(xref, true);
             annotationText.append(button);
-            if (kinship) annotationText.append(' · ' + kinship);
         } else annotationText.append(text);
+        if (kinship) annotationText.append(' · ' + kinship);
     }
     if (!rows.length) annotationText.textContent = 'Нет росписи для этой персоны.';
     annotation.hidden = false;

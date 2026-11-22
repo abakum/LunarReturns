@@ -6,7 +6,8 @@ import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import { chartRows, chartModel, chartPdf, chartFont, parseTtf } from '../tgcloud/lib/chart.cjs';
 import { focusKeys, focusListKeys } from '../tgcloud/lib/tree.cjs';
-import { createFlatAnnotationText, flatTreeText } from '../tgcloud/lib/flat.cjs';
+import { createPdfAnnotationText } from '../tgcloud/lib/annotations.cjs';
+import { viewerAnnotations } from '../tgcloud/lib/viewer.cjs';
 
 const tmp = fs.mkdtempSync('/tmp/kilo/lr-pdf-radius-');
 {
@@ -20,71 +21,44 @@ const tmp = fs.mkdtempSync('/tmp/kilo/lr-pdf-radius-');
     ];
     const fams = [{ hKey: 'father', wKey: 'mother', children: ['child'], marr: { d: '1970-01-01' } }];
     const snapshot = JSON.stringify([persons, fams]);
-    const textOf = createFlatAnnotationText([persons, fams], [['Ребёнок 1980-01-01', 'Внук 2000-01-01']], []);
+    const textOf = createPdfAnnotationText([persons, fams], [['Ребёнок 1980-01-01', 'Внук 2000-01-01']], []);
     const mother = textOf({ xref: 'mother' });
     assert.match(mother, /Отец/);
     assert.match(mother, /Ребёнок/);
     assert.match(mother, /Первая/);
     assert.doesNotMatch(mother, /Вторая|Внук/);
-    const personOnly = createFlatAnnotationText([persons, fams], [], [], 0);
-    assert.equal(personOnly({ xref: 'mother' }), flatTreeText([persons[1]], [], true));
-    assert.equal(personOnly({ xref: 'missing' }), '');
+    assert.equal(textOf({ xref: 'missing' }), '');
     assert.match(textOf({ xref: 'other' }), /Вторая/);
     assert.doesNotMatch(textOf({ xref: 'other' }), /Первая|Ребёнок/);
     assert.match(textOf({ xref: 'child' }), /Внук/, 'relatives outside PDF and interactive edges retained');
-    assert.equal(textOf({ xref: 'alone' }), flatTreeText([persons[5]], [], true));
+    assert.equal(textOf({ xref: 'alone' }), '-Один 1900-01-01');
     assert.equal(JSON.stringify([persons, fams]), snapshot, 'snapshot unchanged');
     const dated = persons.filter(p => ['father', 'child', 'grandchild'].includes(p.key));
     const allPairs = [['Отец 1950-01-01', 'Ребёнок 1980-01-01'], ['Ребёнок 1980-01-01', 'Внук 2000-01-01']];
-    const datedText = createFlatAnnotationText([dated, []], allPairs, []);
-    const keys = focusListKeys(allPairs, [], 'Отец 1950-01-01', 1, () => null, false);
-    assert.equal(datedText({ xref: 'father' }), flatTreeText(dated.filter(p => keys.includes(p.name + ' ' + p.d)), [], true));
+    const datedText = createPdfAnnotationText([dated, []], allPairs, []);
+    assert.match(datedText({ xref: 'father' }), /Ребёнок 1980-01-01 · сын/);
+    assert.doesNotMatch(datedText({ xref: 'father' }), /Внук/);
 }
 {
-    const persons = [
-        { key: 'a', name: 'Person', d: '1950-01-01', plac: 'Россия, Пермский край, Пермь',
-             dd: '2020-01-01', dp: '  Россия,\n Ростов-на-Дону,  ',
-              note: 'Note (keep these words)^Жил: (foo bar baz)^Жил: (Пермь)^Титул: keep these words^Похоронен: 1980 (foo bar baz) note with (nested) words^Похоронен: (foo bar baz)^Похоронен: note only words^Событие: Постриг 1698 (foo bar baz) note 1980^' },
-        { key: 'b', name: 'Spouse', d: '1951-01-01', plac: 'Пермь', dp: ' , , ',
-              note: 'Жил: (Россия, Пермский край, Пермь)^' },
-    ];
-    const fams = [{ hKey: 'a', wKey: 'b', children: [],
-        marr: { d: '1970-01-01', plac: 'Нижний Новгород' },
-        div: { d: '1980-01-01', plac: 'Россия,  область\tгород Москва' } }];
-    const snapshot = JSON.stringify([persons, fams]);
-    const textOf = createFlatAnnotationText([persons, fams], [], []);
-    const text = textOf({ xref: 'a' });
-    for (const place of ['Россия…Пермь', 'Россия…Ростов-на-Дону', 'Нижний…Новгород', 'Россия…Москва', 'Пермь'])
-        assert.ok(text.includes('(' + place + ')'), place);
-    assert.ok(text.includes('^Note (keep these words)'));
-    assert.ok(text.includes('^Жил: (foo…baz)^Жил: (Пермь)^Титул: keep these words^'));
-    assert.ok(text.includes('^Жил: (Россия…Пермь)^'));
-    assert.ok(text.includes('^Похоронен: 1980 (foo…baz) note with (nested) words^'));
-    assert.ok(text.includes('^Похоронен: (foo…baz)^Похоронен: note only words^'));
-    assert.ok(text.includes('^Событие: Постриг 1698 (foo…baz) note 1980^'));
-    assert.ok(createFlatAnnotationText([[{ key: 'burial', name: 'Burial', nameOnly: true,
-        note: 'Похоронен: (foo bar baz) note^' }], []], [], [])({ xref: 'burial' })
-        .includes('^Похоронен: (foo…baz) note^'));
-    assert.doesNotMatch(text, /foo bar baz/);
-    const dateless = { key: 'stub', name: 'Stub', nameOnly: true, note: 'Жил: (foo bar baz)^' };
-    assert.match(createFlatAnnotationText([[dateless], []], [], [])({ xref: 'stub' }), /\^Жил: \(foo…baz\)\^/);
-    assert.doesNotMatch(text, /\(\)|undefined|Пермский/);
-    textOf({ xref: 'b' });
-    assert.equal(JSON.stringify([persons, fams]), snapshot, 'places and nested events unchanged');
-    const full = flatTreeText(persons, fams, true);
-    assert.ok(full.includes('^' + persons[0].note), 'ordinary export keeps full residence tails');
-    assert.ok(full.includes('^' + persons[1].note), 'initial residence segment stays full');
-    for (const place of [persons[0].plac, persons[0].dp, fams[0].marr.plac, fams[0].div.plac])
-        assert.ok(full.includes('(' + place + ')'), 'ordinary export keeps ' + place);
-    const pdf = chartPdf('Places', persons.map(p => ({ ...p, xref: p.key, birth: p.d })), [], chartFont(), null, null, textOf);
-    const annotations = checkAnnotations(pdf, 2);
-    for (const [, body] of annotations) {
-        const id = body.match(/\/Contents (\d+) 0 R/)[1];
-        const encoded = pdf.match(new RegExp('\\n' + id + ' 0 obj\\n<FEFF([a-f0-9]+)>'))[1];
-        const decoded = Buffer.from(encoded, 'hex').swap16().toString('utf16le');
-        assert.equal(decoded, text.replace(/\^+$/gm, '').replaceAll('^', '\n'));
-        assert.doesNotMatch(decoded, /\n\n|\n$/, 'closing tail delimiters do not create empty annotation lines');
-    }
+    const map = 'https://ya.ru/maps/?pt=33.821283,48.466825&z=13';
+    const person = { key: 'a', name: 'Person', sex: 'M', d: '1950-01-01', plac: 'Россия, Пермский край, Пермь',
+        note: `Note (keep these words)^Похоронен: ${map}^` };
+    const snapshot = [[person, { key: 'b', name: 'Spouse', sex: 'F', nameOnly: true, note: 'Личное' }],
+        [{ hKey: 'a', wKey: 'b', children: [], marr: { d: '1970-01-01', plac: 'Нижний Новгород' }, note: 'Семейное' }]];
+    const before = structuredClone(snapshot);
+    const textOf = createPdfAnnotationText(snapshot, [], []);
+    const pdf = chartPdf('Places', [{ ...person, xref: 'a', birth: person.d }], [], chartFont(), null, null, textOf);
+    const [[, body]] = checkAnnotations(pdf, 1);
+    const id = body.match(/\/Contents (\d+) 0 R/)[1];
+    const encoded = pdf.match(new RegExp('\\n' + id + ' 0 obj\\n<FEFF([a-f0-9]+)>'))[1];
+    const decoded = Buffer.from(encoded, 'hex').swap16().toString('utf16le');
+    const epub = viewerAnnotations('0 @a@ INDI', snapshot).a;
+    assert.ok(epub.some(row => row.links?.some(link => link.href === map)));
+    assert.equal(decoded, epub.map(row => (row.prefix || '') + row.text + (row.kinship ? ' · ' + row.kinship : '')).join('\n'));
+    assert.equal(decoded, '-Person 1950-01-01 (Россия, Пермский край, Пермь)\nNote (keep these words)\n'
+        + 'Похоронен: (48.466825, 33.821283)\n+1970-01-01 (Нижний Новгород)\nSpouse · жена');
+    assert.doesNotMatch(pdf, /\/Subtype \/Link\b|\/URI\b/);
+    assert.deepEqual(snapshot, before);
 }
 function checkAnnotations(pdf, expectedCount) {
     const objects = new Map([...pdf.matchAll(/(?:^|\n)(\d+) 0 obj\n([\s\S]*?)\nendobj/g)]
@@ -216,9 +190,8 @@ for (const count of [1, 44, 45, 100]) {
 }
 {
     let calls = 0;
-    const rows = Array.from({ length: 1001 }, (_, i) => ({ name: 'Limit' + i, birth: (1000 + i) + '-01-01' }));
-    const links = [{ child: 'Limit1000 2000-01-01', parents: ['Limit1 1001-01-01'] },
-        { child: 'Limit2 1002-01-01', parents: ['Limit0 1000-01-01'] }];
+    const rows = Array.from({ length: 1000 }, (_, i) => ({ name: 'Limit' + (i + 1), birth: (1001 + i) + '-01-01' }));
+    const links = [{ child: 'Limit1000 2000-01-01', parents: ['Limit1 1001-01-01'] }];
     const annotation = 'Роспись (тест) \\ строка\n=Персона \u{1f600}';
     const pdf = chartPdf('Limit', rows, links, chartFont(), null, null, r => {
         calls++; assert.notEqual(r.name, 'Limit0'); return annotation;
@@ -250,6 +223,32 @@ for (const count of [1, 44, 45, 100]) {
     assert.equal(new Set(own.map(([, b]) => b.match(/\/Contents (\d+) 0 R/)[1])).size, 2,
         'bar-start targets have individual contents');
 }
+{
+    for (const secondBirth of ['1980-06-01', '1983-01-01']) {
+        const persons = [{ key: 'p', name: 'Parent', sex: 'F', d: '1950-01-01' },
+            { key: 'a', name: 'First', sex: 'M', d: '1980-01-01', note: 'first detail' },
+            { key: 'b', name: 'Second', sex: 'F', d: secondBirth, note: 'second detail' }];
+        const rows = persons.map(({ key, name, sex, d: birth }) => ({ xref: key, name, sex, birth }));
+        const [p, a, b] = rows.map(r => r.name + ' ' + r.birth);
+        const links = [{ child: a, parents: [p] }, { child: b, parents: [p] }];
+        const textOf = createPdfAnnotationText([persons, [{ wKey: 'p', children: ['a', 'b'] }]], [], []);
+        const sameYear = secondBirth.startsWith('1980');
+        const model = chartModel('Children', rows, links);
+        const pdf = chartPdf('Children', rows, links, chartFont(), null, null, textOf);
+        const annots = checkAnnotations(pdf, sameYear ? 8 : 9);
+        const refs = annots.map(([, body]) => body.match(/\/Contents (\d+) 0 R/)[1]);
+        for (const [idx, child, own, other] of [[0, rows[1], 'first', 'second'], [1, rows[2], 'second', 'first']]) {
+            const selected = model.annotationRegions.flatMap((region, i) => region.r === child ? [i] : []);
+            assert.equal(selected.length, sameYear && idx === 1 ? 3 : 4);
+            assert.ok(selected.every(i => refs[i] === refs[idx]), 'same child shares /Contents across hitboxes');
+            const encoded = pdf.match(new RegExp('\\n' + refs[idx] + ' 0 obj\\n<FEFF([a-f0-9]+)>'))[1];
+            const text = Buffer.from(encoded, 'hex').swap16().toString('utf16le');
+            assert.ok(text.includes(own + ' detail'));
+            assert.ok(!text.includes(other + ' detail'));
+        }
+        assert.notEqual(refs[0], refs[1]);
+    }
+}
 // Independent measurement of the actual PDF /W advances, including Cyrillic.
 {
     const rows = [{ name: 'Parent', birth: '1950-01-01' }];
@@ -264,7 +263,7 @@ for (const count of [1, 44, 45, 100]) {
         const pdf = chartPdf('Phantom annotations', parents, [], chartFont(), rel, null,
             r => {
                 assert.notEqual(r.xref, 'b', 'do not concatenate twin genealogies');
-                return r.xref ? 'R1 ' + r.xref + '^Note' : 'Own ' + r.name;
+                 return r.xref ? 'R1 ' + r.xref + '\nNote' : 'Own ' + r.name;
             });
         const annotations = checkAnnotations(pdf, 2 * parents.length + 1);
         const title = annotations[0][1].match(/\/T <FEFF([a-f0-9]+)>/)[1];
@@ -538,8 +537,7 @@ for (const platform of ['tg', 'vk']) for (const radius of [1, 2, 5]) for (const 
     }
     const annotationTexts = [...pdfBody.matchAll(/<FEFF([a-f0-9]+)>/g)]
         .map(m => Buffer.from(m[1], 'hex').swap16().toString('utf16le')).join('\n');
-    assert.ok(annotationTexts.includes('(Москва…царство)'), name + ': PDF abbreviates places');
-    assert.ok(!annotationTexts.includes('(Москва, Русское царство)'), name + ': PDF omits full places');
+    assert.ok(annotationTexts.includes('(Москва, Русское царство)'), name + ': PDF keeps full places');
     assert.ok(exportLog.includes('Москва, Русское царство'), name + ': GEDCOM keeps full places');
     if (platform === 'tg') {
         assert.ok(pdfPath, log);
