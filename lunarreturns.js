@@ -1473,6 +1473,11 @@ function importChartWarnings(peerId) {
 }
 
 function chartFor(peerId, keys, title, heroKey = null, range = null, diagnose = false) {
+    const chart = prepareChart(peerId, keys, title, heroKey, range, diagnose);
+    return diagnose ? chart : { pdf: chart.renderPdf(), persons: chart.persons };
+}
+
+function prepareChart(peerId, keys, title, heroKey, range, diagnose = false) {
     const snapshot = flatRows(peerId);
     const pairs = linkPairs(peerId), spousePairs = focusSpousePairs(peerId);
     const xOf = new Map(snapshot[0].filter(p => p.d != null).map(p => [p.name + " " + p.d, p.key]));
@@ -1576,9 +1581,12 @@ function chartFor(peerId, keys, title, heroKey = null, range = null, diagnose = 
                     abt: snapshot[0].find(p => p.key === xOf.get(c))?.abt ?? 0 },
             })) });
     }
-    const annotationText = createPdfAnnotationText(snapshot, pairs, spousePairs, rel?.fynny ?? getSettings(peerId).fynny);
-    const metadata = pdfPersonMetadata(snapshot, heroKey, xOf.get(heroKey), range);
-    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages, annotationText, metadata), persons: rows.length };
+    const model = chartModel(title, rows, links, { ...rel, phantoms }, marriages);
+    return { model, persons: rows.length, renderPdf() {
+        const annotationText = createPdfAnnotationText(snapshot, pairs, spousePairs, rel?.fynny ?? getSettings(peerId).fynny);
+        const metadata = pdfPersonMetadata(snapshot, heroKey, xOf.get(heroKey), range);
+        return chartPdf(title, rows, links, chartFont(), rel, marriages, annotationText, metadata, model);
+    } };
 }
 
 async function sendGedcom(peerId, keys, head, msgId, convMsgId) {
@@ -1607,19 +1615,22 @@ async function sendPdf(peerId, head, heroKey, radius, msgId, convMsgId) {
 
 async function sendEpub(peerId, keys, head, heroKey, heroXref, msgId, convMsgId) {
     try {
-        const { viewerEpub, epubBase, checkEpubLimit } = reqLib('epub');
+        const { viewerEpub, epubBase, checkEpubLimit, epubChart } = reqLib('epub');
         const { viewerAnnotations } = reqLib('viewer');
         let start = Date.now();
         const g = gedcomText(peerId, keys);
         console.log('epub ged generate:', (Date.now() - start) + 'ms');
         checkEpubLimit(g);
-        start = Date.now();
-        const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), getSettings(peerId).fynny);
-        console.log('epub annotations:', (Date.now() - start) + 'ms');
         const radius = parseInt(head, 10) || 1;
         const title = epubBase(heroKey, radius);
+        const chart = await epubChart(() => prepareChart(peerId,
+            heroKey ? focusKeys(linkPairs(peerId), heroKey, radius, focusSpousePairs(peerId)) : undefined,
+            head.replace(/^\d\s+/, ''), heroKey, radius));
         start = Date.now();
-        const epub = viewerEpub(g, title, heroXref, annotations, { heroKey, radius });
+        const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), getSettings(peerId).fynny, chart.model);
+        console.log('epub annotations:', (Date.now() - start) + 'ms');
+        start = Date.now();
+        const epub = viewerEpub(g, title, heroXref, annotations, { heroKey, radius, chart });
         console.log('epub package:', (Date.now() - start) + 'ms');
         start = Date.now();
         const attachment = await vkUploadDoc(peerId, title + '.epub', epub);
@@ -1769,18 +1780,24 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
         };
         await publish(base + ".ged", g);
 
+        const { viewerEpub, epubBase, checkEpubLimit, epubChart } = reqLib('epub');
         let pdf = null, persons = 0, chartErr = null;
         let t0 = Date.now();
-        try {
+        const chart = await epubChart(() => {
             // PDF candidates use the cheap blood prefix plus bounded marriages.
             // chartFor filters every final row by label words; GED/TXT keep keys.
             let chartKeys = keys;
             if (heroKey && rm) {
                 chartKeys = focusKeys(linkPairs(peerId), heroKey, Number(rm[1]), focusSpousePairs(peerId));
             }
-            const res = chartFor(peerId, chartKeys, chartHead, heroKey, rm ? Number(rm[1]) : null);
-            persons = res.persons;
-            pdf = res.pdf;
+            return prepareChart(peerId, chartKeys, chartHead, heroKey, rm ? Number(rm[1]) : null);
+        });
+        try {
+            chartErr = chart.error?.message.replace(/^chart:\s*/, "") ?? null;
+            if (chart.model) {
+                pdf = chart.renderPdf();
+                persons = chart.persons;
+            }
         } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
         console.log("ged chart:", (Date.now() - t0) + "ms");
         // A dateless tree has no chart by design.
@@ -1792,17 +1809,16 @@ async function sendGedArtifacts(peerId, keys, head, msgId, convMsgId, heroKey = 
         if (overflow) await publish(base + ".ged.txt", "\uFEFF" + pack);
         try {
             const { viewerAnnotations } = reqLib("viewer");
-            const { viewerEpub, epubBase, checkEpubLimit } = reqLib("epub");
             checkEpubLimit(g);
             const hero = heroKey ? personRows(peerId).find(r => pkey(r) === heroKey) : null;
             const heroXref = hero && g.split("\n").includes("0 @" + hero.xref + "@ INDI") ? hero.xref : null;
             t0 = Date.now();
-            const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), getSettings(peerId).fynny);
+            const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), getSettings(peerId).fynny, chart.model);
             console.log("ged epub annotations:", (Date.now() - t0) + "ms");
             const radius = parseInt(head0, 10) || 1;
             const title = epubBase(heroKey, radius);
             t0 = Date.now();
-            const epub = viewerEpub(g, title, heroXref, annotations, { heroKey, radius });
+            const epub = viewerEpub(g, title, heroXref, annotations, { heroKey, radius, chart });
             console.log("ged epub package:", (Date.now() - t0) + "ms");
             await publish(title + ".epub", epub);
         } catch (e) {

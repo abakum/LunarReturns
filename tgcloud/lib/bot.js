@@ -11,7 +11,7 @@ import { graftError } from './flat.cjs';
 import { localRecord, mskGedcom } from './event-time.cjs';
 import { viewerAnnotations } from './viewer.cjs';
 import { createPdfAnnotationText, pdfPersonMetadata } from './annotations.cjs';
-import { viewerEpub, EPUB_TYPE, epubBase, checkEpubLimit } from './epub.cjs';
+import { viewerEpub, EPUB_TYPE, epubBase, checkEpubLimit, epubChart } from './epub.cjs';
 import { chatFlatArtifacts, gedNoteLines, gedText, gedFictiveDates, trimImport } from './parse.cjs';
 import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText, isExactEvent } from './tree.cjs';
 // фокус-список (focusListText) — канон tree.cjs (с A3): реэкспорт — точки
@@ -1383,7 +1383,7 @@ export async function branchFlatText(chatId, key) {
 // Чистая логика дословно продублирована в lunarreturns.js (dev/sync-check.mjs)
 
 import { InputFile } from 'sdk';
-import { checkChartLimit, chartPdf, chartRows, chartFont, chartDiagnostics, fileBaseOf, rangeLevel } from './chart.cjs';
+import { checkChartLimit, chartModel, chartPdf, chartRows, chartFont, chartDiagnostics, fileBaseOf, rangeLevel } from './chart.cjs';
 
 // диаграммные данные чата/фрагмента (как у gedcomText: те же INDI, свадьбы
 // «Имя+Имя» вне; семьи усекаются до персон фрагмента). heroKey — pkey героя
@@ -1397,6 +1397,11 @@ async function importChartWarnings(chatId) {
 }
 
 export async function chartFor(chatId, keys, title, heroKey = null, range = null, diagnose = false) {
+    const chart = await prepareChart(chatId, keys, title, heroKey, range, diagnose);
+    return diagnose ? chart : { pdf: await chart.renderPdf(), persons: chart.persons };
+}
+
+async function prepareChart(chatId, keys, title, heroKey, range, diagnose = false) {
     const snapshot = await flatRows(chatId);
     const pairs = await linkPairs(chatId), spousePairs = await focusSpousePairs(chatId);
     const xOf = new Map(snapshot[0].filter(p => p.d != null).map(p => [p.name + " " + p.d, p.key]));
@@ -1503,9 +1508,12 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
                     abt: snapshot[0].find(p => p.key === xOf.get(c))?.abt ?? 0 },
             })) });
     }
-    const annotationText = createPdfAnnotationText(snapshot, pairs, spousePairs, rel?.fynny ?? (await getSettings(chatId)).fynny);
-    const metadata = pdfPersonMetadata(snapshot, heroKey, xOf.get(heroKey), range);
-    return { pdf: chartPdf(title, rows, links, chartFont(), { ...rel, phantoms }, marriages, annotationText, metadata), persons: rows.length };
+    const model = chartModel(title, rows, links, { ...rel, phantoms }, marriages);
+    return { model, persons: rows.length, async renderPdf() {
+        const annotationText = createPdfAnnotationText(snapshot, pairs, spousePairs, rel?.fynny ?? (await getSettings(chatId)).fynny);
+        const metadata = pdfPersonMetadata(snapshot, heroKey, xOf.get(heroKey), range);
+        return chartPdf(title, rows, links, chartFont(), rel, marriages, annotationText, metadata, model);
+    } };
 }
 
 // тап 🧬 / «/gedcom» / «/gedcomN»: <имя>.ged всегда, <имя>.pdf (диаграмма,
@@ -1549,11 +1557,14 @@ export async function sendEpub(chatId, keys, head, heroKey, heroXref, replyTo) {
     try {
         const g = await gedcomText(chatId, keys);
         checkEpubLimit(g);
-        const annotations = viewerAnnotations(g, await flatRows(chatId), await linkPairs(chatId),
-            await focusSpousePairs(chatId), (await getSettings(chatId)).fynny);
         const radius = parseInt(head, 10) || 1;
         const title = epubBase(heroKey, radius);
-        const epub = viewerEpub(g, title, heroXref, annotations, { heroKey, radius });
+        const chart = await epubChart(async () => prepareChart(chatId,
+            heroKey ? focusKeys(await linkPairs(chatId), heroKey, radius, await focusSpousePairs(chatId)) : undefined,
+            head.replace(/^\d\s+/, ''), heroKey, radius));
+        const annotations = viewerAnnotations(g, await flatRows(chatId), await linkPairs(chatId),
+            await focusSpousePairs(chatId), (await getSettings(chatId)).fynny, chart.model);
+        const epub = viewerEpub(g, title, heroXref, annotations, { heroKey, radius, chart });
         await api.sendDocument({ chat_id: chatId, reply_parameters, caption: head,
             document: new InputFile(epub, title + '.epub', { type: EPUB_TYPE }) });
     } catch (e) {
@@ -1611,15 +1622,18 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
         await sendFile(enc.encode(g), ".ged", "text/plain");
         if (pack && !packFits) await sendFile(enc.encode("\uFEFF" + pack), ".ged.txt", "text/plain");
         // Готовые текстовые файлы уже доступны; часы остаются до завершения PDF.
-        let chartKeys = keys;
-        if (heroKey && rm) {
-            chartKeys = focusKeys(await linkPairs(chatId), heroKey, Number(rm[1]), await focusSpousePairs(chatId));
-        }
+        const chart = await epubChart(async () => {
+            const chartKeys = heroKey && rm
+                ? focusKeys(await linkPairs(chatId), heroKey, Number(rm[1]), await focusSpousePairs(chatId)) : keys;
+            return prepareChart(chatId, chartKeys, chartHead, heroKey, rm ? Number(rm[1]) : null);
+        });
         let pdf = null, persons = 0, chartErr = null;
         try {
-            const res = await chartFor(chatId, chartKeys, chartHead, heroKey, rm ? Number(rm[1]) : null);
-            persons = res.persons;
-            pdf = res.pdf;
+            chartErr = chart.error?.message.replace(/^chart:\s*/, "") ?? null;
+            if (chart.model) {
+                pdf = await chart.renderPdf();
+                persons = chart.persons;
+            }
         } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
         if (chartErr && !chartErr.includes("персоны пусты")) {
             const notice = "Диаграмма не построена: " + chartErr;
@@ -1634,8 +1648,8 @@ export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0
             const hero = heroKey ? (await personRows(chatId)).find(r => pkey(r) === heroKey) : null;
             const heroXref = hero && g.split("\n").includes("0 @" + hero.xref + "@ INDI") ? hero.xref : null;
             const annotations = viewerAnnotations(g, await flatRows(chatId), await linkPairs(chatId),
-                await focusSpousePairs(chatId), (await getSettings(chatId)).fynny);
-            await sendFile(viewerEpub(g, epubTitle, heroXref, annotations, { heroKey, radius }), ".epub", EPUB_TYPE, epubTitle + ".epub");
+                await focusSpousePairs(chatId), (await getSettings(chatId)).fynny, chart.model);
+            await sendFile(viewerEpub(g, epubTitle, heroXref, annotations, { heroKey, radius, chart }), ".epub", EPUB_TYPE, epubTitle + ".epub");
         } catch (e) {
             console.error("viewer:", e.message);
             errors.push(epubTitle + ".epub: " + e.message);

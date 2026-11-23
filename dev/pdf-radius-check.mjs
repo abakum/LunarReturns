@@ -141,21 +141,21 @@ for (const [h, m, expected] of [[null, null, '20000101090000'], [12, 34, '200001
     assert.ok(pdf.includes('1 w 0 0 0 RG'), 'neutral bar uses black outline');
     assert.ok(pdf.includes(' c h S'), 'rounded outline strokes without filling');
 }
-for (const count of [1, 44, 45, 100]) {
+for (const count of [1, 39, 40, 100]) {
     const rows = Array.from({ length: count }, (_, i) => ({
         name: 'Person' + i, birth: '1960-01-01', death: '2030-01-01', sex: 'M',
     }));
     const file = path.join(tmp, 'page-axis-' + count + '.pdf');
-    const scale = 842 / chartModel('Page axis', rows, []).W;
-    const bodyBottom = 595 - 42 * scale;
+    const model = chartModel('Page axis', rows, []);
+    assert.ok(model.left > 0, 'full chart trims unused label column');
+    const scale = 842 / (model.W - model.left);
     const annotation = 'Роспись (тест) \\ строка\n=Персона \u{1f600}';
     const pdf = chartPdf('Page axis', rows, [], chartFont(), null, null, () => annotation);
     const targets = checkAnnotations(pdf, count);
-    const model = chartModel('Page axis', rows, []);
     const bars = model.draws.filter(d => d.k === 'rrect');
     for (const [i, [, body]] of targets.entries()) {
         const rect = body.match(/\/Rect \[([^\]]+)\]/)[1].split(' ').map(Number);
-        assert.ok(Math.abs(rect[0] - bars[i].x * scale) < 0.001, 'target begins at bar start');
+        assert.ok(Math.abs(rect[0] - (bars[i].x - model.left) * scale) < 0.001, 'target begins at bar start');
         assert.ok(Math.abs(rect[2] - rect[0] - 16 * scale) < 0.002, 'wide touch target');
         assert.ok(Math.abs(rect[3] - rect[1] - 16 * scale) < 0.002, 'full row height target');
     }
@@ -163,7 +163,9 @@ for (const count of [1, 44, 45, 100]) {
     const bbox = spawnSync('pdftotext', ['-bbox', file, '-'], { encoding: 'utf8' });
     assert.equal(bbox.status, 0, bbox.stderr);
     const pages = [...bbox.stdout.matchAll(/<page\b[^>]*>([\s\S]*?)<\/page>/g)];
-    assert.ok(pages.length >= (count === 100 ? 2 : 1));
+    assert.equal(pages.length, count <= 39 ? 1 : count === 40 ? 2 : 3);
+    const bodyHeights = [...pdf.matchAll(/stream\nq\n0 [\d.]+ 842 ([\d.]+) re W n\n[^\n]+\n\/C Do/g)].map(m => Number(m[1]));
+    assert.equal(bodyHeights.length, pages.length);
     let expectedAxis;
     const people = [];
     for (const [pageIndex, [, page]] of pages.entries()) {
@@ -178,7 +180,7 @@ for (const count of [1, 44, 45, 100]) {
         if (expectedAxis) assert.deepEqual(signature, expectedAxis, 'identical axis horizontal position and years');
         expectedAxis = signature;
         // Poppler bbox includes text outside a body clip; count visible rows only.
-        const persons = words.filter(w => /^Person\d+$/.test(w.s) && w.y >= 0 && w.bottom <= bodyBottom);
+        const persons = words.filter(w => /^Person\d+$/.test(w.s) && w.y >= 0 && w.bottom <= bodyHeights[pageIndex]);
         assert.ok(persons.every(w => w.bottom < Math.min(...axis.map(w => w.y))), 'person rows above axis');
         const axisTop = Math.min(...axis.map(w => w.y));
         if (pageIndex === pages.length - 1) {
@@ -208,7 +210,7 @@ for (const count of [1, 44, 45, 100]) {
     const encoded = pdf.match(new RegExp('\\n' + id + ' 0 obj\\n<FEFF([a-f0-9]+)>'))[1];
     assert.equal(Buffer.from(encoded, 'hex').swap16().toString('utf16le'), annotation);
     const model = chartModel('Limit', rows, links);
-    const region = model.annotationRegions[0], scale = 842 / model.W;
+    const region = model.annotationRegions[0], scale = 842 / (model.W - model.left);
     assert.equal(region.w, 1.5, 'connection width matches line width');
     assert.ok(model.annotationRegions.slice(1, 3).every(r => r.w === 7 && r.h === 7), 'separate point targets');
     for (const [, body] of checked.slice(0, checked.length - 1000)) {
@@ -216,8 +218,8 @@ for (const count of [1, 44, 45, 100]) {
         const width = (rect[2] - rect[0]) / scale;
         assert.ok(Math.abs(width - 1.5) < 0.003 || Math.abs(width - 7) < 0.003);
         if (Math.abs(width - 1.5) < 0.003) {
-            assert.ok(Math.abs(rect[0] - region.x * scale) < 0.001);
-            assert.ok(Math.abs(rect[2] - (region.x + region.w) * scale) < 0.001);
+            assert.ok(Math.abs(rect[0] - (region.x - model.left) * scale) < 0.001);
+            assert.ok(Math.abs(rect[2] - (region.x + region.w - model.left) * scale) < 0.001);
         }
     }
     const distinct = chartPdf('Own R1', rows.slice(0, 2), [], chartFont(), null, null, r => r.name);

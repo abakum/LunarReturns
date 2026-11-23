@@ -129,7 +129,16 @@ function readBook(book) {
     assert.ok(fallback.includes('href="https://github.com/readium/kotlin-toolkit/releases"'));
     assert.ok(fallback.includes('href="https://www.thoriumreader.com/en/download/"'));
     assert.match(xhtml, /connect-src 'none'/);
-    return JSON.parse(xhtml.match(/<script id="tree-data" type="application\/json"><!\[CDATA\[(.*?)\]\]><\/script>/s)[1]);
+    const data = JSON.parse(xhtml.match(/<script id="tree-data" type="application\/json"><!\[CDATA\[(.*?)\]\]><\/script>/s)[1]);
+    return { ...data, chartBars: [...xhtml.matchAll(/data-xref="([^"]+)" aria-label="Роспись: ([^"]+)" data-bar=""/g)]
+        .map(([, id, name]) => ({ id, name })), xhtml };
+}
+
+function compareChart(payload, pdf) {
+    const text = execFileSync('pdftotext', ['-layout', '-', '-'], { input: pdf.bytes, encoding: 'utf8' });
+    assert.ok(payload.chartBars.length);
+    for (const { name } of payload.chartBars) assert.ok(text.includes(name), 'Missing from PDF: ' + name);
+    return text;
 }
 
 function checkPayloads(platform, result, focused, radius = 1) {
@@ -141,6 +150,7 @@ function checkPayloads(platform, result, focused, radius = 1) {
     assert.match(pdf.bytes.toString('ascii', 0, 8), /^%PDF-/);
     assert.equal(books[0].name, focused ? `${radius} Павел I Петрович Романов 1754-09-20.epub` : 'Древо чата.epub');
     const data = readBook(books[0]);
+    compareChart(data, pdf);
     assert.equal(data.gedcom, ged.bytes.toString(), 'Viewer must embed exactly the exported GED');
     assert.ok(Object.keys(data.annotations).length);
     const rows = Object.values(data.annotations).flat();
@@ -186,7 +196,9 @@ function checkPayloads(platform, result, focused, radius = 1) {
             assert.equal(alexey[wedding + 2].prefix, '--');
         }
     }
-    for (const id of Object.keys(data.annotations)) assert.ok(data.gedcom.includes('0 @' + id + '@ INDI'));
+    for (const id of Object.keys(data.annotations)) {
+        assert.ok(data.gedcom.includes('0 @' + id + '@ INDI') || data.xhtml.includes(`data-xref="${id}"`));
+    }
     for (const row of rows.filter(row => row.xref)) {
         assert.ok(Object.hasOwn(data.annotations, row.xref));
         assert.ok(!row.hero);
@@ -238,7 +250,7 @@ for (const platform of ['tg', 'vk']) {
         assert.equal(pdfs.length, 3, result.log);
         for (const [radius, label] of ['Древо чата', 'родители-дети', 'деды-внуки'].entries()) {
             const book = books[radius];
-            readBook(book);
+            compareChart(readBook(book), pdfs[radius]);
             const opf = execFileSync('unzip', ['-p', path.join(tmp, `book-${bookCount}.epub`), 'EPUB/package.opf'], { encoding: 'utf8' });
             const info = execFileSync('pdfinfo', ['-'], { input: pdfs[radius].bytes, encoding: 'utf8' });
             if (radius) {
@@ -394,15 +406,11 @@ for (const platform of ['tg', 'vk']) {
         const atRadius = files => files.filter(f => f.name.startsWith(r + ' Павел I '));
         assert.equal(atRadius(inheritedGeds)[0].bytes.toString(), ged);
         assert.equal(atRadius(inheritedBooks).length, 1);
-        for (const book of atRadius(inheritedBooks)) assert.equal(readBook(book).gedcom, ged);
+        const payload = readBook(atRadius(inheritedBooks)[0]);
+        assert.equal(payload.gedcom, ged);
         const pdfs = atRadius(inheritedPdfs);
         assert.equal(pdfs.length, 1);
-        const text = pdfs.map((p, i) => {
-            const file = path.join(tmp, `${platform}-radius-${r}-${i}.pdf`);
-            fs.writeFileSync(file, p.bytes);
-            return execFileSync('pdftotext', ['-layout', file, '-'], { encoding: 'utf8' });
-        });
-        assert.match(text[0], /Павел I/);
+        assert.match(compareChart(payload, pdfs[0]), /Павел I/);
     }
     const limited = run(platform, 'export-limits', [...setup, '/', tap], 'limits');
     assert.doesNotMatch(limited.log, /Unexpected render/);

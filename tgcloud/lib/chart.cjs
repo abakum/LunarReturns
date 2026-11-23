@@ -280,7 +280,8 @@ function chartModel(title, rows, links, rel = null, marriages = null,
         ...links.map(l => yrOf(byKey.get(l.child))),
     ];
     // колонка подписей «Связь год»: под самую длинную строку, все — одной строкой
-    const KW = Math.max(KIND_W, Math.ceil(Math.max(...people.map(p => textW(p.label))) + 12));
+    const labelWidth = Math.ceil(Math.max(...people.map(p => textW(p.label))));
+    const KW = Math.max(KIND_W, labelWidth + 12);
     const xS = x => KW + (x - xMin) / (xMax - xMin) * PLOT_W;
     let acc = 0;
     for (const p of people) { p.h = ROW_H; p.y0 = acc; acc += p.h; }
@@ -374,7 +375,7 @@ function chartModel(title, rows, links, rel = null, marriages = null,
     const draws = [];
     // фон и заголовок
     draws.push({ k: "rect", x: 0, y: 0, w: W, h: H, fill: "#ffffff" });
-    draws.push({ k: "text", x: 8, y: 22, s: title, size: 16, fill: "#111111", bold: true });
+    draws.push({ k: "text", x: KW + PLOT_W / 2, y: 22, s: title, size: 16, fill: "#111111", bold: true, anchor: "mid" });
     // сетка-декады и подписи оси X (от первой декады — ниже некруглого xMin — xMin может
     // уйти в прошлое на некруглое число лет ради места под имена)
     for (let x = Math.ceil(xMin / 10) * 10; x <= xMax; x += 10) {
@@ -460,13 +461,13 @@ function chartModel(title, rows, links, rel = null, marriages = null,
         const ys = [...ps.map(p => p.cy), chY];
         annotationRegions.push({ r: ch0.r, x: x - 0.75, y: Math.min(...ys),
             w: 1.5, h: Math.max(...ys) - Math.min(...ys) });
-        pointRegions.push({ r: ch0.r, x: x - 3.5, y: chY - 3.5, w: 7, h: 7 });
+        pointRegions.push({ r: ch0.r, x: x - 3.5, y: chY - 3.5, w: 7, h: 7, childPoint: true });
         for (const p of ps) {
             if (p.cy === chY) continue;
             const point = JSON.stringify([fam, y, p.key]);
             if (parentPoints.has(point)) continue;
             parentPoints.add(point);
-            pointRegions.push({ r: ch0.r, x: x - 3.5, y: p.cy - 3.5, w: 7, h: 7 });
+            pointRegions.push({ r: ch0.r, x: x - 3.5, y: p.cy - 3.5, w: 7, h: 7, parentPoint: true });
         }
         // прямая между двумя родителями и к ребёнку — всегда вертикали на x семьи
         if (ps.length === 2 && ps[0].cy !== ps[1].cy)
@@ -496,7 +497,7 @@ function chartModel(title, rows, links, rel = null, marriages = null,
             if (!p2 || p1.cy !== p2.cy)
                 annotationRegions.push({ r: ph.r, x: x - 0.75, y: y0, w: 1.5, h: y1 - y0 });
             for (const cy of new Set([p1.cy, p2?.cy ?? p1.cy]))
-                pointRegions.push({ r: ph.r, x: x - 3.5, y: cy - 3.5, w: 7, h: 7 });
+                pointRegions.push({ r: ph.r, x: x - 3.5, y: cy - 3.5, w: 7, h: 7, parentPoint: true });
         }
         if (!p2) { // второй супруг вне чарта — точка + зарубка вниз от бара
             draws.push({ k: "dot", x, y: p1.cy, r: 3.5, fill: col });
@@ -526,8 +527,32 @@ function chartModel(title, rows, links, rel = null, marriages = null,
     annotationRegions.push(...pointRegions);
     // Put person targets last: at a parent's bar start, prefer their own R1.
     for (const p of people)
-        annotationRegions.push({ r: p.r, x: p.bar.x, y: p.cy - ROW_H / 2, w: 16, h: ROW_H });
-    return { title, W, H, KW, draws, annotationRegions };
+        annotationRegions.push({ r: p.r, x: p.bar.x, y: p.cy - ROW_H / 2, w: 16, h: ROW_H, bar: p.bar });
+    const left = rel?.hero ? 0 : Math.max(0, KW - labelWidth - 16);
+    return { title, W, H, KW, left, draws, annotationRegions };
+}
+
+function chartSvg({ W, H, left, draws, annotationRegions }) {
+    const escape = s => String(s).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]/g, '')
+        .replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);
+    const n = v => Math.round(v * 1000) / 1000;
+    const rect = ({ x, y, w, h }) => `x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}"`;
+    const shapes = draws.map(d => {
+        if (d.k === 'rect') return `<rect ${rect(d)} fill="${d.fill}"/>`;
+        if (d.k === 'rrect') return `<rect ${rect(d)} rx="${d.r}" fill="${d.fill ?? 'none'}"${d.stroke ? ` stroke="${d.stroke}" stroke-width="${d.lineWidth ?? 1}"` : ''}/>`;
+        if (d.k === 'line') return `<line x1="${n(d.x1)}" y1="${n(d.y1)}" x2="${n(d.x2)}" y2="${n(d.y2)}" stroke="${d.stroke}" stroke-width="${d.w}"/>`;
+        if (d.k === 'dot') return `<circle cx="${n(d.x)}" cy="${n(d.y)}" r="${d.r}" fill="${d.fill}" stroke="white"/>`;
+        return `<text x="${n(d.x)}" y="${n(d.y)}" font-size="${d.size}" fill="${d.fill}" text-anchor="${d.anchor === 'mid' ? 'middle' : d.anchor ?? 'start'}"${d.bold ? ' font-weight="bold"' : ''}>${escape(d.s)}</text>`;
+    });
+    const targets = [], bars = [], points = [];
+    for (const { r, x, y, w, h, bar, childPoint, parentPoint } of annotationRegions) {
+        if (!r.xref || h <= 0) continue;
+        const data = `data-xref="${escape(r.xref)}" aria-label="${escape('Роспись: ' + r.name)}"`;
+        const target = `<rect ${rect({ x, y, w, h })} ${data}${bar ? ' data-row=""' : childPoint ? ' data-child-point=""' : parentPoint ? ' data-parent-point=""' : ''}/>`;
+        (childPoint || parentPoint ? points : targets).push(target);
+        if (bar) bars.push(`<rect ${rect(bar)} ${data} data-bar=""${r.birth != null && (r.abt ?? 0) < 15 ? ` data-year="${escape(String(r.birth).slice(0, 4))}"` : ''}/>`);
+    }
+    return `<svg id="life-chart" xmlns="http://www.w3.org/2000/svg" aria-label="График жизни" width="${W - left}" height="${H}" viewBox="${left} 0 ${W - left} ${H}"><g>${shapes.join('')}</g><g id="life-targets" visibility="hidden" fill="transparent">${bars.join('')}${targets.join('')}${points.join('')}</g></svg>`;
 }
 
 // имя файла (без расширения) из заголовка: убрать эмодзи/не-BMP и символы,
@@ -547,10 +572,10 @@ function fileBaseOf(head) {
 
 // диаграмма → PDF (строка latin1, байт на символ): страницы A4 landscape
 // режут единое полотно чарта на горизонтальные полосы (Form XObject + клип)
-function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, annotationText = null, metadata = {}) {
+function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, annotationText = null, metadata = {}, model = null) {
     const f = parseTtf(fontBytes);
     const glyphs = fontGlyphs(f);
-    const m = chartModel(title, rows, links, rel, marriages, glyphs);
+    const m = model ?? chartModel(title, rows, links, rel, marriages, glyphs);
     const n = v => String(Math.round(v * 1000) / 1000);
     const col = hex => [1, 3, 5].map(i => n(parseInt(hex.slice(i, i + 2), 16) / 255)).join(" ");
     // операторы чарта (координаты y вниз; флип — cm XObject'а, для текста
@@ -605,7 +630,8 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, a
     // высоте на полосы не выше страницы; границы полос — строго по границам
     // строк персон — персона не делится пополам между страницами.
     // Шкала — отдельный XObject: внизу страницы, на последней — под строками.
-    const s = PAGE_W / m.W;
+    const s = PAGE_W / (m.W - m.left);
+    const shiftX = n(-s * m.left);
     const footer = 42;
     const contentH = m.H - footer;
     const avail = PAGE_H / s - footer;
@@ -675,7 +701,7 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, a
                 const bottom = PAGE_H - s * (y1 - bands[page]);
                 const top = PAGE_H - s * (y0 - bands[page]);
                 const id = add("<< /Type /Annot /Subtype /Square /P " + (3 + 2 * page) + " 0 R"
-                    + " /Rect [" + n(s * p.x) + " " + n(bottom) + " " + n(s * (p.x + p.w)) + " " + n(top) + "]"
+                    + " /Rect [" + n(s * (p.x - m.left)) + " " + n(bottom) + " " + n(s * (p.x + p.w - m.left)) + " " + n(top) + "]"
                     + " /Border [0 0 0] /BS << /W 0 >> /F 0"
                     + " /T " + pdfString(heading)
                     + " /M (" + date + ")"
@@ -693,9 +719,9 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, a
             + (annotations[i].length ? " /Annots [" + annotations[i].join(" ") + "]" : "") + " >>");
         stream(4 + 2 * i, "",
             "q\n0 " + n(PAGE_H - s * band) + " " + PAGE_W + " " + n(s * band) + " re W n\n"
-            + n(s) + " 0 0 " + n(s) + " 0 " + n(PAGE_H - s * (m.H - bands[i])) + " cm\n/C Do\nQ\n"
+            + n(s) + " 0 0 " + n(s) + " " + shiftX + " " + n(PAGE_H - s * (m.H - bands[i])) + " cm\n/C Do\nQ\n"
             + "q\n0 " + n(axisY) + " " + PAGE_W + " " + n(s * footer) + " re W n\n"
-            + n(s) + " 0 0 " + n(s) + " 0 " + n(axisY) + " cm\n/A Do\nQ");
+            + n(s) + " 0 0 " + n(s) + " " + shiftX + " " + n(axisY) + " cm\n/A Do\nQ");
     }
     stream(chartObj, "/Type /XObject /Subtype /Form /BBox [0 0 " + n(m.W) + " " + n(m.H) + "]"
         + " /Resources << /Font << /F1 " + f0 + " 0 R >> >>", chart);
@@ -756,4 +782,4 @@ function chartFont() {
 
 
 // ——— общий канон: экспорт (shorthand-идентификаторы под cjs-module-lexer)
-module.exports = { CHART_MAX, checkChartLimit, b64ToBytes, chartFont, chartDiagnostics, chartModel, chartPdf, chartRows, fileBaseOf, parseTtf, rangeLevel };
+module.exports = { CHART_MAX, checkChartLimit, b64ToBytes, chartFont, chartDiagnostics, chartModel, chartPdf, chartRows, chartSvg, fileBaseOf, parseTtf, rangeLevel };

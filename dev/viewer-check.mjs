@@ -8,7 +8,8 @@ import { unzipSync } from 'fflate';
 import { pathToFileURL } from 'node:url';
 const require = createRequire(import.meta.url);
 const { viewerHtml, viewerAnnotations } = require('../tgcloud/lib/viewer.cjs');
-const { viewerEpub } = require('../tgcloud/lib/epub.cjs');
+const { viewerEpub, epubChart } = require('../tgcloud/lib/epub.cjs');
+const { chartModel, chartSvg } = require('../tgcloud/lib/chart.cjs');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lr-viewer-'));
 const gedcom = `0 HEAD
 1 CHAR UTF-8
@@ -416,18 +417,59 @@ try {
 
     const title = 'Тест & дерево';
     const bookPath = path.join(dir, 'tree.xhtml');
-    fs.writeFileSync(bookPath, unzipSync(viewerEpub(gedcom, title, 'I1', annotations))[`EPUB/${title}.xhtml`]);
+    const rows = [snapshot[0][0], snapshot[0][3], ...Array.from({ length: 72 }, (_, i) => ({
+        key: 'BAR' + i, name: 'Дополнительная персона ' + i, d: i < 45 ? '1990-01-01' : '2010-01-01', sex: 'M',
+    }))].map(({ key, name, d, sex }) => ({ xref: key, name, birth: d, sex }));
+    const model = chartModel(title, rows, [{ child: 'Брат вне файла 2000-01-01', parents: ['Иван Тест 1980-01-01'] },
+        { child: 'Дополнительная персона 45 2010-01-01', parents: ['Иван Тест 1980-01-01'] }],
+        { phantoms: [{ fam: ['Иван Тест 1980-01-01'], years: [2020],
+        children: [{ year: 2020, r: { xref: 'OUTCHILD', name: 'Сын вне файла', birth: '2020-01-01' } }] }] });
+    const chartSnapshot = structuredClone(snapshot);
+    chartSnapshot[0][3].note += 'Длинная роспись^'.repeat(50);
+    const chartAnnotations = viewerAnnotations(gedcom, chartSnapshot, [], [], false, model);
+    assert.ok(chartAnnotations.OUTCHILD.some(row => row.hero));
+    assert.ok(chartAnnotations.I1.some(row => row.xref === 'OUT'));
+    fs.writeFileSync(bookPath, unzipSync(viewerEpub(gedcom, title, 'I1', chartAnnotations, { chart: { model } }))[`EPUB/${title}.xhtml`]);
+    for (const count of [0, 1000, 1001]) {
+        const chart = await epubChart(() => ({ model: chartModel('Лимит', Array.from({ length: count }, (_, i) => ({
+            xref: 'I' + i, name: 'Персона ' + i, birth: '1980-01-01',
+        })), []) }));
+        const xhtml = new TextDecoder().decode(unzipSync(viewerEpub(gedcom, title, 'I1', annotations, { chart }))[`EPUB/${title}.xhtml`]);
+        assert.equal(xhtml.includes('id="life-chart"'), count === 1000);
+        assert.equal(xhtml.includes('id="switch-view"'), count === 1000);
+        if (count === 0) assert.match(xhtml, /Нет персон с датами для графика/);
+        if (count === 1001) assert.doesNotMatch(xhtml, /id="chart-notice"|График: лимит 1000/);
+    }
     const bookUrl = pathToFileURL(bookPath).href;
-    const noScript = await browser.newPage({ javaScriptEnabled: false, offline: true });
+    const noScript = await browser.newPage({ javaScriptEnabled: false, offline: true, viewport: { width: 390, height: 700 } });
     await noScript.goto(bookUrl);
     const fallback = noScript.getByRole('status');
     assert(await fallback.isVisible());
     assert.equal(await fallback.getByRole('link', { name: /Readium/ }).getAttribute('href'), 'https://github.com/readium/kotlin-toolkit/releases');
     assert.equal(await fallback.getByRole('link', { name: 'Thorium Reader' }).getAttribute('href'), 'https://www.thoriumreader.com/en/download/');
     assert.equal(await fallback.locator('code').textContent(), `EPUB/${title}.xhtml`);
+    assert(await noScript.locator('#life-chart').isVisible());
+    const layout = await noScript.locator('#life-chart').evaluate(node => ({
+        left: node.viewBox.baseVal.x,
+        width: node.viewBox.baseVal.width,
+        titleX: Number(node.querySelector('text').getAttribute('x')),
+        anchor: node.querySelector('text').getAttribute('text-anchor'),
+        labelX: Math.min(...Array.from(node.querySelectorAll('text'), text => text.getBBox().x)),
+    }));
+    assert.equal(layout.titleX, (model.KW + model.W - 16) / 2);
+    assert.equal(layout.anchor, 'middle');
+    assert(layout.left > 0 && layout.width < model.W);
+    assert(layout.labelX >= layout.left);
+    const focused = chartModel('Фокус', rows.slice(0, 1), [], { hero: 'Иван Тест 1980-01-01', range: 1 });
+    const focusedSvg = chartSvg(focused);
+    assert.ok(focusedSvg.includes(`viewBox="0 0 ${focused.W} ${focused.H}"`));
+    assert.match(focusedSvg, />родители-дети 1980<\/text>/);
+    assert(await noScript.locator('#switch-view').isHidden());
+    assert(await noScript.locator('#annotation').isHidden());
+    assert(await noScript.locator('#tree').isHidden());
     await noScript.close();
 
-    const reader = await browser.newPage({ offline: true });
+    const reader = await browser.newPage({ offline: true, hasTouch: true, viewport: { width: 390, height: 600 } });
     await reader.addInitScript(() => {
         // Thorium handles book hyperlinks before their target handlers receive the click.
         document.addEventListener('click', event => {
@@ -458,7 +500,135 @@ try {
     await reader.goBack();
     await reader.waitForFunction(() => document.getElementById('person').value.endsWith('(I1)'));
     assert(await panel.isHidden());
+    const toggle = reader.locator('#switch-view');
+    assert.equal(await toggle.evaluate(node => node.previousElementSibling.id), 'fit');
+    assert.deepEqual(await reader.locator('header > button').allTextContents(), ['➖', '➕', '⤢', '📊']);
+    assert.equal(await reader.locator('#fit').evaluate(node => getComputedStyle(node).fontSize), '20px');
+    assert(await reader.locator('#life-chart').isHidden());
+    const transformBefore = await reader.locator('#chart').getAttribute('transform');
+    await toggle.click();
+    assert.equal(await toggle.textContent(), '🌳');
+    assert.equal(await toggle.getAttribute('aria-label'), 'Древо');
+    assert(await reader.locator('#tree').isHidden());
+    assert.equal(await reader.locator('#fit').textContent(), '↔');
+    assert.equal(await reader.locator('#fit').getAttribute('aria-label'), 'Вместить по ширине');
+    const matrix = () => reader.locator('#life-chart').evaluate(node => new DOMMatrix(getComputedStyle(node).transform).toJSON());
+    const initialFit = await matrix();
+    const expectedFit = await reader.locator('#life-chart').evaluate(node => {
+        return node.parentElement.clientWidth / node.viewBox.baseVal.width;
+    });
+    assert(Math.abs(initialFit.a - expectedFit) < 0.00001);
+    assert.equal(initialFit.e, 0);
+    assert.equal(initialFit.f, 0);
+    const bar = id => reader.locator(`[data-bar][data-xref="${id}"]`);
+    const phantom = reader.locator('[data-xref="OUTCHILD"]');
+    assert.ok(await phantom.count());
+    for (const target of await phantom.all()) {
+        assert.equal(await target.evaluate(node => getComputedStyle(node).cursor), 'help');
+        await target.press('Enter');
+        assert.match(await panel.locator('strong').textContent(), /Сын вне файла/);
+    }
+    const connection = reader.locator('[data-xref="OUT"][width="1.5"]');
+    assert.equal(await connection.count(), 1);
+    assert.equal(await connection.evaluate(node => getComputedStyle(node).cursor), 'help');
+    await connection.press('Enter');
+    assert.match(await panel.locator('strong').textContent(), /Брат вне файла/);
+    await reader.keyboard.press('Escape');
+    const first = await bar('I1').boundingBox();
+    await reader.mouse.move(first.x + first.width / 2, first.y + first.height / 2);
+    await reader.mouse.wheel(0, -1600);
+    await reader.waitForFunction(scale => new DOMMatrix(getComputedStyle(document.getElementById('life-chart')).transform).a > scale, initialFit.a);
+    await bar('I1').press('Space');
+    assert.equal(await panel.getByRole('link', { name: '(SECRET_PLACE)', exact: true }).getAttribute('href'), 'https://ya.ru/maps/?text=SECRET_PLACE');
+    assert.equal(await panel.getByRole('button', { name: /Мать Тест|Сын вне файла/ }).count(), 0);
+    const view = await reader.locator('#life-view').boundingBox();
+    assert((await bar('OUT').boundingBox()).y > view.y + view.height);
+    const beforeJump = await matrix();
+    await panel.getByRole('button', { name: /Брат вне файла/ }).click();
+    assert.equal(await toggle.textContent(), '🌳');
+    assert.equal(new URL(reader.url()).hash, '');
+    assert.match(await panel.locator('strong').textContent(), /Брат вне файла/);
+    const centered = await bar('OUT').boundingBox();
+    assert(Math.abs(centered.y - view.y - 12) <= 1);
+    assert.equal((await matrix()).e, beforeJump.e);
+    const longPanel = await panel.boundingBox();
+    assert(longPanel.y >= centered.y + centered.height + 11);
+    assert(longPanel.y + longPanel.height <= 589);
+    assert(await panel.evaluate(node => node.scrollHeight > node.clientHeight));
+    await search.fill('Мать Тест');
+    assert.match(await reader.locator('#person-results').textContent(), /Никого не найдено/);
+    await search.fill('1980 ИВАН');
+    assert.deepEqual(await reader.getByRole('option').allTextContents(), ['Иван Тест 1980 (I1)']);
+    await search.press('ArrowDown');
+    await search.press('Enter');
+    assert.match(await panel.locator('strong').textContent(), /Иван Тест/);
+    assert.equal(new URL(reader.url()).hash, '');
+    const topOffset = async () => (await bar('I1').boundingBox()).y - (await reader.locator('#life-view').boundingBox()).y;
+    assert(Math.abs(await topOffset() - 12) <= 2, `Search offset: ${await topOffset()}`);
+    await reader.locator('#fit').click();
+    const fitted = await matrix();
+    assert.deepEqual(fitted, initialFit);
+    await bar('I1').click();
+    assert(Math.abs(await topOffset() - 12) <= 2, `Click offset: ${await topOffset()}`);
+    await reader.locator('#fit').click();
+    await connection.press('Enter');
+    assert.deepEqual(await matrix(), fitted);
+    const lineBounds = await connection.boundingBox();
+    const sidePanel = await panel.boundingBox();
+    assert(sidePanel.x >= lineBounds.x + lineBounds.width + 11 || sidePanel.x + sidePanel.width <= lineBounds.x - 11);
+    const childPoint = reader.locator('[data-child-point][data-xref="OUT"]');
+    await reader.keyboard.press('Escape');
+    const pointBounds = await childPoint.boundingBox();
+    await reader.mouse.click(pointBounds.x + pointBounds.width / 2, pointBounds.y + pointBounds.height / 2);
+    assert(await panel.isVisible());
+    assert.match(await panel.locator('strong').textContent(), /Брат вне файла/);
+    const childPanel = await panel.boundingBox();
+    assert(Math.abs(childPanel.y - (pointBounds.y + pointBounds.height)) < 1);
+    assert(Math.min(Math.abs(childPanel.x - pointBounds.x - pointBounds.width),
+        Math.abs(childPanel.x + childPanel.width - pointBounds.x)) < 1);
+    assert.deepEqual(await matrix(), fitted);
+    const parentPoint = reader.locator('[data-parent-point][data-xref="OUT"]');
+    await reader.keyboard.press('Escape');
+    const parentBounds = await parentPoint.boundingBox();
+    await reader.mouse.click(parentBounds.x + parentBounds.width / 2, parentBounds.y + parentBounds.height / 2);
+    assert(await panel.isVisible());
+    assert.match(await panel.locator('strong').textContent(), /Брат вне файла/);
+    const hintBounds = await panel.boundingBox();
+    assert(Math.abs(hintBounds.y - parentBounds.y - parentBounds.height) < 1);
+    assert(Math.min(Math.abs(hintBounds.x - parentBounds.x - parentBounds.width),
+        Math.abs(hintBounds.x + hintBounds.width - parentBounds.x)) < 1);
+    await reader.locator('#plus').click();
+    assert((await matrix()).a > fitted.a);
+    await reader.locator('#minus').click();
+    assert(Math.abs((await matrix()).a - fitted.a) < 0.00001);
+    const cy = Math.round(view.y + view.height / 2);
+    await reader.mouse.move(180, cy);
+    await reader.mouse.wheel(0, -200);
+    await reader.waitForFunction(scale => new DOMMatrix(getComputedStyle(document.getElementById('life-chart')).transform).a > scale, fitted.a);
+    const zoomed = await matrix();
+    await reader.mouse.down();
+    await reader.mouse.move(220, cy + 30);
+    await reader.mouse.up();
+    assert(Math.abs((await matrix()).e - zoomed.e - 40) < 0.001);
+    assert(Math.abs((await matrix()).f - zoomed.f - 30) < 0.001);
+    assert(await panel.isHidden());
+    const cdp = await reader.context().newCDPSession(reader);
+    const touch = (type, touchPoints) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints });
+    await touch('touchStart', [{ x: 110, y: cy, id: 1 }, { x: 210, y: cy, id: 2 }]);
+    await touch('touchMove', [{ x: 70, y: cy, id: 1 }, { x: 250, y: cy, id: 2 }]);
+    await touch('touchEnd', []);
+    const panned = await matrix();
+    assert(panned.a > zoomed.a);
+    await toggle.click();
+    assert(await panel.isHidden());
+    assert.equal(await toggle.textContent(), '📊');
+    assert.equal(await toggle.getAttribute('aria-label'), 'График');
+    assert.equal(await reader.locator('#fit').textContent(), '⤢');
+    assert.equal(await reader.locator('#chart').getAttribute('transform'), transformBefore);
+    assert.match(await reader.locator('#person').evaluate(node => node.value), /\(I1\)$/);
+    await toggle.click();
+    assert.deepEqual(await matrix(), panned);
     await reader.close();
-    console.log('EPUB fallback without JavaScript and annotation actions under reader link interception: OK');
+    console.log('EPUB static SVG and interactive tree/chart annotations under reader link interception: OK');
 } finally { await browser.close(); }
 console.log('Browser fixtures:', dir);

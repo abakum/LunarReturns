@@ -1,6 +1,6 @@
 const { viewerHtml } = require('./viewer.cjs');
 const { deflateSync } = require('./epub-deflate.cjs');
-const { fileBaseOf, rangeLevel } = require('./chart.cjs');
+const { chartSvg, fileBaseOf, rangeLevel } = require('./chart.cjs');
 const { parseGedcom } = require('./parse.cjs');
 
 const EPUB_TYPE = 'application/epub+zip';
@@ -58,8 +58,26 @@ function epubBase(heroKey, radius = 1) {
     return prefix + [...name].slice(0, 64 - prefix.length - date.length).join('').trimEnd() + date;
 }
 
-function viewerEpub(gedcom, title, heroXref, annotations, { heroKey, radius = 1 } = {}) {
-    const html = viewerHtml(gedcom, title, heroXref, annotations);
+async function epubChart(prepare) {
+    try { return await prepare(); }
+    catch (error) {
+        if (error.message.startsWith('PDF: лимит ')) return { error };
+        if (error.message === 'chart: персоны пусты') return { error, notice: 'Нет персон с датами для графика.' };
+        console.error('epub chart:', error.message);
+        return { error, notice: 'Не удалось построить график.' };
+    }
+}
+
+function viewerEpub(gedcom, title, heroXref, annotations, { heroKey, radius = 1, chart } = {}) {
+    let svg, notice = chart?.notice;
+    if (chart?.model) {
+        try { svg = chartSvg(chart.model); }
+        catch (error) {
+            console.error('epub SVG:', error.message);
+            notice = 'Не удалось построить график.';
+        }
+    }
+    const html = viewerHtml(gedcom, title, heroXref, annotations, { svg, notice });
     const escapedTitle = html.match(/<title>(.*?)<\/title>/s)[1];
     let metadata = `<dc:title>${escapedTitle}</dc:title>`;
     if (heroKey) {
@@ -85,9 +103,8 @@ function viewerEpub(gedcom, title, heroXref, annotations, { heroKey, radius = 1 
     const xhtml = html.slice(0, scriptStart)
         .replace('<!doctype html><html lang="ru">', '<!DOCTYPE html>' + htmlRoot + '>')
         .replace(/<(meta|input)\b[^>]+>/g, tag => tag.slice(0, -1) + ' />')
-        .replace(/ hidden(?=[ >])/g, ' hidden="hidden"')
         .replace('<p id="status" role="status"></p><noscript>Для просмотра включите JavaScript и откройте файл в браузере.</noscript>',
-            () => `<p id="status" role="status">Для просмотра дерева нужен JavaScript. Android: <a href="https://github.com/readium/kotlin-toolkit/releases">Readium (APK в разделе Assets)</a>. Windows, macOS, Linux, iOS и iPadOS: <a href="https://www.thoriumreader.com/en/download/">Thorium Reader</a>. Если не удаётся открыть дерево или роспись, распакуйте EPUB как ZIP и откройте <code>EPUB/${escapedTitle}.xhtml</code> в браузере.</p>`)
+            () => `<p id="status" role="status">${svg ? 'Древо и росписи требуют JavaScript. ' : 'Для просмотра дерева нужен JavaScript. '}Android: <a href="https://github.com/readium/kotlin-toolkit/releases">Readium (APK в разделе Assets)</a>. Windows, macOS, Linux, iOS и iPadOS: <a href="https://www.thoriumreader.com/en/download/">Thorium Reader</a>. Если не удаётся открыть дерево или роспись, распакуйте EPUB как ZIP и откройте <code>EPUB/${escapedTitle}.xhtml</code> в браузере.</p>`)
         + html.slice(scriptStart).replace(/(<script\b[^>]*>)([\s\S]*?)<\/script>/g,
             (_, tag, content) => tag + '<![CDATA[' + content.replaceAll(']]>', ']]]]><![CDATA[>') + ']]></script>');
     const now = new Date();
@@ -110,4 +127,4 @@ ${metadata}
     ]);
 }
 
-module.exports = { viewerEpub, EPUB_TYPE, epubBase, checkEpubLimit };
+module.exports = { viewerEpub, EPUB_TYPE, epubBase, checkEpubLimit, epubChart };
