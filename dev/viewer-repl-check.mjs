@@ -4,8 +4,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { inflateRawSync } from 'node:zlib';
+import { DatabaseSync } from 'node:sqlite';
 import { checkChartLimit } from '../tgcloud/lib/chart.cjs';
 import { checkEpubLimit } from '../tgcloud/lib/epub.cjs';
+import { normalizeSettings, settingPatch } from '../tgcloud/lib/settings.cjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const largeGed = '0 @I@ INDI\r\n'.repeat(10000);
@@ -13,8 +15,49 @@ assert.doesNotThrow(() => checkChartLimit(1000));
 assert.throws(() => checkChartLimit(1001), /PDF: лимит 1000 персон.*1001/);
 assert.doesNotThrow(() => checkEpubLimit(largeGed));
 assert.throws(() => checkEpubLimit(largeGed + '0 @LAST@ INDI'), /EPUB: лимит 10000 персон.*10001/);
+const configDb = new DatabaseSync(':memory:');
+configDb.exec("CREATE TABLE settings(chat INTEGER PRIMARY KEY, config TEXT NOT NULL DEFAULT '{}')");
+const patchConfig = (chat, key, value) => {
+    const { initial, expression, params } = settingPatch(key, value);
+    return configDb.prepare(`INSERT INTO settings(chat,config) VALUES(?,?)
+        ON CONFLICT(chat) DO UPDATE SET config=${expression} RETURNING config`).get(chat, initial, ...params).config;
+};
+for (const raw of ['{}', 'broken', '[true]', '"false"']) {
+    assert.equal(normalizeSettings(raw).bell, true);
+    assert.equal(normalizeSettings(raw).pdf, false);
+    configDb.prepare('INSERT OR REPLACE INTO settings VALUES(1,?)').run(raw);
+    assert.deepEqual(JSON.parse(patchConfig(1, 'bell', false)), { bell: false });
+}
+configDb.exec(`UPDATE settings SET config='{"future":{"x":1},"orth":"false","bell":false}' WHERE chat=1`);
+assert.equal(normalizeSettings(patchConfig(1, 'orth')).orth, true);
+assert.equal(normalizeSettings(patchConfig(1, 'orth')).orth, false);
+patchConfig(1, 'trim', true);
+patchConfig(2, 'html', true);
+assert.deepEqual(JSON.parse(patchConfig(1, 'html', true)),
+    { future: { x: 1 }, orth: false, bell: false, trim: true, html: true });
+assert.equal(normalizeSettings(patchConfig(2, 'epub', true)).trim, false);
+configDb.close();
 const tmp = fs.mkdtempSync('/tmp/kilo/lr-viewer-repl-');
 console.log('Artifacts and logs: ' + tmp);
+const migrationDb = path.join(tmp, 'settings-migration.db');
+const legacySettings = new DatabaseSync(migrationDb);
+legacySettings.exec(`CREATE TABLE settings(chat INTEGER PRIMARY KEY, orth INTEGER DEFAULT 0,
+    islam INTEGER, bud INTEGER, cath INTEGER, jud INTEGER, fynny INTEGER, trim INTEGER, bell INTEGER);
+    INSERT INTO settings VALUES(1,1,1,1,1,1,1,1,0);
+    CREATE TABLE meta(k TEXT PRIMARY KEY, v TEXT);
+    INSERT INTO meta VALUES('checkedDate','2026-11-20');`);
+legacySettings.close();
+for (const restart of [false, true]) {
+    execFileSync(process.execPath, ['-e', "require('./lunarreturns.js').__test.personRows(1)"], {
+        cwd: root, env: { ...process.env, LR_DB: migrationDb },
+    });
+    const db = new DatabaseSync(migrationDb);
+    assert.deepEqual(db.prepare('PRAGMA table_info(settings)').all().map(row => row.name), ['chat', 'config']);
+    assert.deepEqual(JSON.parse(db.prepare('SELECT config FROM settings WHERE chat=1').get().config), restart ? { html: true } : {});
+    assert.equal(db.prepare("SELECT v FROM meta WHERE k='checkedDate'").get().v, '2026-11-20');
+    if (!restart) db.prepare('UPDATE settings SET config=? WHERE chat=1').run('{"html":true}');
+    db.close();
+}
 const preload = path.join(tmp, 'offline.cjs');
 // Inject faults only in child-process mocks, never in production source files.
 fs.writeFileSync(preload, `
@@ -37,7 +80,7 @@ if (fail === 'limits') {
     const epub = require(${JSON.stringify(path.join(root, 'tgcloud/lib/epub.cjs'))});
     const checkChart = chart.checkChartLimit, checkEpub = epub.checkEpubLimit;
     chart.checkChartLimit = () => checkChart(1001);
-    epub.checkEpubLimit = () => checkEpub('0 @I@ INDI\\n'.repeat(10001));
+    epub.checkEpubLimit = (_, format) => checkEpub('0 @I@ INDI\\n'.repeat(10001), format);
     chart.chartPdf = epub.viewerEpub = () => { throw new Error('Unexpected render after limit'); };
 }
 Object.defineProperty(globalThis, '__tgdev', { configurable: true, set(value) {
@@ -63,16 +106,18 @@ globalThis.fetch = async (url, options) => {
 };
 `);
 
-function run(platform, name, commands, failure = '') {
+function run(platform, name, commands, failure = '', { database = name, fresh = true, chat } = {}) {
     const prefix = path.join(tmp, platform + '-' + name);
+    const db = path.join(tmp, platform + '-' + database);
     const trace = prefix + '.jsonl';
     const result = spawnSync(process.execPath, ['--require', preload,
-        platform === 'tg' ? 'dev/repl.mjs' : 'dev/vk-repl.mjs', '--fresh',
+        platform === 'tg' ? 'dev/repl.mjs' : 'dev/vk-repl.mjs', ...(fresh ? ['--fresh'] : []),
+        ...(chat ? ['--chat', String(chat)] : []),
         ...(platform === 'tg' ? ['--private'] : [])], {
         cwd: root, encoding: 'utf8', timeout: 120000, maxBuffer: 48 * 1024 * 1024,
         input: [...commands, ...(platform === 'vk' ? ['!wait 6000'] : [])].join('\n') + '\n',
         env: { ...process.env, TG_TOKEN: '', VK_TOKEN: '', TMPDIR: tmp,
-            LR_DEV_DB: prefix + '.json', LR_DB: prefix + '.db', LR_VKOFF: process.env.LR_VKOFF || '1453',
+            LR_DEV_DB: db + '.json', LR_DB: db + '.db', LR_VKOFF: process.env.LR_VKOFF || '1453',
             LR_VK_TRACE: trace, VIEWER_TG_TRACE: trace, VIEWER_FAIL: failure,
             LR_BACKUP_FAIL: '', LR_CSV_FAIL: '', LR_TXT_FAIL: '', LR_UPLOAD_FAIL1: '', LR_EDIT_FAIL1: '' },
     });
@@ -134,6 +179,42 @@ function readBook(book) {
         .map(([, id, name]) => ({ id, name })), xhtml };
 }
 
+function readHtml(platform, file, title) {
+    assert.ok(file, `Missing HTML: ${title}`);
+    let bytes = file.bytes;
+    if (platform === 'tg') {
+        assert.equal(file.name, title + '.html');
+    } else {
+        assert.equal(file.name, title + '.zip');
+        const end = bytes.length - 22;
+        assert.equal(bytes.readUInt32LE(end), 0x06054b50);
+        assert.equal(bytes.readUInt16LE(end + 10), 1, 'The ZIP contains only the HTML file');
+        const central = bytes.readUInt32LE(end + 16);
+        assert.equal(bytes.readUInt32LE(central), 0x02014b50);
+        assert.equal(bytes.readUInt32LE(central + 42), 0);
+        assert.equal(bytes.readUInt32LE(0), 0x04034b50);
+        const length = bytes.readUInt16LE(26);
+        const name = Buffer.from(title + '.html');
+        assert.deepEqual(bytes.subarray(30, 30 + length), name);
+        assert.deepEqual(bytes.subarray(central + 46, central + 46 + bytes.readUInt16LE(central + 28)), name);
+        assert.ok(bytes.readUInt16LE(6) & 0x0800);
+        assert.ok(bytes.readUInt16LE(central + 8) & 0x0800);
+        assert.equal(bytes.readUInt16LE(8), 8);
+        assert.equal(bytes.readUInt16LE(central + 10), 8, 'HTML must be Deflate-compressed');
+        const start = 30 + length + bytes.readUInt16LE(28);
+        bytes = inflateRawSync(bytes.subarray(start, start + bytes.readUInt32LE(central + 20)));
+    }
+    const html = bytes.toString();
+    assert.match(html, /^<!doctype html>/i);
+    assert.match(html, /<noscript>[^<]*JavaScript[^<]*браузер[^<]*<\/noscript>/);
+    assert.doesNotMatch(html, /readium\/kotlin-toolkit|thoriumreader\.com|<!\[CDATA\[/i);
+    assert.match(html, /connect-src 'none'/);
+    assert.match(html, /<svg[^>]*\bid="life-chart"/);
+    const script = html.match(/<script id="tree-data" type="application\/json">(.*?)<\/script>/s);
+    assert.ok(script, 'Missing embedded tree data');
+    return { bytes, data: JSON.parse(script[1]) };
+}
+
 function compareChart(payload, pdf) {
     const text = execFileSync('pdftotext', ['-layout', '-', '-'], { input: pdf.bytes, encoding: 'utf8' });
     assert.ok(payload.chartBars.length);
@@ -146,7 +227,7 @@ function checkPayloads(platform, result, focused, radius = 1) {
     const pdf = result.files.find(f => f.name.endsWith('.pdf'));
     const books = result.files.filter(f => f.name.endsWith('.epub'));
     assert.ok(ged && pdf && books.length === 1, 'Wrong artifacts: ' + result.files.map(f => f.name));
-    assert.ok(result.files.every(f => !/\.html(?:\.(?:zip|gz))?$/.test(f.name)));
+    assert.ok(result.files.every(f => !/\.(?:html|zip)$/.test(f.name)));
     assert.match(pdf.bytes.toString('ascii', 0, 8), /^%PDF-/);
     assert.equal(books[0].name, focused ? `${radius} Павел I Петрович Романов 1754-09-20.epub` : 'Древо чата.epub');
     const data = readBook(books[0]);
@@ -229,6 +310,10 @@ function checkPayloads(platform, result, focused, radius = 1) {
 }
 
 const setup = ['!ged dev/fixtures/Romanov_family.ged', '/2 2'];
+const bundle = ['/gedcom1', '/pdf1', '/epub1'];
+const longFocus = path.join(tmp, 'long-focus.ged');
+fs.writeFileSync(longFocus, fs.readFileSync(path.join(root, 'dev/fixtures/Romanov_family.ged'), 'utf8')
+    .replace(/^(1 NAME [^\r\n]+)(\r?\n)/gm, (_, name, newline) => `${name}${newline}1 NOTE ${'Длинное примечание. '.repeat(60)}${newline}`));
 const legacy = path.join(tmp, 'maps-ansi.ged');
 const coords = 'https://ya.ru/maps/?pt=33.821283,48.466825&z=13';
 fs.writeFileSync(legacy, Buffer.concat([
@@ -239,6 +324,7 @@ fs.writeFileSync(legacy, Buffer.concat([
 ]));
 const outputs = {};
 const flatOutputs = {};
+const htmlOutputs = {};
 const metadataOnly = process.argv.includes('--metadata-only');
 for (const platform of ['tg', 'vk']) {
     if (metadataOnly) {
@@ -340,15 +426,14 @@ for (const platform of ['tg', 'vk']) {
     const chatButton = [...menu.log.matchAll(/\[(\d+)\.(\d+)\] 🧬/g)].at(-1);
     assert.ok(chatButton, menu.log);
     const tap = `/${chatButton[1]} ${chatButton[2]}`;
-    const chatTap = run(platform, 'chat-button', [...setup, '/', tap]);
+    const chatTap = run(platform, 'chat-button', [...setup, '/', ...bundle, tap]);
     assert.equal(checkPayloads(platform, chatTap, false), outputs[platform]);
     if (platform === 'vk') {
         const progress = chatTap.events.filter(e => e.method === 'messages.edit' && e.params?.attachment && e.params.message?.includes('⏳'));
-        assert.deepEqual(progress.map(e => e.params.attachment.split(',').length), [1, 2, 3]);
-        const annotationStart = chatTap.events.findIndex(e => e.method === 'viewerAnnotations');
-        assert.ok(annotationStart > chatTap.events.indexOf(progress[1]), 'GED and PDF are attached before EPUB generation');
-        assert.ok(annotationStart < chatTap.events.indexOf(progress[2]));
-    } else assert.deepEqual(chatTap.files.map(f => path.extname(f.name)), ['.ged', '.pdf', '.epub']);
+        assert.deepEqual(progress.map(e => e.params.attachment.split(',').length), [1, 2, 3, 4]);
+        assert.equal(chatTap.events.filter(e => e.method === 'viewerAnnotations').length, 1);
+    }
+    assert.deepEqual(chatTap.files.map(f => path.extname(f.name)).sort(), ['.epub', '.ged', '.pdf', '.txt']);
     assert.match(outputs[platform], /1 EVEN\n2 TYPE Постриг\n2 DATE 1698\n2 NOTE в монашестве Маргарита/);
     assert.match(outputs[platform], /1 TITL Царь всея Руси\n2 DATE FROM 1682\n2 NOTE соправитель Петра I\n1 TITL Царь всея Руси\n2 DATE TO 1696\n2 NOTE соправитель Петра I/);
     const romanovFlat = run(platform, 'flat-full', ['!txt dev/fixtures/Romanov_family.ged.txt', '/2 2', '/bell', '/gedcom']);
@@ -358,7 +443,6 @@ for (const platform of ['tg', 'vk']) {
     const focus = run(platform, 'focus-reply', [...setup, '/Павел I', '>4 /gedcom1']);
     const radiusOne = onlyGed(focus);
     const books = run(platform, 'epub', [...setup, '/Павел I', '/epub', '>4 /epub', '>4 /epub2', '>4 /gedcom2']);
-    if (platform === 'vk') assert.match(books.log, /epub ged generate: \d+ms[\s\S]*epub annotations: \d+ms[\s\S]*epub package: \d+ms[\s\S]*epub upload: \d+ms[\s\S]*epub send: \d+ms/);
     const epubs = books.files.filter(f => f.name.endsWith('.epub'));
     assert.equal(epubs.length, 3, books.log);
     assert.equal(books.files.filter(f => f.name.endsWith('.ged')).length, 1, 'Only /gedcom2 attaches GEDCOM');
@@ -382,6 +466,7 @@ for (const platform of ['tg', 'vk']) {
     const bellButton = [...focus.log.matchAll(/\[4\.(\d+)\] 🔔/g)].at(-1);
     assert.ok(bellButton, focus.log);
     const select = '/4 ' + radiusButton[1];
+    const focusTap = '/4 ' + button[1];
     const focusEdits = result => result.events.filter(e => platform === 'tg'
         ? e.method === 'editMessageText' && e.params.message_id === 4
         : e.method === 'messages.edit' && e.params.conversation_message_id === '12')
@@ -393,6 +478,133 @@ for (const platform of ['tg', 'vk']) {
     assert.match(bellEdits.at(-2), /^2 Павел I[^\n]*\n🔔⏳$/);
     assert.match(bellEdits.at(-1), /^2 Павел I[^\n]*\n[\s\S]+/);
     assert.doesNotMatch(bellEdits.at(-1), /⏳/);
+
+    const filesOf = result => result.files.map(f => f.name.match(/(?:\.ged\.txt|\.[^.]+)$/)[0]);
+    const htmlExt = platform === 'tg' ? '.html' : '.zip';
+    const chatTitle = 'Древо чата';
+    const focusTitle = radius => `${radius} Павел I Петрович Романов 1754-09-20`;
+    const editsFor = (result, tapCommand) => {
+        const n = Number(tapCommand.match(/^\/(\d+)/)[1]);
+        // VK gives bot messages a separate conversation ID sequence starting at 11.
+        const cmid = 10 + [...result.log.matchAll(/^\[(\d+)\] sendMessage:/gm)].filter(match => Number(match[1]) <= n).length;
+        return result.events.filter(e => e.method === editMethod && (platform === 'tg'
+            ? e.params.message_id === n
+            : e.params.conversation_message_id === String(cmid)) && messageText(e) && !messageText(e).includes('⏳'));
+    };
+    const checkRegisterFile = file => {
+        assert.deepEqual(file.bytes.subarray(0, 3), Buffer.from([0xef, 0xbb, 0xbf]));
+        assert.match(file.bytes.toString(), /Романов/);
+    };
+    const short = run(platform, 'register-short', ['Ада Байрон 1815-12-10', '/']);
+    const shortButton = [...short.log.matchAll(/\[(\d+)\.(\d+)\] 🧬/g)].at(-1);
+    assert.ok(shortButton, short.log);
+    const shortTap = `/${shortButton[1]} ${shortButton[2]}`;
+    const register = run(platform, 'register-unlinked', ['Ада Байрон 1815-12-10', '/', shortTap]);
+    assert.deepEqual(register.files, []);
+    assert.match(messageText(editsFor(register, shortTap).at(-1) || {}), /Ада Байрон 1815-12-10/);
+    const overflow = run(platform, 'register-focus-overflow', [`!ged ${longFocus}`, '/2 2', '/Павел I', select, focusTap]);
+    assert.deepEqual(filesOf(overflow), ['.ged.txt'], overflow.log);
+    checkRegisterFile(overflow.files[0]);
+    const longText = overflow.files[0].bytes.toString();
+    assert.match(longText, /^\uFEFF#not for cut and graft\n/);
+    const preview = messageText(editsFor(overflow, focusTap).at(-1) || {});
+    assert.match(preview, /^2 Павел I[^\n]*\n#not for cut and graft\n[\s\S]*✂️$/);
+    assert.ok(preview.length <= 4000 && longText.length > 4000);
+
+    const wait = platform === 'vk' ? ['!wait 700'] : [];
+    const formats = run(platform, 'live-format-flags', [...setup, '/', tap, ...wait,
+        ...bundle, '/HtMl1@lunarreturns_bot', tap, ...wait,
+        '/gedcom0', '/pdf0', '/epub0', tap, ...wait, '/html0', tap]);
+    const uploadedFormats = filesOf(formats);
+    assert.equal(uploadedFormats.length, 9, formats.log);
+    for (const [start, expected] of [[0, ['.ged.txt']], [1, ['.ged.txt', '.ged', '.pdf', '.epub', htmlExt]],
+        [6, ['.ged.txt', htmlExt]], [8, ['.ged.txt']]]) {
+        assert.deepEqual(uploadedFormats.slice(start, start + expected.length).sort(), expected.sort(), formats.log);
+    }
+    const confirmations = formats.events.filter(e => e.method === sendMethod).map(messageText);
+    for (const key of ['GEDCOM', 'PDF', 'EPUB', 'HTML']) {
+        assert.ok(confirmations.some(text => new RegExp(`^🧬 ${key}: включ[её]н`, 'i').test(text)));
+        assert.ok(confirmations.some(text => new RegExp(`^🧬 ${key}: выключ[её]н`, 'i').test(text)));
+    }
+    const chatFinal = editsFor(formats, tap);
+    assert.equal(chatFinal.length, 4, formats.log);
+    assert.ok(chatFinal.every(e => messageText(e).includes('✂️') && messageText(e).length <= 4000));
+    if (platform === 'vk') {
+        assert.deepEqual(chatFinal.map(e => e.params.attachment?.split(',').length), [1, 5, 2, 1]);
+    }
+    const registers = formats.files.filter(f => f.name.endsWith('.ged.txt'));
+    for (const file of registers) {
+        checkRegisterFile(file);
+        assert.deepEqual(file.bytes, registers[0].bytes);
+    }
+    const htmlFiles = formats.files.filter(f => f.name.endsWith(htmlExt));
+    const mixedHtml = readHtml(platform, htmlFiles[0], chatTitle);
+    const htmlOnly = readHtml(platform, htmlFiles[1], chatTitle);
+    assert.ok(htmlOnly.bytes.equals(mixedHtml.bytes), 'PDF and EPUB flags must not affect standalone HTML');
+    const { gedcom, heroXref, annotations, xhtml } = readBook(formats.files.find(f => f.name.endsWith('.epub')));
+    assert.match(xhtml, /<svg[^>]*\bid="life-chart"/);
+    assert.deepEqual(mixedHtml.data, { gedcom, heroXref, annotations });
+    assert.equal(gedcom, outputs[platform]);
+    assert.equal(heroXref, null);
+    assert.ok(Object.keys(annotations).length > 0);
+
+    const replies = run(platform, 'html-reply-and-focus', [...setup, '/Павел I', select,
+        '>4 /html', '>4 /HtMl1@lunarreturns_bot', '>4 /html2', '>1 /html1', focusTap, ...wait,
+        '/html1', '>4 /html0', focusTap, ...wait, '/html0', focusTap, ...wait, '/html']);
+    assert.deepEqual(filesOf(replies), Array(5).fill(htmlExt), replies.log);
+    assert.match(replies.log, /Не удалось найти цитируемую запись/);
+    assert.match(replies.log, /Отправьте переключатель без ответа/);
+    const focusFinal = editsFor(replies, focusTap).filter(e => messageText(e).includes('#not for cut and graft'));
+    assert.equal(focusFinal.length, 3, replies.log);
+    assert.ok(focusFinal.every(e => /^2 Павел I.*\n#not for cut and graft\n/.test(messageText(e))));
+    if (platform === 'vk') {
+        assert.equal(focusFinal[1].params.attachment?.split(',').length, 1);
+        assert.equal(focusFinal[2].params.attachment, '', 'The old VK attachment must be cleared explicitly');
+    }
+    const replyHtml = replies.files.slice(0, 4).map((f, i) => readHtml(platform, f, focusTitle(i === 1 ? 1 : 2)));
+    for (const [i, { data }] of replyHtml.entries()) {
+        assert.equal(data.gedcom, i === 1 ? radiusOne : radiusTwo);
+        assert.ok(data.heroXref);
+        assert.match(data.annotations[data.heroXref].find(row => row.hero).text, /Павел I/);
+    }
+    assert.ok(replyHtml[0].bytes.equals(replyHtml[2].bytes), 'Inherited and explicit radius 2 must match');
+    assert.ok(replyHtml[0].bytes.equals(replyHtml[3].bytes), 'The focus button and reply must export the same HTML');
+    assert.ok(readHtml(platform, replies.files.at(-1), chatTitle).bytes.equals(mixedHtml.bytes), 'One-shot HTML ignores flags');
+    if (platform === 'tg') {
+        const docs = [...formats.events, ...replies.events].filter(e => e.method === 'sendDocument'
+            && e.params.document.filename.endsWith('.html'));
+        assert.equal(docs.length, 7);
+        assert.ok(docs.every(e => e.params.document.type === 'text/html' && e.params.reply_parameters?.message_id));
+    }
+    htmlOutputs[platform] = [mixedHtml.bytes, ...replyHtml.slice(0, 2).map(html => html.bytes)];
+
+    const recordReply = run(platform, 'html-and-bell-record-reply', ['Иван 1950-01-02',
+        '-Иван 1950-01-02\\n+1973-06-10\\nМария 1952-02-03\\n--Пётр 1975-03-04',
+        '>1 /html1', '/bell0', '>1 /bell0', '>1 /bell1', '/bell']);
+    assert.deepEqual(filesOf(recordReply), [htmlExt], recordReply.log);
+    const recordData = readHtml(platform, recordReply.files[0], '1 Иван 1950-01-02').data;
+    assert.match(recordData.annotations[recordData.heroXref].find(row => row.hero).text, /Иван 1950-01-02/);
+    const recordMessages = recordReply.events.filter(e => e.method === sendMethod).map(messageText);
+    assert.equal(recordMessages.filter(text => /^Ежедневные оповещения о годовщинах /.test(text)).length, 1);
+    assert.ok(recordMessages.includes('Ежедневные оповещения о годовщинах выключены.'));
+    assert.match(recordReply.log, /Отправьте переключатель без ответа/);
+    assert.match(recordReply.log, /bell text: Иван 1950-01-02 радиус 1/);
+    assert.match(recordReply.log, /bell chat: [1-9]\d*->[1-9]\d* строк/);
+
+    const linksButton = [...menu.log.matchAll(/\[(\d+)\.(\d+)\] -\+=/g)].find(match => match[1] === chatButton[1]);
+    assert.ok(linksButton, menu.log);
+    const stored = run(platform, 'store-html-flag', ['/html1']);
+    assert.deepEqual(filesOf(stored), [], 'A format toggle must not export');
+    const persisted = run(platform, 'persisted-html', [...setup, '/', tap], '', { database: 'store-html-flag', fresh: false });
+    assert.deepEqual(filesOf(persisted).sort(), ['.ged.txt', htmlExt].sort(), persisted.log);
+    const otherChat = run(platform, 'isolated-chat', [...setup, '/', tap, ...wait, `/${linksButton[1]} ${linksButton[2]}`],
+        '', { database: 'store-html-flag', fresh: false, chat: 2 });
+    assert.deepEqual(filesOf(otherChat).sort(), ['.csv', '.ged.txt', '.ged.txt'], otherChat.log);
+    const plain = bytes => bytes.toString().replace(/^\uFEFF(?:#not for cut and graft\n)?/, '');
+    for (const file of otherChat.files.filter(f => f.name.endsWith('.ged.txt'))) {
+        assert.equal(plain(file.bytes), plain(registers[0].bytes), 'The full register must match the -+= export');
+    }
+
     const inherited = run(platform, 'export-radius', [...setup, '/Павел I', '/4 ' + radiusButton[1],
         '>4 /epub', '>4 /epub1', '>4 /pdf', '>4 /pdf1', '>4 /gedcom', '!wait 300', '>4 /gedcom1', '!wait 300', '/pdf']);
     const inheritedBooks = inherited.files.filter(f => f.name.endsWith('.epub'));
@@ -412,17 +624,18 @@ for (const platform of ['tg', 'vk']) {
         assert.equal(pdfs.length, 1);
         assert.match(compareChart(payload, pdfs[0]), /Павел I/);
     }
-    const limited = run(platform, 'export-limits', [...setup, '/', tap], 'limits');
+    const limited = run(platform, 'export-limits', [...setup, '/', ...bundle, '/html1', tap], 'limits');
     assert.doesNotMatch(limited.log, /Unexpected render/);
     assert.ok(limited.files.some(f => f.name.endsWith('.ged')));
-    assert.ok(limited.files.every(f => !/\.(?:pdf|epub)$/.test(f.name)));
+    assert.ok(limited.files.every(f => !/\.(?:pdf|epub|html|zip)$/.test(f.name)));
     const messages = limited.events.map(e => e.params?.text || e.params?.message || '').join('\n');
     assert.match(messages, /PDF: лимит 1000 персон.*1001/);
     assert.match(messages, /EPUB: лимит 10000 персон.*10001/);
+    assert.match(messages, /HTML: лимит 10000 персон.*10001/);
     const notice = limited.events.findIndex(e => (e.params?.message || e.params?.text)?.startsWith('💥 Диаграмма не построена:'));
     const finished = limited.events.findIndex(e => (e.params?.message || e.params?.text)?.includes('EPUB: лимит'));
     assert.ok(notice >= 0 && notice < finished, 'PDF failure notice must precede the final export edit');
-    const tapped = run(platform, 'focus-button', [...setup, '/Павел I', '/4 ' + button[1]]);
+    const tapped = run(platform, 'focus-button', [...setup, '/Павел I', ...bundle, '/4 ' + button[1]]);
     assert.equal(checkPayloads(platform, tapped, true), radiusOne);
     const finalized = tapped.events.filter(e => ['editMessageText', 'messages.edit'].includes(e.method))
         .filter(e => platform === 'tg' ? e.params.message_id === 4 : e.params.conversation_message_id === '12');
@@ -430,7 +643,7 @@ for (const platform of ['tg', 'vk']) {
     assert.ok(!(finalized.at(-1).params.text || finalized.at(-1).params.message).includes('⏳'));
     assert.ok(platform === 'tg' ? finalized.at(-1).params.reply_markup : finalized.at(-1).params.keyboard);
     for (const failure of ['epub', 'ged', 'pdf', 'generation']) {
-        const failed = run(platform, 'fail-' + failure, [...setup, '/Павел I', '/4 ' + button[1]], failure);
+        const failed = run(platform, 'fail-' + failure, [...setup, '/Павел I', ...bundle, '/4 ' + button[1]], failure);
         assert.match(failed.log, /injected/);
         const missing = failure === 'generation' ? 'epub' : failure;
         const expected = ['ged', 'pdf', 'epub'].filter(e => e !== missing);
@@ -438,14 +651,17 @@ for (const platform of ['tg', 'vk']) {
         assert.ok(!failed.files.some(f => f.name.endsWith('.' + missing)));
         const edits = failed.events.filter(e => ['editMessageText', 'messages.edit'].includes(e.method));
         const finalText = edits.at(-1).params.text || edits.at(-1).params.message;
-        assert.match(finalText, /Не удалось выложить файлы/);
+        assert.ok(failed.events.some(e => /Не удалось выложить файлы|Диаграмма не построена/.test(messageText(e))));
         assert.ok(!finalText.includes('⏳'));
         assert.ok(platform === 'tg' ? edits.at(-1).params.reply_markup : edits.at(-1).params.keyboard);
     }
-    console.log(platform + ': Romanov GED/flat import confirmation and bell, full/reply/button GED+PDF+viewer payloads, isolated failures OK');
+    console.log(platform + ': Romanov GED/flat import and bell, DNA register and flags, HTML transport/replies, isolated failures OK');
 }
 if (!metadataOnly && !process.argv.includes('--loading-only')) {
     assert.equal(outputs.tg, outputs.vk, 'Full GED exports must match between platforms');
     assert.equal(flatOutputs.tg, flatOutputs.vk, 'Full flat-import GED exports must match between platforms');
+    for (const [i, bytes] of htmlOutputs.tg.entries()) {
+        assert.ok(bytes.equals(htmlOutputs.vk[i]), `Standalone HTML bytes must match between transports (sample ${i + 1})`);
+    }
     console.log('Mirrored viewer REPL checks: OK');
 }

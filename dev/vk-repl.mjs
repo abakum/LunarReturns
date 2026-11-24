@@ -58,7 +58,7 @@ const PATCHES = [
      '    cutAndGraft, setPersonByXref, editTrigger, rootOf, uniqueKeyOf, upcomingEvents, hasTree,\n'
      + '    recordShownOf, newStyleDate, oldStyleDate, handleEvent, handleReaction, handleMessage, handleGedDrop, handleTxtDrop,\n'
      + '    peerKeyboard, getSettings, qa, isChatAdmin, dailyCheck, mskNowParts,\n'
-     + '    sendGedArtifacts: typeof sendGedArtifacts === "function" ? sendGedArtifacts : null,\n};'],
+     + '    sendGedArtifacts, messagesSend,\n};'],
     // подмена «сегодня»: !date YYYY-MM-DD [hh] → globalThis.__LR_TODAY/[__LR_HOUR]
     // (волна A: mskToday переехал в канон tgcloud/lib/astro.cjs — обёртка на нём же;
     // mskToday возвращает [y, mo, d], __LR_TODAY — такой же массив)
@@ -298,7 +298,7 @@ async function dropFile(kind, file, replyNum) {
     } catch (e) { fail(e); }
 }
 
-const hang = () => new Promise((_, rj) => setTimeout(() => rj(new Error('обработчик не завершился за 10с')), 10000));
+const hang = () => new Promise((_, rj) => setTimeout(() => rj(new Error('обработчик не завершился за 10с')), 10000).unref());
 
 console.log('vk-repl: chat=' + CHAT + (ADMIN ? ' (админ)' : ' (участник)'), 'user=' + USER, 'db=' + DB_FILE);
 console.log('Ввод: текст | /N M [uID] — кнопка | >N текст — ответ | !ged путь | !txt путь [>N] | !dump | !daily | !date ГГГГ-ММ-ДД [hh] | Ctrl-C — выход');
@@ -347,10 +347,13 @@ async function exec(line) {
             const spPairs = T.focusSpousePairs(CHAT);
             const keys = T.focusWithSpouses(T.focusKeys(pairs, key, Number(m[2])), spPairs);
             const rec = T.recordOf(CHAT, key);
-            const originMsg = m[3] && msgs[Number(m[3]) - 1] ? msgs[Number(m[3]) - 1] : null;
-            const origin = originMsg ? { peer_id: CHAT, conversation_message_id: originMsg.cmid } : null;
-            await Promise.race([T.sendGedArtifacts(CHAT, keys, T.focusHead(key, Number(m[2]), rec ? rec.dd : null),
-                msgs.length, 1, key, origin, originMsg ? originMsg.kb : null), hang()]);
+            const head = T.focusHead(key, Number(m[2]), rec ? rec.dd : null);
+            if (!m[3]) await T.messagesSend(CHAT, head);
+            const originMsg = m[3] ? msgs[Number(m[3]) - 1] : msgs.at(-1);
+            if (!originMsg) throw new Error('нет исходного сообщения');
+            const origin = { peer_id: CHAT, conversation_message_id: originMsg.cmid };
+            await Promise.race([T.sendGedArtifacts(origin, keys, head, key, T.chatFlatText(CHAT, keys),
+                T.getSettings(CHAT), originMsg.kb || undefined), hang()]);
             console.log('--- sendGedArtifacts завершён');
         } catch (e) { fail(e); }
         return;

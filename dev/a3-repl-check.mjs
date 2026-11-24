@@ -14,9 +14,9 @@ const huge = Array.from({ length: 180 }, (_, i) => '-Тестовый' + String(
 const tgCallback = fs.readFileSync(new URL('../tgcloud/handlers/callback_query.js', import.meta.url), 'utf8');
 assert.match(tgCallback, /await api\.editMessageText\([\s\S]*?text: head \+ "\\n" \+ loading[\s\S]*?\)\.catch\([^\n]*\);\s*let text;\s*try \{\s*const sex = await sexOf\(\);\s*const s = await getSettings\(chatId\);\s*const keys = focusListKeys/);
 const vkSource = fs.readFileSync(new URL('../lunarreturns.js', import.meta.url), 'utf8');
-assert.match(vkSource, /await vkApi\("messages.edit", \{\s*peer_id: peerId,[\s\S]*?message: head \+ "\\n" \+ loading, keyboard: kb\s*\}\)\.catch\([^\n]*\);\s*let text;\s*try \{\s*const txt = focusText/);
+assert.match(vkSource, /await vkApi\("messages.edit", \{\s*peer_id: peerId,[\s\S]*?message: head \+ "\\n" \+ loading, keyboard: kb\s*\}\)\.catch\([^\n]*\);\s*let text;\s*try \{\s*text = focusText/);
 // Сетевая ошибка на любом этапе загрузки повторяется, постоянная save-ошибка нет.
-const uploadSource = vkSource.slice(vkSource.indexOf('async function vkUploadDoc('), vkSource.indexOf('// тап 🧬 /', vkSource.indexOf('async function vkUploadDoc(')));
+const uploadSource = vkSource.match(/^async function vkUploadDoc\([\s\S]*?^\}/m)[0];
 for (const failure of ['server', 'post', 'save', 'permanent', 'exhausted']) {
     const calls = { server: 0, post: 0, save: 0 };
     const upload = vm.runInNewContext(uploadSource + '; vkUploadDoc', {
@@ -43,42 +43,56 @@ for (const failure of ['server', 'post', 'save', 'permanent', 'exhausted']) {
     });
 }
 // Ошибка одного артефакта не теряет успешные и не останавливает следующие.
-const artifactsStart = vkSource.indexOf('const files = [[base + ".ged", g]]');
-const artifactsEnd = vkSource.indexOf('// Чат-кейс:', artifactsStart);
-assert.ok(artifactsStart >= 0 && artifactsEnd > artifactsStart);
-for (const failed of ['.ged', '.pdf', '.ged.txt', 'all', 'none']) {
+const artifactsSource = vkSource.match(/^async function sendGedArtifacts\([\s\S]*?^\}/m)[0];
+const artifactNames = ['test.ged.txt', 'test.ged', 'test.pdf', 'test.epub'];
+for (const failed of ['.ged', '.pdf', '.ged.txt', '.epub', 'all', 'none']) {
     const attempted = [];
-    const progress = [];
-    const result = vm.runInNewContext('(async () => { let t0; ' + vkSource.slice(artifactsStart, artifactsEnd)
-        + ' return { atts, readyTxt }; })()', {
-        base: 'test', g: 'ged', pdf: 'pdf', overflow: true, pack: 'pack', finalTxt: 'header', Buffer,
-        holdTxt: 'header\n⏳', kb: 'keyboard', origin: { conversation_message_id: 42 }, sent: -1,
-        vkApi: async (method, params) => { progress.push({ method, ...params }); },
+    const edits = [];
+    const final = Promise.withResolvers();
+    const send = vm.runInNewContext(artifactsSource + '; sendGedArtifacts', {
+        Buffer, activeDnaExports: new Map(), fileBaseOf: () => 'test',
+        NOT_FOR_GRAFT: '#not for cut and graft', cutLines: () => '-Person',
+        gedcomText: () => 'ged', exportChart: async () => ({ renderPdf: () => 'pdf' }),
+        reqLib: () => ({ checkEpubLimit() {} }), exportViewer: () => () => ['test.epub', 'epub'],
+        vkApi: async (method, params) => {
+            edits.push({ method, ...params });
+            if (params.message && !params.message.includes('⏳')) final.resolve();
+        },
         console: { log() {}, error() {} },
         vkUploadDoc: async (peer, name) => {
             attempted.push(name);
             if (failed === 'all' || name === 'test' + failed) throw new Error('timeout');
             return name;
-        }, peerId: 1,
+        },
     });
-    if (failed === 'all') await assert.rejects(result, /timeout/);
-    else {
-        const ready = await result;
-        assert.deepEqual(Array.from(ready.atts), ['test.ged', 'test.pdf', 'test.ged.txt'].filter(n => n !== 'test' + failed));
-        assert.equal(progress.length, ready.atts.length);
-        progress.forEach((edit, i) => {
-            assert.equal(edit.method, 'messages.edit');
-            assert.equal(edit.conversation_message_id, 42);
-            assert.equal(edit.message, 'header\n⏳');
-            assert.equal(edit.attachment, Array.from(ready.atts).slice(0, i + 1).join(','));
-        });
-        if (failed === 'none') assert.equal(ready.readyTxt, 'header');
-        else assert.ok(ready.readyTxt.includes('test' + failed + ': timeout'));
-    }
-    assert.deepEqual(attempted, ['test.ged', 'test.pdf', 'test.ged.txt']);
+    await send({ peer_id: 1, conversation_message_id: 42 }, undefined, 'Tree', null, 'x'.repeat(4000),
+        { gedcom: true, pdf: true, epub: true }, 'keyboard');
+    let timer;
+    try {
+        await Promise.race([final.promise, new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Missing final DNA edit: ' + failed)), 1000);
+        })]);
+    } finally { clearTimeout(timer); }
+    assert.deepEqual(attempted, artifactNames);
+    const successful = failed === 'all' ? [] : artifactNames.filter(n => n !== 'test' + failed);
+    const progress = edits.filter(edit => edit.message?.includes('⏳'));
+    assert.equal(progress.length, successful.length + 1);
+    progress.forEach((edit, i) => {
+        assert.equal(edit.method, 'messages.edit');
+        assert.equal(edit.conversation_message_id, 42);
+        assert.equal(edit.message, '-Person\n✂️⏳');
+        assert.equal(edit.attachment, successful.slice(0, i).join(','));
+    });
+    const ready = edits.at(-1);
+    assert.equal(ready.attachment, successful.join(','));
+    assert.match(ready.message, /^-Person\n✂️/);
+    if (failed === 'none') assert.equal(ready.message, '-Person\n✂️');
+    else assert.match(ready.message, /Не удалось выложить файлы/);
 }
 for (const platform of ['tg', 'vk']) {
-    const env = { ...process.env, LR_DEV_DB: path.join(tmp, platform + '.json'), LR_DB: path.join(tmp, platform + '.db'), LR_VKOFF: '937' };
+    const trace = path.join(tmp, platform + '-radius.jsonl');
+    const env = { ...process.env, LR_DEV_DB: path.join(tmp, platform + '.json'), LR_DB: path.join(tmp, platform + '.db'),
+        LR_VKOFF: '937', LR_VK_TRACE: trace };
     const commands = [romanov, '/Алексей', '/bell', '/links', kids, '/Млад', huge, '/Тестовый', '/bell'];
     const script = platform === 'tg' ? 'dev/repl.mjs' : 'dev/vk-repl.mjs';
     const result = spawnSync(process.execPath, [script, '--fresh', ...(platform === 'tg' ? ['--private'] : [])], {
@@ -116,6 +130,7 @@ for (const platform of ['tg', 'vk']) {
     // Повторяем накопленные команды с чистой БД, выбирая номера из живой клавиатуры.
     const radiusCommands = ['-Предок 1920-01-01\\n--Первый 1940-01-01\\n---Второй 1960-01-01\\n----Третий 1980-01-01\\n-----Четвёртый 2000-01-01\\n------Пятый 2020-01-01', '/Пятый'];
     const runRadius = () => {
+        fs.rmSync(trace, { force: true });
         const r = spawnSync(process.execPath, [script, '--fresh', ...(platform === 'tg' ? ['--private'] : [])], {
             cwd: root, env, input: radiusCommands.join('\n') + '\n', encoding: 'utf8', timeout: 120000,
         });
@@ -123,61 +138,66 @@ for (const platform of ['tg', 'vk']) {
         assert.doesNotMatch(r.stdout + r.stderr, /ERROR:|TypeError|ReferenceError/);
         return r.stdout;
     };
+    const vkUploads = () => fs.readFileSync(trace, 'utf8').trim().split('\n').map(JSON.parse)
+        .filter(entry => entry.method === 'upload')
+        .map(entry => entry.body.match(/filename="[^"]+(\.ged\.txt|\.ged|\.pdf|\.epub)"/)[1]);
+    const textEdits = log => [...log.matchAll(/\[(\d+)\] текст →\n((?:    .*\n)*)/g)];
     let radiusLog = runRadius();
+    let selectedRadius = '1';
     for (const label of ['2', '3', '1', '5', '4', '🔔', '🔔']) {
         const buttons = [...radiusLog.matchAll(new RegExp('\\[(\\d+)\\.(\\d+)\\] ' + label + '(?=  |\\n|$)', 'g'))];
         const button = buttons.at(-1);
         assert.ok(button, radiusLog);
-        radiusCommands.push('/' + button[1] + ' ' + button[2]);
+        // The VK mock prints the old keyboard before storing the edited one.
+        const index = platform === 'vk' && label !== '🔔'
+            ? ['1', '2', '3', '4', '5'].filter(r => r !== selectedRadius).indexOf(label) + 1 : button[2];
+        radiusCommands.push('/' + button[1] + ' ' + index);
+        const previous = textEdits(radiusLog).length;
         radiusLog = runRadius();
-        const updates = [...radiusLog.matchAll(/\[(\d+)\] текст →\n((?:    .*\n)*)/g)].slice(-2);
-        assert.equal(updates.length, 2, radiusLog);
-        assert.equal(updates[0][1], button[1]);
-        assert.equal(updates[1][1], button[1]);
-        const radius = label === '🔔' ? '4' : label;
-        assert.match(updates[0][2], new RegExp('^    ' + radius + ' Пятый 2020-01-01\\n    🔔⏳\\n'));
-        assert.match(updates[1][2], new RegExp('^    ' + radius + ' Пятый 2020-01-01\\n'));
-        assert.match(updates[1][2], /Пятый 2020-01-01/);
-        assert.doesNotMatch(updates[1][2], /⏳/);
+        const updates = textEdits(radiusLog).slice(previous);
+        assert.equal(updates.length, label === '🔔' ? 2 : 1, radiusLog);
+        assert.ok(updates.every(m => m[1] === button[1]), radiusLog);
+        if (label !== '🔔') selectedRadius = label;
+        const head = '^    ' + selectedRadius + ' Пятый 2020-01-01\\n';
+        if (label === '🔔') assert.match(updates[0][2], new RegExp(head + '    🔔⏳\\n'));
+        assert.match(updates.at(-1)[2], new RegExp(head), radiusLog);
+        assert.doesNotMatch(updates.at(-1)[2], /⏳/);
     }
     fs.writeFileSync(path.join(tmp, platform + '-radius.log'), radiusLog);
     const dna = [...radiusLog.matchAll(/\[(\d+)\.(\d+)\] 🧬/g)].at(-1);
-    radiusCommands.push('/' + dna[1] + ' ' + dna[2]);
-    if (platform === 'vk') radiusCommands.push('!wait 3000');
+    radiusCommands.push('/gedcom1', '/pdf1', '/epub1', '/' + dna[1] + ' ' + dna[2]);
+    if (platform === 'vk') radiusCommands.push('!wait 6000');
     const dnaLog = runRadius();
     fs.writeFileSync(path.join(tmp, platform + '-dna.log'), dnaLog);
-    const dnaEdits = [...dnaLog.matchAll(/\[(\d+)\] текст →\n((?:    .*\n)*)/g)];
-    const start = dnaEdits.findIndex(m => m[2].includes('🧬⏳'));
-    assert.ok(start >= 0, dnaLog);
-    assert.match(dnaEdits[start][2], /^    4 Пятый 2020-01-01\n    🧬⏳\n/);
-    assert.equal(dnaEdits[start + 1][1], dnaEdits[start][1]);
-    assert.match(dnaEdits[start + 1][2], /⏳/);
-    assert.match(dnaEdits[start + 1][2], /Пятый 2020-01-01/);
-    assert.doesNotMatch(dnaEdits[start + 1][2], /🧬⏳/);
+    const dnaEdits = textEdits(dnaLog).slice(textEdits(radiusLog).length)
+        .filter(m => m[1] === dna[1]);
+    assert.ok(dnaEdits.length >= 2, dnaLog);
+    assert.match(dnaEdits[0][2], /^    4 Пятый 2020-01-01\n/);
+    assert.match(dnaEdits[0][2], /    ⏳\n/);
+    assert.match(dnaEdits.at(-1)[2], /Пятый 2020-01-01/);
     assert.doesNotMatch(dnaEdits.at(-1)[2], /⏳/);
-    assert.match(dnaLog, /\.ged/);
+    if (platform === 'tg') assert.match(dnaLog, /sendDocument: [^\n]+\.ged \(/);
+    else assert.deepEqual(vkUploads(), ['.ged', '.pdf', '.epub']);
     radiusCommands.push('-Глава 1950-01-01\\n' + Array.from({ length: 100 }, (_, i) =>
         '--Потомок' + i + ' Очень Длинное Имя Для Перелива 1980-01-01').join('\\n'), '/Глава');
     const overflowSetup = runRadius();
     const overflowDna = [...overflowSetup.matchAll(/\[(\d+)\.(\d+)\] 🧬/g)].at(-1);
     radiusCommands.push('/' + overflowDna[1] + ' ' + overflowDna[2]);
-    if (platform === 'vk') radiusCommands.push('!wait 3000');
+    if (platform === 'vk') radiusCommands.push('!wait 6000');
     const overflowLog = runRadius();
     const overflowEdits = [...overflowLog.matchAll(/\[(\d+)\] текст →\n((?:    .*\n)*)/g)]
         .filter(m => m[1] === overflowDna[1]);
-    assert.match(overflowEdits[0][2], /1 Глава 1950-01-01\n    🧬⏳/);
-    assert.match(overflowEdits[1][2], /✂️⏳/);
+    assert.match(overflowEdits[0][2], /1 Глава 1950-01-01\n/);
+    assert.match(overflowEdits[0][2], /✂️⏳/);
     assert.match(overflowEdits.at(-1)[2], /✂️/);
     assert.doesNotMatch(overflowEdits.at(-1)[2], /⏳/);
-    assert.match(overflowLog, /\.ged\.txt/);
     if (platform === 'tg') {
-        const documents = [...overflowLog.matchAll(/\[\d+\] sendDocument: ([^\n]+)/g)].slice(-3);
-        assert.equal(documents.length, 3);
-        assert.match(documents[0][1], /\.ged \(/);
-        assert.match(documents[1][1], /\.ged\.txt \(/);
-        assert.match(documents[2][1], /\.pdf \(/);
-        assert.ok(documents[2].index < overflowLog.lastIndexOf('[' + overflowDna[1] + '] текст →'));
-    }
+        const docPattern = /\[\d+\] sendDocument: ([^\n]+)/g;
+        const documents = [...overflowLog.matchAll(docPattern)].slice([...overflowSetup.matchAll(docPattern)].length);
+        assert.deepEqual(documents.map(m => m[1].match(/(\.ged\.txt|\.ged|\.pdf|\.epub) \(/)?.[1]),
+            ['.ged.txt', '.ged', '.pdf', '.epub']);
+        assert.ok(documents[3].index < overflowLog.lastIndexOf('[' + overflowDna[1] + '] текст →'));
+    } else assert.deepEqual(vkUploads().slice(3), ['.ged.txt', '.ged', '.pdf', '.epub']);
     fs.writeFileSync(path.join(tmp, platform + '-dna-overflow.log'), overflowLog);
     const flatButton = [...overflowLog.matchAll(/\[(\d+)\.(\d+)\] -\+=/g)].at(-1);
     radiusCommands.push('/' + flatButton[1] + ' ' + flatButton[2]);
@@ -194,7 +214,7 @@ for (const platform of ['tg', 'vk']) {
     fs.writeFileSync(path.join(tmp, platform + '-flat-overflow.log'), flatLog);
     if (platform === 'tg') {
         const commands = spawnSync(process.execPath, [script, '--fresh', '--private'], {
-            cwd: root, env, input: [kids, '/Старший', '>3 /', '>3 /links', '>3 /gedcom2', '/links', '/gedcom'].join('\n') + '\n',
+            cwd: root, env, input: [kids, '/Старший', '>4 /', '>4 /links', '>4 /gedcom2', '/links', '/gedcom'].join('\n') + '\n',
             encoding: 'utf8', timeout: 120000,
         });
         const commandLog = commands.stdout + commands.stderr;
@@ -216,7 +236,7 @@ for (const platform of ['tg', 'vk']) {
 
 // ---- показанные ключи (план .kilo/plans/20261109-shown-key-fixes-plan.md):
 // reply с `>` для AFT-дат полной/месячной/годовой гранулярности, reply с
-// точками и `_` (отображённые ключи), точный-vs-отображённый выбор
+// точками и `_` (отображённые ключи), неоднозначный-vs-отображённый выбор
 // старостильной свадьбы (две FAM одной пары). Якоря reply — свои сообщения;
 // `>N` требует номер сообщения, поэтому сначала сухой прогон setup-скрипта,
 // из эха «[N] ты:» берутся номера якорей (реплаи идут после всех якорей,
@@ -300,11 +320,14 @@ for (const platform of ['tg', 'vk']) {
     assert.match(plain, /1 Точная 2000-02-03/); // точки → точная запись
     assert.match(plain, /1 Афтжених\+Афтневеста 1901-05-01/); // свадьба-AFT
     assert.match(plain, /1 Старик 1900-01-01/); // `_`-шапка персоны
-    assert.match(plain, /1 Олег\+Пелагея 1900-01-13/); // дефисы: точный ключ свадьбы (вторая fam)
-    assert.match(plain, /1 Олег\+Пелагея 1900-01-01/); // `_`/точки: отображённый fallback (первая fam)
+    // Дефисы совпадают с хранимой датой второй свадьбы и показанной датой первой.
+    assert.equal([...plain.matchAll(/Не удалось найти цитируемую запись/g)].length, 1, plain);
+    assert.doesNotMatch(plain, /1 Олег\+Пелагея 1900-01-13/);
+    // `_` и точки однозначно совпадают только с показанной датой первой свадьбы.
+    assert.equal([...plain.matchAll(/^focus: Олег\+Пелагея 1900-01-01 /gm)].length, 2, plain);
     const tail = plain.slice(plain.lastIndexOf('/Афтгод\n')); // от эха команды, не от console-строки
     assert.match(tail, /Афтгод 1901>/);
     assert.doesNotMatch(tail, /-Афтгод/); // список = тёзки/дубль, а не юбилей
-    console.log('A3 ' + platform + ' REPL keys: AFT/dotted replies, wedding exact-vs-displayed OK');
+    console.log('A3 ' + platform + ' REPL keys: AFT/dotted replies and ambiguous wedding rejection OK');
 }
 console.log('REPL logs: ' + tmp);

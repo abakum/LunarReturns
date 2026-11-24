@@ -3,6 +3,7 @@
 // таблиц (LR_DEV_DB): schema.js и query-билдер работают с ними как есть.
 import fs from 'node:fs';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 const DB_FILE = process.env.LR_DEV_DB || 'dev/tg-db.json';
 const state = { tables: {} };
@@ -57,7 +58,17 @@ const json = (n, o) => new Col(n, o);
 const index = () => new Idx();
 const uniqueIndex = () => new Idx();
 const check = () => new Idx();
-const sql = (strings, ...vals) => ({ __sql: strings.join('?'), __vals: vals });
+const sql = (strings, ...vals) => {
+    let text = strings[0];
+    const params = [];
+    for (let i = 0; i < vals.length; i++) {
+        const val = vals[i];
+        text += (val?.__sql ?? '?') + strings[i + 1];
+        params.push(...(val?.__vals ?? [val]));
+    }
+    return { __sql: text, __vals: params };
+};
+sql.raw = text => ({ __sql: text, __vals: [] });
 
 function table(name, cols, extras) {
     const t = { __name: name };
@@ -71,21 +82,25 @@ function table(name, cols, extras) {
 }
 
 // ---- query builder ----
-const finish = (t, conds) => ({
-    async all() { return rows(t).filter(match(conds)).map(r => ({ ...r })); },
+const project = (r, fields) => fields
+    ? Object.fromEntries(Object.entries(fields).map(([key, col]) => [key, r[col.__prop]]))
+    : { ...r };
+const finish = (t, conds, fields) => ({
+    async all() { return rows(t).filter(match(conds)).map(r => project(r, fields)); },
     async get() { const a = await this.all(); return a.length ? a[0] : null; },
     async values() { const a = await this.all(); return a.map(Object.values); },
 });
 
-const select = () => ({
+const select = fields => ({
     from: t => ({
-        where: (...cs) => finish(t, cs),
-        all: () => finish(t, []).all(),
-        get: () => finish(t, []).get(),
-        values: () => finish(t, []).values(),
+        where: (...cs) => finish(t, cs, fields),
+        all: () => finish(t, [], fields).all(),
+        get: () => finish(t, [], fields).get(),
+        values: () => finish(t, [], fields).values(),
     }),
 });
 
+let patchDb;
 function applyInsert(t, rec) {
     const list = rows(t);
     const conflict = rec.__conflict;
@@ -93,7 +108,15 @@ function applyInsert(t, rec) {
         const props = Array.isArray(conflict.target) ? conflict.target.map(x => x.__prop) : [conflict.target.__prop];
         const found = list.find(r => props.every(p => r[p] === rec[p]));
         if (found) {
-            Object.assign(found, conflict.set);
+            const updates = Object.entries(conflict.set).map(([key, value]) => {
+                if (value?.__sql === undefined) return [key, value];
+                // Evaluate the settings patch against the stored config, using SQLite JSON semantics.
+                patchDb ??= new DatabaseSync(':memory:');
+                const row = patchDb.prepare(`SELECT ${value.__sql} AS value FROM (SELECT ? AS config)`)
+                    .get(...value.__vals, found.config ?? null);
+                return [key, row.value];
+            });
+            Object.assign(found, Object.fromEntries(updates));
             save();
             return { ...found };
         }
@@ -117,16 +140,16 @@ function applyInsert(t, rec) {
 const insert = t => ({
     values(v) {
         const rec = { ...v };
-        const wrap = row => {
+        const wrap = (row, fields) => {
             // .returning().run() — как в реальном sdk: промис с методом run()
-            const p = Promise.resolve([row]);
+            const p = Promise.resolve(row ? [project(row, fields)] : []);
             p.run = () => p;
             return p;
         };
         return {
             onConflictDoUpdate({ target, set }) { rec.__conflict = { target, set }; return this; },
             onConflictDoNothing({ target }) { rec.__ignore = true; rec.__ignoreTarget = target; return this; },
-            returning() { return wrap(applyInsert(t, rec)); },
+            returning(fields) { return wrap(applyInsert(t, rec), fields); },
             async run() { applyInsert(t, rec); return { rowsAffected: 1 }; },
         };
     },

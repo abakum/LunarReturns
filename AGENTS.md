@@ -85,7 +85,7 @@ and true. For the full SDK reference (db, Bot API, fetch), see
 
 | Path                  | What it is                                                        |
 |-----------------------|-------------------------------------------------------------------|
-| `lunarreturns.js`     | VK-бот: логика + транспорт VK, `db.json` рядом (gitignored).      |
+| `lunarreturns.js`     | VK-бот: логика + транспорт VK, `lunarreturns.db` рядом (gitignored). |
 | `function/`           | Функции Yandex Cloud (Python): `handler.py`, `push.py`.            |
 | `deploy.sh`           | Деплой YC-функций (bootstrap/deploy, ротация ключей, таймер).      |
 | `tgcloud/schema.js`   | Схема БД Telegram-бота — таблицы как **именованные экспорты**. Один файл. |

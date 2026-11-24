@@ -8,7 +8,7 @@ import { unzipSync } from 'fflate';
 import { pathToFileURL } from 'node:url';
 const require = createRequire(import.meta.url);
 const { viewerHtml, viewerAnnotations } = require('../tgcloud/lib/viewer.cjs');
-const { viewerEpub, epubChart } = require('../tgcloud/lib/epub.cjs');
+const { viewerWithChart, viewerEpub, zipFiles, checkEpubLimit, epubChart } = require('../tgcloud/lib/epub.cjs');
 const { chartModel, chartSvg } = require('../tgcloud/lib/chart.cjs');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lr-viewer-'));
 const gedcom = `0 HEAD
@@ -171,7 +171,11 @@ const wide = '0 HEAD\n0 @I0@ INDI\n1 NAME Родитель\n1 FAMS @F1@\n'
     + '0 @F1@ FAM\n1 HUSB @I0@\n' + Array.from({ length: 999 }, (_, i) => `1 CHIL @I${i + 1}@\n`).join('') + '0 TRLR';
 fs.writeFileSync(path.join(dir, 'wide.html'), viewerHtml(wide, 'Большая семья', 'I0'));
 fs.writeFileSync(path.join(dir, 'refocus.html'), viewerHtml(wide, 'Большая семья', 'I1'));
-fs.writeFileSync(path.join(dir, 'oversized.html'), viewerHtml(large.replace('0 TRLR', '0 @I10000@ INDI\n1 NAME Лишний\n0 TRLR'), '10 001 персона'));
+const oversized = large.replace('0 TRLR', '0 @I10000@ INDI\n1 NAME Лишний\n0 TRLR');
+assert.doesNotThrow(() => checkEpubLimit(large, 'HTML'));
+assert.throws(() => checkEpubLimit(oversized, 'HTML'), { name: 'RangeError', message: /^HTML: лимит 10000 персон.*10001/ });
+assert.throws(() => checkEpubLimit(oversized), { name: 'RangeError', message: /^EPUB: лимит 10000 персон.*10001/ });
+fs.writeFileSync(path.join(dir, 'oversized.html'), viewerHtml(oversized, '10 001 персона'));
 console.log('viewer generation and escaping: OK');
 const browser = await chromium.launch();
 try {
@@ -429,19 +433,48 @@ try {
     const chartAnnotations = viewerAnnotations(gedcom, chartSnapshot, [], [], false, model);
     assert.ok(chartAnnotations.OUTCHILD.some(row => row.hero));
     assert.ok(chartAnnotations.I1.some(row => row.xref === 'OUT'));
-    fs.writeFileSync(bookPath, unzipSync(viewerEpub(gedcom, title, 'I1', chartAnnotations, { chart: { model } }))[`EPUB/${title}.xhtml`]);
+    const chartHtml = viewerWithChart(gedcom, title, 'I1', chartAnnotations, { chart: { model } });
+    const htmlName = `${title}.html`;
+    const htmlBytes = new TextEncoder().encode(chartHtml);
+    const zip = zipFiles([[htmlName, chartHtml]]);
+    const zipHeader = new DataView(zip.buffer, zip.byteOffset, zip.byteLength);
+    const entries = unzipSync(zip);
+    assert.deepEqual(Object.keys(entries), [htmlName]);
+    assert.deepEqual(entries[htmlName], htmlBytes);
+    assert.equal(zipHeader.getUint16(6, true), 0x0800); // UTF-8 filename
+    assert.equal(zipHeader.getUint16(8, true), 8); // DEFLATE
+    fs.writeFileSync(path.join(dir, htmlName), htmlBytes);
+    const htmlUrl = pathToFileURL(path.join(dir, htmlName)).href;
+    const book = unzipSync(viewerEpub(gedcom, title, 'I1', chartAnnotations, { html: chartHtml }));
+    const xhtml = new TextDecoder().decode(book[`EPUB/${title}.xhtml`]);
+    assert.match(xhtml, /<!DOCTYPE html><html xmlns="http:\/\/www.w3.org\/1999\/xhtml"/);
+    const payload = /<script id="tree-data" type="application\/json">(.*?)<\/script>/s;
+    assert.deepEqual(JSON.parse(xhtml.match(payload)[1].slice(9, -3).replaceAll(']]]]><![CDATA[>', ']]>')),
+        JSON.parse(chartHtml.match(payload)[1]));
+    const lifeView = /<div id="life-view">(.*?)<\/div>/s;
+    assert.equal(xhtml.match(lifeView)[1], chartHtml.match(lifeView)[1]);
+    fs.writeFileSync(bookPath, xhtml);
     for (const count of [0, 1000, 1001]) {
         const chart = await epubChart(() => ({ model: chartModel('Лимит', Array.from({ length: count }, (_, i) => ({
             xref: 'I' + i, name: 'Персона ' + i, birth: '1980-01-01',
         })), []) }));
+        const html = viewerWithChart(gedcom, title, 'I1', annotations, { chart });
         const xhtml = new TextDecoder().decode(unzipSync(viewerEpub(gedcom, title, 'I1', annotations, { chart }))[`EPUB/${title}.xhtml`]);
-        assert.equal(xhtml.includes('id="life-chart"'), count === 1000);
-        assert.equal(xhtml.includes('id="switch-view"'), count === 1000);
-        if (count === 0) assert.match(xhtml, /Нет персон с датами для графика/);
-        if (count === 1001) assert.doesNotMatch(xhtml, /id="chart-notice"|График: лимит 1000/);
+        for (const markup of [html, xhtml]) {
+            assert.equal(markup.includes('id="life-chart"'), count === 1000);
+            assert.equal(markup.includes('id="switch-view"'), count === 1000);
+            if (count === 0) assert.match(markup, /Нет персон с датами для графика/);
+            if (count === 1001) assert.doesNotMatch(markup, /id="chart-notice"|График: лимит 1000/);
+        }
     }
     const bookUrl = pathToFileURL(bookPath).href;
     const noScript = await browser.newPage({ javaScriptEnabled: false, offline: true, viewport: { width: 390, height: 700 } });
+    await noScript.goto(htmlUrl);
+    assert(await noScript.locator('noscript').isVisible());
+    assert.match(await noScript.locator('noscript').textContent(), /JavaScript.*браузере/);
+    assert.doesNotMatch(await noScript.locator('body').textContent(), /Readium|Thorium Reader|распакуйте EPUB/);
+    assert(await noScript.locator('#life-chart').isVisible());
+    assert(await noScript.locator('#tree').isHidden());
     await noScript.goto(bookUrl);
     const fallback = noScript.getByRole('status');
     assert(await fallback.isVisible());
@@ -468,6 +501,30 @@ try {
     assert(await noScript.locator('#annotation').isHidden());
     assert(await noScript.locator('#tree').isHidden());
     await noScript.close();
+
+    const standalone = await browser.newPage({ offline: true });
+    const external = [], errors = [];
+    standalone.on('request', request => { if (/^https?:/.test(request.url())) external.push(request.url()); });
+    standalone.on('pageerror', error => errors.push(error.message));
+    await standalone.goto(htmlUrl);
+    const standaloneSearch = standalone.getByRole('combobox');
+    await standaloneSearch.fill('Мать');
+    await standalone.getByRole('option', { name: 'Мать Тест (I3)' }).click();
+    assert.match(standalone.url(), /#person=I3$/);
+    await standalone.getByRole('button', { name: /Роспись: Мать/ }).first().click();
+    assert.match(await standalone.locator('#annotation strong').textContent(), /Мать Тест/);
+    await standalone.getByRole('button', { name: 'График' }).click();
+    assert(await standalone.locator('#tree').isHidden());
+    assert(await standalone.locator('#life-chart').isVisible());
+    await standalone.locator('[data-bar][data-xref="I1"]').press('Enter');
+    assert.match(await standalone.locator('#annotation strong').textContent(), /Иван Тест/);
+    await standalone.getByRole('button', { name: 'Древо' }).click();
+    assert(await standalone.locator('#life-chart').isHidden());
+    assert(await standalone.locator('#tree').isVisible());
+    assert.deepEqual(external, []);
+    assert.deepEqual(errors, []);
+    await standalone.close();
+    console.log('Standalone HTML file:// offline, ZIP payload, tree search and chart annotations: OK');
 
     const reader = await browser.newPage({ offline: true, hasTouch: true, viewport: { width: 390, height: 600 } });
     await reader.addInitScript(() => {

@@ -47,14 +47,17 @@ function anchor(log) {
     return hit[1];
 }
 
-function run(platform, name, commands) {
+function run(platform, name, commands, date) {
     const base = path.join(tmp, `${platform}-${++sequence}-${name}`);
     const trace = base + '.jsonl';
     const env = { ...process.env, TMPDIR: tmp, LR_DEV_DB: base + '.json', LR_DB: base + '.db',
         LR_VK_TRACE: trace, LR_VKOFF: String(11000 + process.pid % 20000 + sequence) };
     const input = [...commands, ...(platform === 'vk' ? ['!wait 2500'] : [])].join('\n') + '\n';
+    // VK's !date does not reach the shared religious calendar. Pin both REPL clocks.
+    const clock = date ? ['--import', 'data:text/javascript,' + encodeURIComponent(
+        `const realNow = Date.now; const offset = Date.parse('${date}T06:00:00Z') - realNow(); Date.now = () => realNow() + offset;`)] : [];
     const result = spawnSync(process.execPath,
-        [platform === 'tg' ? 'dev/repl.mjs' : 'dev/vk-repl.mjs', '--fresh', ...(platform === 'tg' ? ['--private'] : [])],
+        [...clock, platform === 'tg' ? 'dev/repl.mjs' : 'dev/vk-repl.mjs', '--fresh', ...(platform === 'tg' ? ['--private'] : [])],
         { cwd: root, env, input, encoding: 'utf8', timeout: 180000, maxBuffer: 32 * 1024 * 1024 });
     const log = (result.stdout || '') + (result.stderr || '');
     fs.writeFileSync(base + '.log', log);
@@ -82,16 +85,17 @@ function run(platform, name, commands) {
         }
     }
     for (const [i, file] of files.entries()) fs.writeFileSync(base + '-export-' + i + '-' + file.name.replace(/[/\\]/g, '_'), file.bytes);
-    let tree;
+    let tree, sent;
     if (platform === 'tg') {
         const data = JSON.parse(fs.readFileSync(base + '.json', 'utf8'));
         tree = Object.fromEntries(['indi', 'fam', 'chil', 'edges'].map(t => [t, data[t] || []]));
     } else {
         const db = new DatabaseSync(base + '.db');
         tree = Object.fromEntries(['indi', 'fam', 'chil', 'links'].map(t => [t, db.prepare('SELECT * FROM ' + t).all()]));
+        if (date) sent = db.prepare('SELECT key FROM sent ORDER BY key').all().map(r => r.key);
         db.close();
     }
-    return { log, files, output: messages(log), tree };
+    return { log, files, output: messages(log), tree, sent };
 }
 
 function exported(result, suffix) {
@@ -213,7 +217,7 @@ try {
         assert.match(last(commandBell), /ExactChild 1980-03-01/);
         assert.doesNotMatch(last(commandBell), /ApproxPrimary/);
         const commandGed = run(platform, 'ged-command', [...setup, reply + '/gedcom5']);
-        const buttonGed = run(platform, 'ged-button', [...setup, button(probe.log, '🧬')]);
+        const buttonGed = run(platform, 'ged-button', [...setup, '/gedcom1', button(probe.log, '🧬')]);
         const commandData = exported(commandGed, '.ged');
         assert.equal(commandData, exported(buttonGed, '.ged'), platform + ': clipped command/button GED');
         assert.match(commandData, /1 NAME ExactSecondary/);
@@ -272,10 +276,8 @@ try {
             `!txt ${romanovPath} >${branchMessage.id}`, '>' + heroId + ' /links', '>' + heroId + ' /bell5']);
         assert.match(romanovGraft.log, /ветвь срезана/);
         assert.ok(romanovGraft.output.some(m => m.text === branchMessage.text), platform + ': Romanov branch round trip');
-        // Use today's Moscow month/day so TG needs no harness clock patch.
-        const today = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10);
-        const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-        const date = Number(today.slice(8)) + ' ' + months[Number(today.slice(5, 7)) - 1] + ' 2000';
+        const today = '2026-01-07'; // Orthodox Christmas in Moscow.
+        const date = '7 JAN 2000';
         const dailyGed = ged([{ name: 'DailySecondary', date, death: true },
             { name: 'DailyPrimary', date: 'ABT ' + date }]).replace('ABT 1 JAN 2020', 'EST 1 JAN 2020')
             .replace('0 TRLR', [
@@ -285,12 +287,35 @@ try {
                 '1 DIV', '2 DATE EST 1 JAN 2020', '0 TRLR',
             ].join('\\n'));
         const dailyCommands = platform === 'tg' ? ['/today'] : ['!date ' + today + ' 9', '!daily'];
-        const daily = run(platform, 'today-secondary', [dailyGed, ...dailyCommands]);
-        const dailyText = daily.output.map(m => m.text).join('\n');
-        assert.match(dailyText, /DailySecondary 2000-\d{2}-\d{2} 2020-01-01~/);
-        assert.match(dailyText, /DailyHusband\+DailyWife 2000-\d{2}-\d{2} 2020-01-01~/);
-        assert.doesNotMatch(dailyText, /DailyPrimary/);
-        console.log(platform + ': exact bell, secondary uncertainty, radius clipping, long bell, full branch files, graft and today OK');
+        const menu = platform === 'tg' ? '/start' : '/';
+        const orthProbe = run(platform, 'daily-orth-menu', [dailyGed, menu], today);
+        const orth = button(orthProbe.log, '☦️🔕');
+        const digest = 'Православные: Рождество Христово';
+        for (const [name, switches, anniversaries, religious] of [
+            ['default', [], true, false],
+            ['muted', ['/bell0'], false, false],
+            ['orth-only', [orth, orth, '/bell0'], false, true],
+            ['restored', [orth, orth, '/bell0', '/bell1'], true, true],
+        ]) {
+            const daily = run(platform, 'daily-' + name, [dailyGed, menu, ...switches, ...dailyCommands], today);
+            const boundary = daily.log.lastIndexOf(platform === 'tg' ? '    /today\n' : '«сегодня» = ' + today);
+            assert.ok(boundary >= 0, daily.log);
+            const notifications = /Daily(?:Secondary|Primary|Husband\+DailyWife)|^Православные:/m;
+            assert.ok(messages(daily.log.slice(0, boundary)).every(m => !notifications.test(m.text)), daily.log);
+            const dailyOutput = messages(daily.log.slice(boundary));
+            const text = dailyOutput.map(m => m.text).join('\n');
+            if (anniversaries) {
+                for (const label of [/DailySecondary 2000-01-07 2020-01-01~/g, /DailyHusband\+DailyWife 2000-01-07 2020-01-01~/g]) {
+                    assert.equal([...text.matchAll(label)].length, 1, daily.log);
+                }
+            } else assert.doesNotMatch(text, /DailySecondary|DailyHusband\+DailyWife/, daily.log);
+            assert.doesNotMatch(text, /DailyPrimary/, daily.log);
+            assert.equal(text.split('\n').includes(digest), religious, daily.log);
+            if (!anniversaries && !religious) assert.deepEqual(dailyOutput, [], daily.log);
+            if (platform === 'vk') assert.deepEqual(daily.sent, anniversaries
+                ? ['DailyHusband+DailyWife 2000-01-07', 'DailySecondary 2000-01-07'] : [], daily.log);
+        }
+        console.log(platform + ': command/button parity, full branches, graft, daily bell switches and independent Orthodox digest OK');
     }
 } finally {
     console.log('Command/button REPL logs and exports: ' + tmp);

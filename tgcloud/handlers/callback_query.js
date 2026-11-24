@@ -1,6 +1,6 @@
 import { api, db, InputFile } from 'sdk';
 import { and, eq } from 'sdk/db';
-import { settings, gedDrops, focusView } from '../schema.js';
+import { gedDrops, focusView } from '../schema.js';
 import { jubileeText } from '../lib/text.js';
 import { normalizeFocusRadius, focusListMessage } from '../lib/tree.cjs';
 import { parseGedcom, parseTree, trimImport } from '../lib/parse.cjs';
@@ -8,14 +8,14 @@ import { fileBaseOf } from '../lib/chart.cjs';
 import { sendFlatPack } from '../lib/bot.js';
 import { REL_DEFS, religiousYear } from '../lib/religion.cjs';
 import {
-    HELP, helpText, GED_TTL, relMarkup, getSettings, startMarkup, chatAdmin, jubileeMarkup,
+    HELP, helpText, GED_TTL, relMarkup, getSettings, patchSetting, startMarkup, chatAdmin, jubileeMarkup,
     recordOf, recordByXref, sendLong,
     deleteEventCascade, replaceWithGedcom, clearChatTree,
     linkPairs, personRows, weddingRows, sendTreeBackup,
     NOT_FOR_GRAFT, cutLines,
     upcomingText, mmddToday, focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText,
     focusWithSpouses, focusListKeys, focusSpousePairs, focusListText, focusDepth, sendGedPdf,
-    applyTree, cutAndGraft, treeReport, hasTree,
+    applyTree, cutAndGraft, treeReport, chatFlatText,
 } from '../lib/bot.js';
 
 export default async function (cq, ctx) {
@@ -70,23 +70,15 @@ export default async function (cq, ctx) {
 
     if (data.startsWith("rel:")) {
         const key = data.slice(4);
-        if (!REL_DEFS[key]) { await answer(); return; }
+        if (!Object.hasOwn(REL_DEFS, key)) { await answer(); return; }
         const head = REL_DEFS[key].icon + " " + REL_DEFS[key].name + " дни";
         // календарь уже показан в этом сообщении (заголовок совпадает) — toggle,
         // иначе первый тап: показать календарь (как в VK-боте)
         const cur = cq.message?.text;
         const shown = cur !== undefined && cur.split("\n", 1)[0] === head;
         if (shown) {
-            const row = await db.select().from(settings).where(eq(settings.chatId, chatId)).get();
-            const curVal = row ? row[key] : false;
-            if (row) {
-                await db.update(settings).set({ [key]: !curVal }).where(eq(settings.chatId, chatId)).run();
-            } else {
-                const vals = { chatId };
-                vals[key] = true;
-                await db.insert(settings).values(vals).run();
-            }
-            await answer((!curVal ? "🔔 " : "🔕 ") + key);
+            const enabled = await patchSetting(chatId, key);
+            await answer((enabled ? "🔔 " : "🔕 ") + key);
         } else {
             await answer("календарь на год");
         }
@@ -257,18 +249,19 @@ export default async function (cq, ctx) {
         return;
     }
 
-    // 🧬 — гедком-древо чата (как /gedcom); /start править нельзя — тост.
-    // «🧬⏳» на сообщении (клавиатура остаётся), прицепы — медиа-группой
-    // ответом на это сообщение; по готовности — «🧬»
+    // 🧬 — роспись всего чата, включая персоны без связей.
     if (data === "tree") {
-        if (!(await hasTree(chatId))) {
-            await answer("связей пока нет");
-            return;
-        }
-        await answer("гедком-древо чата");
         const kb = cq.message.reply_markup;
-        await editText("🧬⏳", kb);
-        await sendGedPdf(chatId, undefined, "🧬 Гедком-древо чата", null, cq.message.message_id, kb);
+        try {
+            const pack = await chatFlatText(chatId);
+            if (!pack.trim()) { await answer("древо пусто"); return; }
+            await answer("древо чата");
+            await sendGedPdf(chatId, undefined, "Древо чата", null, pack,
+                await getSettings(chatId), cq.message.message_id, kb);
+        } catch (e) {
+            console.error("DNA export:", e);
+            await editText("💥 Не удалось подготовить древо. Попробуйте ещё раз.", kb);
+        }
         return;
     }
 
@@ -287,9 +280,8 @@ export default async function (cq, ctx) {
         const byFull = false;
         if (selectRadius)
             await db.update(focusView).set({ radius }).where(eq(focusView.id, row.id)).run();
-        await answer(data === "focbell" ? "список " + focusLabel(radius)
-            : (data === "foctree" ? "древо " + focusLabel(radius)
-                : (data === "focflat" ? "пачка ветви " : "") + focusLabel(radius)));
+        if (data !== "foctree") await answer(data === "focbell" ? "список " + focusLabel(radius)
+            : (data === "focflat" ? "пачка ветви " : "") + focusLabel(radius));
         const head = focusHead(row.pkey, radius, rec.dd);
         if (selectRadius) {
             await editText(head, focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth, fxref));
@@ -317,16 +309,17 @@ export default async function (cq, ctx) {
             await editText(text, kb);
             return;
         }
-        // 🧬 в радиусе: <имя>.ged + <имя>.pdf (родство к герою); клавиатура
-        // передаётся в правку (роспись <4000 правит текст сообщения)
+        // 🧬 в радиусе: полная роспись выбранной родни и включённые файлы.
         if (data === "foctree") {
             const kb = cq.message.reply_markup;
-            await api.editMessageText({ chat_id: chatId, message_id: cq.message.message_id,
-                text: head + "\n🧬⏳", reply_markup: kb }).catch(e => console.error("DNA loading:", e.message));
             try {
                 const keys = focusListKeys(pairs, spPairs, row.pkey, radius, await sexOf(), false);
-                await sendGedPdf(chatId, keys, head, row.pkey, cq.message.message_id,
-                    focusMarkup(cq.message.chat, chatId, await getSettings(chatId), radius, depth, fxref));
+                const pack = keys.length ? await chatFlatText(chatId, keys) : '';
+                if (!pack.trim() || pack.trim() === NOT_FOR_GRAFT) { await answer("древо пусто"); return; }
+                await answer("древо " + focusLabel(radius));
+                const s = await getSettings(chatId);
+                await sendGedPdf(chatId, keys, head, row.pkey, pack, s, cq.message.message_id,
+                    kb ?? focusMarkup(cq.message.chat, chatId, s, radius, depth, fxref));
             } catch (e) {
                 console.error("DNA export:", e);
                 await editText(head + "\n💥 Не удалось подготовить древо. Попробуйте ещё раз.", kb);

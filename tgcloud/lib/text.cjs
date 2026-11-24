@@ -18,7 +18,9 @@ const HELP = "Отправьте событие, покажу лунно-сол�
     + "Цифры задают радиус родни для 🔔 и 🧬; -+= выводит всю ветвь потомков.\n\n"
     + "/today — события сегодня (МСК).\n"
     + "/bell — список событий, /gedcom — древо: в ответ на событие — родня героя, без ответа — весь чат. /bell2 и /gedcom2 — радиус 2.\n"
-    + "/epub и /pdf — древо одним файлом. В ответ на фокус /gedcom, /epub и /pdf берут радиус из заголовка, иначе 1; суффикс 1–5 задаёт радиус явно.\n"
+    + "/bell0 и /bell1 без ответа выключают и включают ежедневные оповещения о годовщинах, не затрагивая религиозные дни и список 🔔.\n"
+    + "/epub, /pdf и /html — древо одним файлом. В ответ на фокус /gedcom, /epub, /pdf и /html берут радиус из заголовка, иначе 1; суффикс 1–5 в ответе задаёт радиус явно.\n"
+    + "🧬 по умолчанию показывает только роспись. Без ответа /gedcom1, /pdf1, /epub1 и /html1 добавляют файлы к 🧬; суффикс 0 отключает формат.\n"
     + "/links — родословная роспись: в ответ — ветвь героя, без ответа — весь чат.\n"
     + "/fynny0 — обычные названия родства, /fynny1 — цепочки (fynny=0).\n"
     + "/trim1 — импорт .ged/.ged.txt: инициалы, без мест и примечаний; /trim0 — полные данные (trim=0).\n"
@@ -81,10 +83,18 @@ function resolveReplyRecord(records, text, bot = false, context = null) {
     return rec;
 }
 
-const TREE_EXPORT_COMMAND = /^\/(gedcom|epub|pdf)([1-5])?(?:@\S+)?$/i;
+const TREE_EXPORT_COMMAND = /^\/(gedcom|epub|pdf|html)([1-5])?(?:@\S+)?$/i;
+const CHAT_SWITCH_COMMAND = /^\/(gedcom|pdf|epub|html|bell)([01])(?:@[a-z0-9_]+)?$/i;
+const CHAT_SWITCH_REPLY_ERROR = 'Отправьте переключатель без ответа на сообщение.';
+
+function chatSwitchText(key, enabled) {
+    if (key === 'bell') return 'Ежедневные оповещения о годовщинах ' + (enabled ? 'включены.' : 'выключены.');
+    return '🧬 ' + key.toUpperCase() + ': ' + (enabled ? 'включён.' : 'выключен.');
+}
 
 function exportReplyRadius(suffix, botReplyText) {
     return Number(suffix || /^([1-5]) /.exec(botReplyText ?? '')?.[1] || 1);
 }
 
-module.exports = { REPLY_TARGET_ERROR, HELP, helpText, approxOut, eventDate, findShownRecord, replyHeader, resolveReplyRecord, TREE_EXPORT_COMMAND, exportReplyRadius };
+module.exports = { REPLY_TARGET_ERROR, HELP, helpText, approxOut, eventDate, findShownRecord, replyHeader, resolveReplyRecord,
+    TREE_EXPORT_COMMAND, exportReplyRadius, CHAT_SWITCH_COMMAND, CHAT_SWITCH_REPLY_ERROR, chatSwitchText };

@@ -1,17 +1,18 @@
 // Общий код TG-бота: настройки, клавиатуры, тексты «сегодня»/«список».
 import { db, api } from 'sdk';
-import { and, eq, or, inArray } from 'sdk/db';
+import { and, eq, or, inArray, sql } from 'sdk/db';
 import { indi, fam, chil, edges, settings, focusView } from '../schema.js';
 import { mskToday } from './astro.cjs';
 import { kinLabel, fynny } from './kinship.cjs';
 import { REL_DEFS, religiousDigest } from './religion.cjs';
+import { normalizeSettings, settingPatch } from './settings.cjs';
 import { jubileeText, approxOut } from './text.js';
 import { findShownRecord, REPLY_TARGET_ERROR } from './text.cjs';
 import { graftError } from './flat.cjs';
 import { localRecord, mskGedcom } from './event-time.cjs';
 import { viewerAnnotations } from './viewer.cjs';
 import { createPdfAnnotationText, pdfPersonMetadata } from './annotations.cjs';
-import { viewerEpub, EPUB_TYPE, epubBase, checkEpubLimit, epubChart } from './epub.cjs';
+import { viewerWithChart, viewerEpub, EPUB_TYPE, epubBase, checkEpubLimit, epubChart } from './epub.cjs';
 import { chatFlatArtifacts, gedNoteLines, gedText, gedFictiveDates, trimImport } from './parse.cjs';
 import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText, isExactEvent } from './tree.cjs';
 // фокус-список (focusListText) — канон tree.cjs (с A3): реэкспорт — точки
@@ -30,18 +31,24 @@ export { HELP, helpText } from './text.cjs';
 // сколько живёт «Да/Нет»-вопрос на дроп .ged-файла (час)
 export const GED_TTL = 3600000;
 
-const DEFAULT_SETTINGS = { orth: false, islam: false, bud: false, cath: false, jud: false, bell: true, fynny: false, trim: false };
-
 export async function getSettings(chatId) {
-    const row = await db.select().from(settings).where(eq(settings.chatId, chatId)).get();
-    const normalized = { chatId, ...row };
-    for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) normalized[key] ??= value;
-    return normalized;
+    const row = await db.select({ config: settings.config }).from(settings).where(eq(settings.chatId, chatId)).get();
+    return { chatId, ...normalizeSettings(row?.config) };
+}
+
+export async function patchSetting(chatId, key, value) {
+    const { initial, expression, params } = settingPatch(key, value);
+    const parts = expression.split('?').map(part => sql.raw(part));
+    const config = params.reduce((expr, param, i) => sql`${expr}${param}${parts[i + 1]}`, parts[0]);
+    const [row] = await db.insert(settings).values({ chatId, config: initial })
+        .onConflictDoUpdate({ target: settings.chatId, set: { config } })
+        .returning({ config: settings.config }).run();
+    return normalizeSettings(row.config)[key];
 }
 
 // inline-клавиатура настроек (личка): 🗑 (удалить всё) + колокольчик (список) + религии (🔔/🔕) + ❌
 // раскладка как в VK relKeyboard: [🗑, 🔔, orth, islam] / [bud, cath, jud, ❌];
-// колокольчик всегда 🔔 (подписки больше нет — список всегда «от сегодня»)
+// колокольчик всегда 🔔: ручной список не зависит от подписки на годовщины.
 export function relMarkup(chatId, s) {
     const btn = (text, data) => ({ text, callback_data: data });
     const rel = key => btn(REL_DEFS[key].icon + (s[key] ? "🔔" : "🔕"), "rel:" + key);
@@ -930,12 +937,14 @@ export async function deleteEventCascade(chatId, key) {
 
 // события чата на сегодня (МСК) + религиозный дайджест; "" — ничего
 export async function todayText(chatId) {
-    const [, mo, d] = mskToday();
-    const mmdd = String(mo).padStart(2, "0") + "-" + String(d).padStart(2, "0");
-    const rows = [...await personRows(chatId), ...await weddingRows(chatId)]
-        .filter(r => isExactEvent(r) && r.d.slice(5) === mmdd);
-    const parts = rows.map(r => jubileeText(r, ""));
-    const digest = religiousDigest(await getSettings(chatId));
+    const s = await getSettings(chatId);
+    const parts = [];
+    if (s.bell) {
+        const mmdd = mmddToday();
+        const rows = [...await personRows(chatId), ...await weddingRows(chatId)];
+        for (const r of rows) if (isExactEvent(r) && r.d.slice(5) === mmdd) parts.push(jubileeText(r, ""));
+    }
+    const digest = religiousDigest(s);
     if (digest) parts.push(digest);
     return parts.join("\n\n");
 }
@@ -1401,7 +1410,7 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
     return diagnose ? chart : { pdf: await chart.renderPdf(), persons: chart.persons };
 }
 
-async function prepareChart(chatId, keys, title, heroKey, range, diagnose = false) {
+async function prepareChart(chatId, keys, title, heroKey, range, diagnose = false, fynnySetting) {
     const snapshot = await flatRows(chatId);
     const pairs = await linkPairs(chatId), spousePairs = await focusSpousePairs(chatId);
     const xOf = new Map(snapshot[0].filter(p => p.d != null).map(p => [p.name + " " + p.d, p.key]));
@@ -1464,7 +1473,7 @@ async function prepareChart(chatId, keys, title, heroKey, range, diagnose = fals
     const rel = hero ? {
         hero,
         range,
-        fynny: (await getSettings(chatId)).fynny,
+        fynny: fynnySetting ?? (await getSettings(chatId)).fynny,
         pairs: pairs.map(([p, c]) => [ckey(p), ckey(c)]),
         spouses: [...spousePairs.map(sp => sp.map(ckey)), ...stubSpouses],
         sex: Object.fromEntries([...(await personRows(chatId)).map(r => [pkey(r), r.sex || null]),
@@ -1510,21 +1519,13 @@ async function prepareChart(chatId, keys, title, heroKey, range, diagnose = fals
     }
     const model = chartModel(title, rows, links, { ...rel, phantoms }, marriages);
     return { model, persons: rows.length, async renderPdf() {
-        const annotationText = createPdfAnnotationText(snapshot, pairs, spousePairs, rel?.fynny ?? (await getSettings(chatId)).fynny);
+        const annotationText = createPdfAnnotationText(snapshot, pairs, spousePairs,
+            rel?.fynny ?? fynnySetting ?? (await getSettings(chatId)).fynny);
         const metadata = pdfPersonMetadata(snapshot, heroKey, xOf.get(heroKey), range);
         return chartPdf(title, rows, links, chartFont(), rel, marriages, annotationText, metadata, model);
     } };
 }
 
-// тап 🧬 / «/gedcom» / «/gedcomN»: <имя>.ged всегда, <имя>.pdf (диаграмма,
-// имя из заголовка fileBaseOf); heroKey — pkey героя для колонки «Связь год»;
-// неудача выкладки — только сообщение об ошибке, гедком текстом не дублируем
-// Радиусный вызов (keys — ромб родни: тап 🧬 на фокусе и /gedcomN в ответ
-// на триггер): третий файл <имя>.ged.txt — роспись того же радиуса
-// (chatFlatText по keys): форма «-+=», но не только вниз — и вверх, и вниз,
-// в пределах радиуса; всему древу чата росписи нет (его «-+=» и так весь).
-// markup — клавиатура, которую надо сохранить при правке текста росписью
-// (editMessageText без reply_markup в TG клавиатуру снимает)
 export async function sendGedcom(chatId, keys, head, replyTo) {
     const reply_parameters = { message_id: replyTo, allow_sending_without_reply: true };
     try {
@@ -1552,131 +1553,107 @@ export async function sendPdf(chatId, head, heroKey, radius, replyTo) {
     }
 }
 
-export async function sendEpub(chatId, keys, head, heroKey, heroXref, replyTo) {
+const exportChart = (chatId, head, heroKey, radius, s) => epubChart(async () => {
+    // PDF and SVG use the same chart candidates; viewer GEDCOM uses the list keys.
+    const keys = heroKey ? focusKeys(await linkPairs(chatId), heroKey, radius, await focusSpousePairs(chatId)) : undefined;
+    return prepareChart(chatId, keys, head.replace(/^\d\s+/, ''), heroKey, radius, false, s.fynny);
+});
+
+async function exportViewer(chatId, g, heroKey, heroXref, radius, s, chart) {
+    const title = epubBase(heroKey, radius);
+    const annotations = viewerAnnotations(g, await flatRows(chatId), await linkPairs(chatId),
+        await focusSpousePairs(chatId), s.fynny, chart.model);
+    const html = viewerWithChart(g, title, heroXref, annotations, { chart });
+    return format => format === 'html'
+        ? new InputFile(new TextEncoder().encode(html), title + '.html', { type: 'text/html' })
+        : new InputFile(viewerEpub(g, title, heroXref, annotations, { heroKey, radius, html }),
+            title + '.epub', { type: EPUB_TYPE });
+}
+
+export async function sendViewer(format, chatId, keys, head, heroKey, heroXref, replyTo) {
     const reply_parameters = { message_id: replyTo, allow_sending_without_reply: true };
+    const label = format.toUpperCase();
     try {
         const g = await gedcomText(chatId, keys);
-        checkEpubLimit(g);
+        checkEpubLimit(g, label);
         const radius = parseInt(head, 10) || 1;
-        const title = epubBase(heroKey, radius);
-        const chart = await epubChart(async () => prepareChart(chatId,
-            heroKey ? focusKeys(await linkPairs(chatId), heroKey, radius, await focusSpousePairs(chatId)) : undefined,
-            head.replace(/^\d\s+/, ''), heroKey, radius));
-        const annotations = viewerAnnotations(g, await flatRows(chatId), await linkPairs(chatId),
-            await focusSpousePairs(chatId), (await getSettings(chatId)).fynny, chart.model);
-        const epub = viewerEpub(g, title, heroXref, annotations, { heroKey, radius, chart });
-        await api.sendDocument({ chat_id: chatId, reply_parameters, caption: head,
-            document: new InputFile(epub, title + '.epub', { type: EPUB_TYPE }) });
+        const s = await getSettings(chatId);
+        const chart = await exportChart(chatId, head, heroKey, radius, s);
+        const documentFor = await exportViewer(chatId, g, heroKey, heroXref, radius, s, chart);
+        await api.sendDocument({ chat_id: chatId, reply_parameters, caption: head, document: documentFor(format) });
     } catch (e) {
-        console.error('epub:', e.message);
+        console.error(format + ':', e.message);
         await api.sendMessage({ chat_id: chatId, reply_parameters,
-            text: e.message.startsWith('EPUB: лимит ') ? e.message : 'Не удалось выгрузить EPUB.' });
+            text: e.message.startsWith(label + ': лимит ') ? e.message : 'Не удалось выгрузить ' + label + '.' });
     }
 }
 
-export async function sendGedPdf(chatId, keys, head, heroKey = null, replyTo = 0, markup = undefined) {
-    // заголовок чарта без цифры радиуса;
-    // цифра → range героя для chartFor
-    const head0 = head || "Гедком-древо";
-    const chartHead = head0.replace(/^\d\s+/, "");
-    const rm = /^(\d)\s/.exec(head0);
-    const base = fileBaseOf(head0);
-    // радиусная кнопка 🧬: роспись радиуса — chatFlatText по keys;
-    // она идёт только файлом (роспись <4000 — текстом правки сообщения)
-    let packFinal = null;
-    try {
-        const g = await gedcomText(chatId, keys);
-        const pack = Array.isArray(keys) && keys.length ? await chatFlatText(chatId, keys) : "";
-        const enc = new TextEncoder();
-        // BOM — чтобы Windows-редакторы открывали роспись как UTF-8;
-        // роспись <4000: правим сообщение с 🔗/🧬-кнопками — текст = роспись
-        // (клавиатура сообщения сохраняется), документы отправляем по готовности
-        const packFits = !!pack && (heroKey ? head.length + 1 : 0) + pack.length + "\n⏳".length < 4000;
-        if (pack && !packFits && heroKey && replyTo) {
-            const lines = pack.split("\n").filter((l, i) => !(i === 0 && l.trim().toLowerCase().startsWith(NOT_FOR_GRAFT.toLowerCase())));
-            const inner = cutLines(lines.join("\n"), 4000, head.length + 1 + NOT_FOR_GRAFT.length + 1);
-            packFinal = head + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️";
-            await api.editMessageText({ chat_id: chatId, message_id: replyTo,
-                text: packFinal + "⏳", ...(markup !== undefined ? { reply_markup: markup } : {}) });
-        }
-        if (packFits && replyTo) {
-            packFinal = heroKey ? head + "\n" + pack : pack;
-            await api.editMessageText({
-                chat_id: chatId, message_id: replyTo, text: packFinal + "\n⏳",
-                ...(markup !== undefined ? { reply_markup: markup } : {}),
-            });
-        }
-        const errors = [];
-        const sendFile = async (bytes, ext, type, name = base + ext) => {
-            try {
-                await api.sendDocument({ chat_id: chatId,
-                    document: new InputFile(bytes, name, { type }),
-                    caption: head,
-                    ...(replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
-                });
-            } catch (e) {
-                console.error("sendDocument:", name, e.message);
-                errors.push(name + ": " + e.message);
-            }
-        };
-        await sendFile(enc.encode(g), ".ged", "text/plain");
-        if (pack && !packFits) await sendFile(enc.encode("\uFEFF" + pack), ".ged.txt", "text/plain");
-        // Готовые текстовые файлы уже доступны; часы остаются до завершения PDF.
-        const chart = await epubChart(async () => {
-            const chartKeys = heroKey && rm
-                ? focusKeys(await linkPairs(chatId), heroKey, Number(rm[1]), await focusSpousePairs(chatId)) : keys;
-            return prepareChart(chatId, chartKeys, chartHead, heroKey, rm ? Number(rm[1]) : null);
-        });
-        let pdf = null, persons = 0, chartErr = null;
+export async function sendGedPdf(chatId, keys, head, heroKey, pack, s, replyTo, markup) {
+    const reply_parameters = { message_id: replyTo, allow_sending_without_reply: true };
+    const edit = text => api.editMessageText({ chat_id: chatId, message_id: replyTo, text, reply_markup: markup });
+    const notice = text => api.sendMessage({ chat_id: chatId, reply_parameters, text }).catch(e => console.error('DNA notice:', e.message));
+    const enc = new TextEncoder();
+    const base = fileBaseOf(head);
+    const radius = heroKey ? parseInt(head, 10) || 1 : null;
+    const max = 4000;
+    const suffix = '\n✂️⏳';
+    const maxHead = max - suffix.length - NOT_FOR_GRAFT.length - 1;
+    const prefix = !heroKey ? '' : (head.length <= maxHead ? head : head.slice(0, maxHead - 1) + '…') + '\n';
+    const overflow = prefix.length + pack.length + '\n⏳'.length > max;
+    const preview = overflow ? (prefix + cutLines(pack, max, prefix.length + suffix.length, false)).trimEnd() : prefix + pack;
+    const finalText = overflow ? (preview ? preview + '\n' : '') + '✂️' : preview;
+    const errors = [];
+    const send = async (label, make) => {
         try {
-            chartErr = chart.error?.message.replace(/^chart:\s*/, "") ?? null;
-            if (chart.model) {
-                pdf = await chart.renderPdf();
-                persons = chart.persons;
-            }
-        } catch (e) { chartErr = e.message.replace(/^chart:\s*/, ""); console.error("chart:", e.message); }
-        if (chartErr && !chartErr.includes("персоны пусты")) {
-            const notice = "Диаграмма не построена: " + chartErr;
-            try { await api.sendMessage({ chat_id: chatId, text: "💥 " + notice }); }
-            catch (e) { console.error("ged chart notice:", e.message); errors.push(notice); }
-        }
-        if (pdf) await sendFile(Uint8Array.from(pdf, c => c.charCodeAt(0)), ".pdf", "application/pdf");
-        const radius = parseInt(head0, 10) || 1;
-        const epubTitle = epubBase(heroKey, radius);
-        try {
-            checkEpubLimit(g);
-            const hero = heroKey ? (await personRows(chatId)).find(r => pkey(r) === heroKey) : null;
-            const heroXref = hero && g.split("\n").includes("0 @" + hero.xref + "@ INDI") ? hero.xref : null;
-            const annotations = viewerAnnotations(g, await flatRows(chatId), await linkPairs(chatId),
-                await focusSpousePairs(chatId), (await getSettings(chatId)).fynny, chart.model);
-            await sendFile(viewerEpub(g, epubTitle, heroXref, annotations, { heroKey, radius, chart }), ".epub", EPUB_TYPE, epubTitle + ".epub");
+            const document = await make();
+            if (document) await api.sendDocument({ chat_id: chatId, reply_parameters, caption: head.slice(0, 1024), document });
         } catch (e) {
-            console.error("viewer:", e.message);
-            errors.push(epubTitle + ".epub: " + e.message);
+            console.error('DNA ' + label + ':', e.message);
+            errors.push(e.message.startsWith(label + ': лимит ') ? e.message : label);
         }
-        const errorText = errors.length ? "\n💥 Не удалось выложить файлы:\n" + errors.join("\n") : "";
-        if (replyTo) await api.editMessageText({ chat_id: chatId, message_id: replyTo,
-            text: (packFinal || (heroKey ? head : "🧬")) + errorText, ...(markup !== undefined ? { reply_markup: markup } : {}) });
-        else if (errors.length) await api.sendMessage({ chat_id: chatId, text: errorText.trim() });
-        console.log("ged artifacts: " + base + ".ged" + (pdf ? " + " + base + ".pdf (" + persons + " персон)" : "")
-            + (pack ? (packFits ? " (пачка текстом в ответе)" : " + " + base + ".ged.txt") : ""), "chat", chatId);
-        // бездатное древо — PDF нет по построению («chart: персоны пусты»),
-        // это не ошибка, алерта не шлём
-        return;
-    } catch (e) {
-        console.error("sendDocument:", e.message);
-        if (replyTo) {
+    };
+    const formats = ['epub', 'html'].filter(format => s[format]);
+    const busy = overflow || s.gedcom || s.pdf || formats.length;
+    let ged, chart, viewer;
+    const getGed = () => ged ??= gedcomText(chatId, keys);
+    const getChart = () => chart ??= exportChart(chatId, head, heroKey, radius, s);
+    const getViewer = async g => {
+        const hero = heroKey ? (await personRows(chatId)).find(r => pkey(r) === heroKey) : null;
+        const heroXref = hero && g.split('\n').includes('0 @' + hero.xref + '@ INDI') ? hero.xref : null;
+        return exportViewer(chatId, g, heroKey, heroXref, radius, s, await getChart());
+    };
+    if (busy) await edit(finalText + (overflow ? '⏳' : '\n⏳')).catch(e => console.error('DNA loading:', e.message));
+    try {
+        if (overflow) await send('роспись', () => new InputFile(enc.encode('\uFEFF' + pack), base + '.ged.txt', { type: 'text/plain' }));
+        if (s.gedcom) await send('GEDCOM', async () => new InputFile(enc.encode(await getGed()), base + '.ged', { type: 'text/plain' }));
+        if (s.pdf) await send('PDF', async () => {
             try {
-                await api.editMessageText({ chat_id: chatId, message_id: replyTo,
-                    text: (packFinal || head) + "\n💥 Не удалось выложить файлы: " + e.message,
-                    ...(markup !== undefined ? { reply_markup: markup } : {}) });
-                return;
-            } catch (editError) {
-                if (/not modified/i.test(editError.description || editError.message || "")) return;
-                console.error("ged error edit:", editError.message);
+                const chart = await getChart();
+                if (chart.error) throw chart.error;
+                const pdf = await chart.renderPdf();
+                return new InputFile(Uint8Array.from(pdf, c => c.charCodeAt(0)), base + '.pdf', { type: 'application/pdf' });
+            } catch (e) {
+                const reason = e.message.replace(/^chart:\s*/, '');
+                if (reason !== 'персоны пусты') await notice('💥 Диаграмма не построена: ' + reason);
+                return null;
             }
-        }
-        await api.sendMessage({ chat_id: chatId, text: "💥 Не удалось выложить файлы: " + e.message });
+        });
+        for (const format of formats) await send(format.toUpperCase(), async () => {
+            const g = await getGed();
+            checkEpubLimit(g, format.toUpperCase());
+            const documentFor = await (viewer ??= getViewer(g));
+            return documentFor(format);
+        });
+    } finally {
+        const errorText = errors.length ? '💥 Не удалось выложить файлы:\n' + errors.join('\n') : '';
+        const inlineErrors = errorText && finalText.length + 1 + errorText.length <= max;
+        const text = inlineErrors ? finalText + '\n' + errorText : finalText;
+        await edit(text).catch(e => {
+            if (/not modified/i.test(e.description || e.message || '')) return;
+            console.error('DNA final edit:', e.message);
+            return notice(text);
+        });
+        if (errorText && !inlineErrors) await notice(errorText);
     }
 }
 

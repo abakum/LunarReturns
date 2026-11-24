@@ -73,6 +73,8 @@ export const edges = table('edges', {
 
 export const settings = table('settings', {
   chatId: integer('chat_id').primaryKey(),
+  config: text('config').notNull().default('{}'),
+  // Keep legacy columns for rollback until the additive migration is verified.
   orth: integer('orth', { mode: 'boolean' }).default(false),
   islam: integer('islam', { mode: 'boolean' }).default(false),
   bud: integer('bud', { mode: 'boolean' }).default(false),

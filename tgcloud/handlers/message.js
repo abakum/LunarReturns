@@ -1,16 +1,17 @@
 import { api, db, InputFile } from 'sdk';
 import { eq } from 'sdk/db';
-import { gedDrops, focusView, settings } from '../schema.js';
+import { gedDrops, focusView } from '../schema.js';
 import { parseTrigger, decodeGedcom, parseGedcom, gedStats, parseTree } from '../lib/parse.cjs';
 import { fileBaseOf } from '../lib/chart.cjs';
 import { parseSearchQuery } from '../lib/flat.cjs';
 import { jubileeText } from '../lib/text.js';
 import { normalizeFocusRadius, focusListMessage, focusSearch, searchChain, searchRadius, searchProgressHead, prepareReplySearch } from '../lib/tree.cjs';
-import { REPLY_TARGET_ERROR, resolveReplyRecord, TREE_EXPORT_COMMAND, exportReplyRadius } from '../lib/text.cjs';
+import { REPLY_TARGET_ERROR, resolveReplyRecord, TREE_EXPORT_COMMAND, exportReplyRadius,
+    CHAT_SWITCH_COMMAND, CHAT_SWITCH_REPLY_ERROR, chatSwitchText } from '../lib/text.cjs';
 import {
-    helpText, startMarkup, chatAdmin, getSettings, todayText, jubileeMarkup, sendLong,
+    helpText, startMarkup, chatAdmin, getSettings, patchSetting, todayText, jubileeMarkup, sendLong,
     recordOf, recordShownOf, recordByXref, replaceWithGedcom,
-    linkPairs, personRows, weddingRows, sendGedcom, sendEpub, sendPdf, focusHead, focusMarkup,
+    linkPairs, personRows, weddingRows, sendGedcom, sendViewer, sendPdf, focusHead, focusMarkup,
     focusListKeys, focusSpousePairs, focusDepth, focusListText, mmddToday, upcomingText, upsertPerson, applyTree, cutAndGraft, treeReport,
     editTrigger, hasTree, NOT_FOR_GRAFT,
     chatFlatText, flatSearch, sendFlatPack, flatHitKey, searchHead, cutLines,
@@ -273,9 +274,7 @@ export default async function (message, ctx) {
     const tm = text.match(/^\/trim([01])(?:@[a-z0-9_]+)?$/i);
     if (tm) {
         const trim = tm[1] === "1";
-        const row = await db.select().from(settings).where(eq(settings.chatId, chatId)).get();
-        if (row) await db.update(settings).set({ trim }).where(eq(settings.chatId, chatId)).run();
-        else await db.insert(settings).values({ chatId, trim }).run();
+        await patchSetting(chatId, 'trim', trim);
         await api.sendMessage({ chat_id: chatId,
             text: "Импорт: " + (trim ? "инициалы, без мест и примечаний." : "полные данные.") });
         return;
@@ -283,16 +282,24 @@ export default async function (message, ctx) {
     const fm = text.match(/^\/fynny([01])(?:@[a-z0-9_]+)?$/i);
     if (fm) {
         const fynny = fm[1] === "1";
-        const row = await db.select().from(settings).where(eq(settings.chatId, chatId)).get();
-        if (row) {
-            if (row.fynny !== fynny)
-                await db.update(settings).set({ fynny }).where(eq(settings.chatId, chatId)).run();
-        } else {
-            await db.insert(settings).values({ chatId, fynny }).run();
-        }
+        await patchSetting(chatId, 'fynny', fynny);
         await api.sendMessage({ chat_id: chatId,
             text: fynny ? "Родство: цепочки." : "Родство: обычные названия." });
         return;
+    }
+
+    const chatSwitch = CHAT_SWITCH_COMMAND.exec(text);
+    if (chatSwitch) {
+        const key = chatSwitch[1].toLowerCase(), enabled = chatSwitch[2] === '1';
+        if (!message.reply_to_message) {
+            await patchSetting(chatId, key, enabled);
+            await api.sendMessage({ chat_id: chatId, text: chatSwitchText(key, enabled) });
+            return;
+        }
+        if (!enabled) {
+            await api.sendMessage({ chat_id: chatId, text: CHAT_SWITCH_REPLY_ERROR });
+            return;
+        }
     }
 
     const exportCommand = TREE_EXPORT_COMMAND.exec(text);
@@ -388,7 +395,7 @@ export default async function (message, ctx) {
 
     if (exportCommand) {
         const format = exportCommand[1].toLowerCase();
-        const hold = await api.sendMessage({ chat_id: chatId, text: (format === 'pdf' ? '🖨️' : format === 'epub' ? '📖' : '🧬') + '⏳',
+        const hold = await api.sendMessage({ chat_id: chatId, text: (format === 'pdf' ? '🖨️' : format === 'epub' || format === 'html' ? '📖' : '🧬') + '⏳',
             reply_parameters: { message_id: message.message_id, allow_sending_without_reply: true } });
         try {
         const reply = message.reply_to_message;
@@ -410,8 +417,8 @@ export default async function (message, ctx) {
             }
             const sex = new Map(rows.map(p => [p.n + ' ' + p.d, p.sex ?? null]));
             const keys = focusListKeys(pairs, spouses, skey, r, k => sex.get(k) ?? null);
-            if (format === 'epub') {
-                await sendEpub(chatId, keys, head, skey, hero.xref, message.message_id);
+            if (format === 'epub' || format === 'html') {
+                await sendViewer(format, chatId, keys, head, skey, hero.xref, message.message_id);
                 return;
             }
             await sendGedcom(chatId, keys, head, message.message_id);
@@ -422,8 +429,8 @@ export default async function (message, ctx) {
             await api.sendMessage({ chat_id: chatId, text: "связей пока нет" });
             return;
         }
-        if (format === 'epub') {
-            await sendEpub(chatId, undefined, 'Древо чата', null, null, message.message_id);
+        if (format === 'epub' || format === 'html') {
+            await sendViewer(format, chatId, undefined, 'Древо чата', null, null, message.message_id);
             return;
         }
         if (format === 'pdf') {
