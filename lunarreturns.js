@@ -23,63 +23,64 @@ const reqLib = name => {
         __dirname + "/tgcloud/lib или " + process.cwd() + "/tgcloud/lib");
 };
 
+const reqVk = name => require(require.resolve('./vk/' + name + '.js', { paths: [__dirname, process.cwd()] }));
+
 // ============================== KINSHIP (общий модуль) ==============================
 // Канон ярлыков родства — tgcloud/lib/kinship.cjs: его же импортирует ТГ-копия
 // через ESM-шим tgcloud/lib/kinship.js; правки — только в .cjs, дословных
 // копий больше нет.
-const { fynny, kinLabel } = reqLib("kinship");
+const { kinLabel } = reqLib("kinship");
 
 // ============================== ФОКУС-РОДНЯ (общий модуль) ==============================
 // Канон — tgcloud/lib/tree.cjs (план .kilo/plans/20261107-shared-modules-plan.md): его же импортирует
 // ТГ-копия через ESM-шим; правки — только в .cjs, дословных копий больше нет.
 const {
-    familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations,
-    focusListText, focusSearch, searchChain, searchRadius, searchProgressHead, prepareReplySearch, eventListText, normalizeFocusRadius, focusListMessage} = reqLib("tree");
+    familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys,
+    focusListText, eventListText } = reqLib("tree");
 
 
 // ============================== ГЕДКОМ → PDF (общий модуль) ==============================
 // Канон — tgcloud/lib/chart.cjs (план .kilo/plans/20261107-shared-modules-plan.md): его же импортирует
 // ТГ-копия через ESM-шим; правки — только в .cjs, дословных копий больше нет.
 const {
-    checkChartLimit, b64ToBytes, parseTtf, chartDiagnostics, chartModel, fileBaseOf, chartPdf, chartRows, chartFont, rangeLevel} = reqLib("chart");
+    b64ToBytes, parseTtf, chartModel, fileBaseOf, chartPdf, rangeLevel } = reqLib("chart");
 
 
 // ============================== ПАРСИНГ (общий модуль) ==============================
 // Канон — tgcloud/lib/parse.cjs (план .kilo/plans/20261107-shared-modules-plan.md): его же импортирует
 // ТГ-копия через ESM-шим; правки — только в .cjs, дословных копий больше нет.
 const {
-    parseTrigger, decodeGedcom, parseGedcom, gedNoteLines, gedText, gedStats, gedFictiveDates, parseTreeLine, NOT_FOR_GRAFT, withGraftMark, parseTree, packToCsv, chatFlatArtifacts, trimImport} = reqLib("parse");
-const { localRecord, mskGedcom } = reqLib("event-time");
+    parseTrigger, decodeGedcom, parseGedcom, gedText, gedStats, gedFictiveDates, parseTreeLine, NOT_FOR_GRAFT, withGraftMark, parseTree, packToCsv, chatFlatArtifacts, trimImport } = reqLib("parse");
+const { mskGedcom } = reqLib("event-time");
 
 
 // ============================== РЕЛИГИОЗНЫЕ ДНИ (общий модуль) ==============================
 // Канон — tgcloud/lib/religion.cjs (план .kilo/plans/20261107-shared-modules-plan.md): его же импортирует
 // ТГ-копия через ESM-шим; правки — только в .cjs, дословных копий больше нет.
 const {
-    newStyleDate, NEW_STYLE_END, oldStyleDate, REL_DEFS, REL_ORDER, religiousDigest, religiousYear} = reqLib("religion");
+    newStyleDate, oldStyleDate, REL_DEFS, REL_ORDER, religiousDigest, religiousYear } = reqLib("religion");
 
 
 // ============================== ASTRO (общий модуль) ==============================
 // Канон — tgcloud/lib/astro.cjs (план .kilo/plans/20261107-shared-modules-plan.md): его же импортирует
 // ТГ-копия через ESM-шим; правки — только в .cjs, дословных копий больше нет.
-const { TZ_MS, moonNew, la, ageSuffix, mskToday} = reqLib("astro");
+let replDate, replHour;
+const { TZ_MS, la, ageSuffix } = reqLib("astro");
 
 // ============================== TEXT (общий модуль) ==============================
 // Канон примерных дат — tgcloud/lib/text.cjs (approxOut): его же импортирует
 // ТГ-копия через ESM-шим; юбилейные тексты (jubileeText) платформенные —
 // остаются в копиях (ТГ: tg-spoiler/htmlEsc, ВК: plain).
-const { REPLY_TARGET_ERROR, HELP, helpText, approxOut, eventDate, findShownRecord, resolveReplyRecord,
-    TREE_EXPORT_COMMAND, exportReplyRadius, CHAT_SWITCH_COMMAND, CHAT_SWITCH_REPLY_ERROR, chatSwitchText } = reqLib("text");
+const { REPLY_TARGET_ERROR, HELP, helpText, approxOut, eventDate, findShownRecord, resolveReplyRecord } = reqLib("text");
 const { normalizeSettings, settingPatch } = reqLib("settings");
-const { graftError, parseSearchQuery } = reqLib("flat");
+const { graftError } = reqLib("flat");
 
 // ============================== РОДОСЛОВНАЯ РОСПИСЬ -+= — ЧИСТЫЕ ФУНКЦИИ (общий модуль) =====
 // Канон — tgcloud/lib/flat.cjs (план .kilo/plans/20261108-canon-flat-pure-plan.md): его же импортирует
 // ТГ-копия напрямую из bot.js (`import … from './flat.cjs'`, как tree.cjs); правки — только в .cjs.
 const {
     flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey,
-    treeReport, rootOf, searchHead, cutLines} = reqLib("flat");
-const { createPdfAnnotationText, pdfPersonMetadata } = reqLib("annotations");
+    treeReport, rootOf, cutLines } = reqLib("flat");
 
 
 // ============================== ВЫВОД ==============================
@@ -115,74 +116,12 @@ function jubileeText(rec, note, detail = false) {
 
 const fs = require("fs");
 const path = require("path");
-const { DatabaseSync } = require("node:sqlite");
+const { createStore } = reqVk("lib/sqlite");
 
 // Для изолированных прогонов можно переопределить путь через LR_DB.
 const TEST_MODE = process.argv[2] === "test";
 const DB_FILE = process.env.LR_DB || (TEST_MODE ? ":memory:" : path.join(__dirname, "lunarreturns.db"));
-let sdb = null;
-
-function sq() {
-    if (sdb) return sdb;
-    sdb = new DatabaseSync(DB_FILE);
-    sdb.exec(`
-CREATE TABLE IF NOT EXISTS indi(
-    chat INTEGER NOT NULL, xref TEXT NOT NULL, name TEXT NOT NULL,
-    birt_d TEXT, birt_h INTEGER, birt_m INTEGER, src_h INTEGER, src_m INTEGER,
-    deat_d TEXT, deat_h INTEGER, deat_m INTEGER, dsrc_h INTEGER, dsrc_m INTEGER,
-    sex TEXT, plac TEXT, deat_plac TEXT, note TEXT, PRIMARY KEY(chat, xref));
-CREATE TABLE IF NOT EXISTS fam(
-    chat INTEGER NOT NULL, xref TEXT NOT NULL, adhoc INTEGER NOT NULL DEFAULT 0,
-    husb TEXT, wife TEXT,
-    marr_d TEXT, marr_plac TEXT, div_d TEXT, div_plac TEXT, note TEXT, PRIMARY KEY(chat, xref));
-CREATE TABLE IF NOT EXISTS chil(
-    chat INTEGER NOT NULL, fam TEXT NOT NULL, indi TEXT NOT NULL,
-    adopted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(chat, fam, indi));
-CREATE TABLE IF NOT EXISTS links(
-    id INTEGER PRIMARY KEY AUTOINCREMENT, chat INTEGER NOT NULL,
-    p TEXT NOT NULL, c TEXT NOT NULL, who TEXT, fam TEXT,
-    cmid INTEGER NOT NULL DEFAULT 0, pairCand TEXT, UNIQUE(chat, p, c));
-CREATE TABLE IF NOT EXISTS sent(
-    chat INTEGER NOT NULL, key TEXT NOT NULL, last_year INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY(chat, key));
-CREATE TABLE IF NOT EXISTS settings(
-    chat INTEGER PRIMARY KEY, config TEXT NOT NULL DEFAULT '{}');
-CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);`);
-    // WAL: запись в разы быстрее и чтения не блокируются записью; цена —
-    // при обрыве питания может откатиться последний коммит (для бота ок).
-    // busy_timeout — дождаться чужой записи вместо мгновенного «locked».
-    // synchronous=NORMAL — на соединение; journal_mode=WAL персистентный
-    sdb.exec("PRAGMA journal_mode=WAL");
-    sdb.exec("PRAGMA synchronous=NORMAL");
-    sdb.exec("PRAGMA busy_timeout=3000");
-    for (const [t, c, ty] of [["indi", "note", "TEXT"], ["fam", "note", "TEXT"],
-        ["indi", "deat_plac", "TEXT"],
-        // признаки примерных дат (юбилеи по ним не оповещаются)
-        ["indi", "birt_abt", "INTEGER"], ["indi", "deat_abt", "INTEGER"],
-        ["fam", "marr_abt", "INTEGER"], ["fam", "div_abt", "INTEGER"]]) {
-        const cols = qa("PRAGMA table_info(" + t + ")");
-        if (!cols.some(x => x.name === c)) { try { qr("ALTER TABLE " + t + " ADD COLUMN " + c + " " + ty); } catch (e) { /* уже есть */ } }
-    }
-    const legacy = ["orth", "islam", "bud", "cath", "jud", "fynny", "trim", "bell"];
-    const settingsColumns = () => new Set(sdb.prepare("PRAGMA table_info(settings)").all().map(col => col.name));
-    let cols = settingsColumns();
-    if (!cols.has("config") || legacy.some(key => cols.has(key))) {
-        sdb.exec("BEGIN IMMEDIATE");
-        try {
-            cols = settingsColumns();
-            if (!cols.has("config")) sdb.exec("ALTER TABLE settings ADD COLUMN config TEXT NOT NULL DEFAULT '{}'");
-            for (const key of legacy) if (cols.has(key)) sdb.exec("ALTER TABLE settings DROP COLUMN " + key);
-            sdb.exec("COMMIT");
-        } catch (e) {
-            sdb.exec("ROLLBACK");
-            throw e;
-        }
-    }
-    return sdb;
-}
-const qa = (sql, ...a) => sq().prepare(sql).all(...a);
-const q1 = (sql, ...a) => sq().prepare(sql).get(...a);
-const qr = (sql, ...a) => sq().prepare(sql).run(...a);
+const { sq, qa, q1, qr, close: closeStore } = createStore(DB_FILE);
 
 const pkey = r => r.n + " " + r.d;
 const keyN = k => k.slice(0, -11); // имя из ключа
@@ -221,24 +160,7 @@ function recordShownOf(peerId, key) {
 // персоны чата (только с датой рождения), порядок вставки
 function personRows(peerId) {
     return qa(`SELECT xref,name,birt_d,birt_h,birt_m,src_h,src_m,deat_d,deat_h,deat_m,dsrc_h,dsrc_m,sex,plac,deat_plac,note,birt_abt,deat_abt
-        FROM indi WHERE chat=? AND birt_d IS NOT NULL ORDER BY rowid`, peerId).map(r => {
-        const o = { n: r.name, d: r.birt_d };
-        if (r.birt_abt) o.abt = r.birt_abt;
-        if (r.deat_abt) o.dabt = r.deat_abt;
-        if (r.birt_h !== null) { o.h = r.birt_h; o.m = r.birt_m ?? 0; }
-        if (r.src_h !== null) { o.srcH = r.src_h; o.srcM = r.src_m ?? 0; }
-        if (r.sex) o.sex = r.sex;
-        if (r.deat_d) {
-            o.dd = r.deat_d;
-            if (r.deat_h !== null) { o.dh = r.deat_h; o.dm = r.deat_m ?? 0; }
-            if (r.dsrc_h !== null) { o.dsrcH = r.dsrc_h; o.dsrcM = r.dsrc_m ?? 0; }
-            if (r.deat_plac) o.dp = r.deat_plac;
-        }
-        if (r.plac) o.plac = r.plac;
-        if (r.note) o.note = r.note;
-        o.xref = r.xref;
-        return o;
-    });
+        FROM indi WHERE chat=? AND birt_d IS NOT NULL ORDER BY rowid`, peerId).map(personFromRow);
 }
 
 // свадьбы чата: fam с marr и хоть одним супругом (имена по xref — точно);
@@ -1116,169 +1038,21 @@ function importGedcom(peerId, g) {
         chartWarnings: importChartWarnings(peerId) };
 }
 
+const { createExportData, personFromRow } = reqVk('lib/export-data');
+
+function exportSnapshot(peerId) {
+    return {
+        people: qa('SELECT * FROM indi WHERE chat=? ORDER BY rowid', peerId),
+        families: qa('SELECT * FROM fam WHERE chat=? ORDER BY rowid', peerId),
+        children: qa('SELECT * FROM chil WHERE chat=? ORDER BY rowid', peerId),
+        pairs: linkPairs(peerId), settings: getSettings(peerId),
+    };
+}
+
+const exportData = peerId => createExportData(exportSnapshot(peerId));
+
 function gedcomText(peerId, keys) {
-    const MON = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-    const gdate = d => { const [y, mo, dd] = d.split("-").map(Number); return dd + " " + MON[mo - 1] + " " + y; };
-    // хвост-метка заглушки «Имя ~xref» живёт в БД для уникальности ключей
-    // печатей (росписи/древо), но в гедкоме избыточен — xref и так в
-    // идентикаторе INDI @…@; в NAME метку снимаем (реимпорт восстановит её
-    // из файлового xref — круглый trip остаётся идемпотентным)
-    const cleanName = n => n.replace(/ ~\S+$/, "");
-    const hasKeys = Array.isArray(keys) && keys.length > 0;
-    const persons = personRows(peerId).filter(r => !hasKeys || keys.includes(pkey(r))).map(localRecord);
-    const idOf = new Map(persons.map(r => [r.xref, r.xref]));
-    // усыновления: xref ребёнка → xref семьи (chil.adopted)
-    const adoptedOf = new Map();
-    for (const c of qa("SELECT fam, indi FROM chil WHERE chat=? AND adopted=1", peerId))
-        adoptedOf.set(c.indi, c.fam);
-    // примерная дата в гедком: гранулярность — форма даты (год-only «ГГГГ»,
-    // месяц-only «JUN 1987», полный день «6 MAY 1234»), квалификатор —
-    // префикс на любой гранулярности («ABT MAY 1985», «EST 1985»)
-    const ABT_TAG = { 1: "ABT", 2: "CAL", 3: "BEF", 4: "AFT", 5: "EST" };
-    const gdateAbt = (d, abt) => {
-        const a = abt || 0, q = Math.floor(a / 3), g = a % 3;
-        const s = g === 2 ? d.slice(0, 4)
-            : g === 1 ? MON[Number(d.slice(5, 7)) - 1] + " " + d.slice(0, 4)
-            : gdate(d);
-        return (ABT_TAG[q] ? ABT_TAG[q] + " " : "") + s;
-    };
-    // семьи → {xref, par — [{x, k}] датированные половины (k — ключ, только
-    // для фильтра фрагмента), stubs — [{xref,name,deat,dp}] — бездатные
-    // супруги, kstubs — те же дети, chd — датированные дети, marr, div}:
-    // семья НЕ схлопывается — каждая строка fam БД даёт ровно одну FAM
-    // (у двух жён одного мужа остаются две FAM, а не один FAM с двумя WIFE)
-    const fams = [];
-    for (const f of qa("SELECT * FROM fam WHERE chat=? ORDER BY rowid", peerId)) {
-        const par = [], chd = [], stubs = [], kstubs = [];
-        const stubOf = x => {
-            const i = indiOf(peerId, x);
-            if (!i || !i.name) return null;
-            return { xref: x, name: i.name, sex: i.sex || null, deat: i.deat_d || null, dp: i.deat_plac || null,
-                dh: i.deat_h, dm: i.deat_m, dsrcH: i.dsrc_h, dsrcM: i.dsrc_m,
-                dabt: i.deat_d ? i.deat_abt || 0 : 0, note: i.note || null };
-        };
-        for (const [role, x] of [['HUSB', f.husb], ['WIFE', f.wife]]) {
-            if (!x) continue;
-            const k = keyOfXref(peerId, x);
-            if (k) par.push({ x, k, role });
-            else {
-                const st = stubOf(x);
-                if (st) stubs.push({ ...st, role });
-            }
-        }
-        for (const r of qa("SELECT indi FROM chil WHERE chat=? AND fam=? ORDER BY rowid", peerId, f.xref)) {
-            const k = keyOfXref(peerId, r.indi);
-            if (k) chd.push({ x: r.indi, k });
-            else {
-                const st = stubOf(r.indi);
-                if (st) kstubs.push(st);
-            }
-        }
-        let marr = f.marr_d ? { d: f.marr_d, ...(f.marr_abt ? { abt: f.marr_abt } : {}), ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null;
-        let div = f.div_d ? { d: f.div_d, ...(f.div_abt ? { abt: f.div_abt } : {}), ...(f.div_plac ? { plac: f.div_plac } : {}) } : null;
-        const fnote = f.note || null;
-        if (hasKeys) {
-            // фрагмент: семья остаётся при ХОТЬ ОДНОЙ датированной половине
-            // в keys (как в росписи chatFlatText — famBody печатает свадьбы
-            // половин из keys): бездетные свадьбы и семьи с детьми за
-            // пределами keys тоже идут, иначе роспись .ged.txt и гедком .ged
-            // одной росписи расходились бы (round-trip терял свадьбы и ломал
-            // глубины). famc за радиусом (в keys лишь ребёнок) — мимо:
-            // в росписи таких строк нет, глубины он не меняет
-            const ps = par.filter(p => keys.includes(p.k));
-            if (!ps.length) continue;
-            par.length = 0; par.push(...ps);
-            const ks = chd.filter(c => keys.includes(c.k));
-            chd.length = 0; chd.push(...ks);
-            // фрагмент — датированные персоны из keys; заглушки-половины/дети — как есть
-        } else if (!par.length && !stubs.length && !kstubs.length && !chd.length) continue;
-        fams.push({ xref: f.xref, par, chd, stubs, kstubs, marr, div, fnote });
-    }
-    // поколения: семьи родителей раньше семей детей — каноническая нумерация
-    // FAM независимо от порядка вставки (см. famsByGenerations)
-    const famsOrd = famsByGenerations(fams,
-        f => [...f.par.map(p => p.x), ...f.stubs.map(s => s.xref)],
-        f => [...f.chd.map(c => c.x), ...f.kstubs.map(s => s.xref)]);
-    for (let i = 0; i < fams.length; i++) fams[i] = famsOrd[i];
-    // заглушки-INDI и FAM печатаются собственными xref'ами БД (уникальны
-    // по построению): round-trip .ged → .ged сохраняет xref'ы, а значит
-    // и метки «~xref» в именах заглушек. HUSB/WIFE — исходные слоты семьи.
-    const stubId = new Map(), stubInfo = new Map();
-    const addStub = st => {
-        if (!stubId.has(st.xref)) { stubId.set(st.xref, st.xref); stubInfo.set(st.xref, st); }
-    };
-    for (const f of fams) {
-        for (const st of f.stubs) addStub(st);
-        for (const st of f.kstubs) addStub(st);
-    }
-    const fidOf = new Map(fams.map(f => [f, f.xref]));
-    const out = ["0 HEAD", "1 SOUR LunarReturns", "1 GEDC", "2 VERS 5.5.1", "2 FORM LINEAGE-LINKED", "1 CHAR UTF-8"];
-    for (const r of persons) {
-        const start = out.length;
-        out.push("0 @" + idOf.get(r.xref) + "@ INDI");
-        out.push("1 NAME " + cleanName(r.n));
-        if (r.sex) out.push("1 SEX " + r.sex);
-        out.push("1 BIRT", "2 DATE " + gdateAbt(r.d, r.abt));
-        if (r.srcH !== undefined) out.push("3 TIME " + String(r.srcH).padStart(2, "0") + ":" + String(r.srcM).padStart(2, "0"));
-        if (r.plac) out.push("2 PLAC " + r.plac);
-        if (r.dd) {
-            out.push("1 DEAT", "2 DATE " + gdateAbt(r.dd, r.dabt));
-            if (r.dsrcH !== undefined) out.push("3 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
-            if (r.dp) out.push("2 PLAC " + r.dp);
-        }
-        out.push(...gedNoteLines(r.note, true, out, start));
-        for (const f of fams) {
-            if (f.chd.some(c => c.x === r.xref)) {
-                out.push("1 FAMC @" + fidOf.get(f) + "@");
-                if (adoptedOf.get(r.xref) === f.xref) out.push("1 ADOP", "2 FAMC @" + fidOf.get(f) + "@");
-            }
-            if (f.par.some(p => p.x === r.xref)) out.push("1 FAMS @" + fidOf.get(f) + "@");
-        }
-    }
-    // заглушки (бездатные супруги/дети): имя + пол + смерть/место, если известны
-    for (const [x, st] of stubInfo) {
-        const start = out.length;
-        out.push("0 @" + stubId.get(x) + "@ INDI");
-        out.push("1 NAME " + cleanName(st.name));
-        if (st.sex) out.push("1 SEX " + st.sex);
-        if (st.deat) {
-            const r = localRecord({ ...st, dd: st.deat });
-            out.push("1 DEAT", "2 DATE " + gdateAbt(r.dd, st.dabt));
-            if (r.dsrcH !== undefined) out.push("3 TIME " + String(r.dsrcH).padStart(2, "0") + ":" + String(r.dsrcM).padStart(2, "0"));
-            if (st.dp) out.push("2 PLAC " + st.dp);
-        }
-        out.push(...gedNoteLines(st.note, true, out, start));
-        for (const f of fams) {
-            if (f.stubs.some(s => s.xref === x)) out.push("1 FAMS @" + fidOf.get(f) + "@");
-            if (f.kstubs.some(s => s.xref === x)) out.push("1 FAMC @" + fidOf.get(f) + "@");
-        }
-    }
-    for (const f of fams) {
-        const start = out.length;
-        out.push("0 @" + fidOf.get(f) + "@ FAM");
-        // Family slots are independent of SEX.
-        const all = [
-            ...f.par.map(p => ({ ref: p.x, role: p.role })),
-            ...f.stubs.map(s => ({ ref: stubId.get(s.xref), role: s.role })),
-        ];
-        for (const role of ['HUSB', 'WIFE']) for (const x of all.filter(x => x.role === role)) out.push("1 " + role + " @" + x.ref + "@");
-        for (const c of f.chd) {
-            out.push("1 CHIL @" + idOf.get(c.x) + "@");
-            if (adoptedOf.get(c.x) === f.xref) out.push("2 PEDI adopted");
-        }
-        for (const s of f.kstubs) out.push("1 CHIL @" + stubId.get(s.xref) + "@");
-        if (f.marr) {
-            out.push("1 MARR", "2 DATE " + gdateAbt(f.marr.d, f.marr.abt));
-            if (f.marr.plac) out.push("2 PLAC " + f.marr.plac);
-        }
-        if (f.div) {
-            out.push("1 DIV", "2 DATE " + gdateAbt(f.div.d, f.div.abt));
-            if (f.div.plac) out.push("2 PLAC " + f.div.plac);
-        }
-        out.push(...gedNoteLines(f.fnote, false, out, start));
-    }
-    out.push("0 TRLR");
-    return out.join("\n");
+    return exportData(peerId).gedcomText(keys);
 }
 
 // ============================== РОДОСЛОВНАЯ РОСПИСЬ -+=: вывод ==============================
@@ -1292,57 +1066,11 @@ function gedcomText(peerId, keys) {
 // строки персон/семей чата — общий вход chatFlatText и branchFlatText
 // (ТГ-копия: tgcloud/lib/bot.js, flatRows)
 function flatRows(peerId) {
-    const rows = qa("SELECT * FROM indi WHERE chat=? ORDER BY rowid", peerId).map(r => ({
-        key: r.xref, name: r.name, sex: r.sex || null,
-        d: r.birt_d ?? undefined, dd: r.deat_d ?? undefined,
-        h: r.birt_h ?? undefined, m: r.birt_m ?? undefined,
-        srcH: r.src_h ?? undefined, srcM: r.src_m ?? undefined,
-        dh: r.deat_h ?? undefined, dm: r.deat_m ?? undefined,
-        dsrcH: r.dsrc_h ?? undefined, dsrcM: r.dsrc_m ?? undefined,
-        plac: r.plac ?? undefined, dp: r.deat_plac ?? undefined,
-        note: r.note ?? undefined, nameOnly: r.birt_d == null,
-        abt: r.birt_abt ?? undefined, dabt: r.deat_abt || undefined,
-    }));
-    const fams = [];
-    for (const f of qa("SELECT * FROM fam WHERE chat=? ORDER BY rowid", peerId)) {
-        const F = { xref: f.xref, hKey: null, hName: null, wKey: null, wName: null, children: [], marr: null, div: null, note: f.note || null };
-        for (const [slot, x] of [['hKey', f.husb], ['wKey', f.wife]]) {
-            if (!x) continue;
-            const r = indiOf(peerId, x);
-            if (!r) continue;
-            F[slot] = x;
-        }
-        for (const r of qa("SELECT indi FROM chil WHERE chat=? AND fam=? ORDER BY rowid", peerId, f.xref)) {
-            if (indiOf(peerId, r.indi)) F.children.push(r.indi);
-        }
-        F.marr = f.marr_d ? { d: f.marr_d, ...(f.marr_abt ? { abt: f.marr_abt } : {}), ...(f.marr_plac ? { plac: f.marr_plac } : {}) } : null;
-        F.div = f.div_d ? { d: f.div_d, ...(f.div_abt ? { abt: f.div_abt } : {}), ...(f.div_plac ? { plac: f.div_plac } : {}) } : null;
-        fams.push(F);
-    }
-    // поколения до построения росписи: семьи родителей раньше семей детей
-    // (см. famsByGenerations) — familyOf (первая семья ребёнка), «mine»
-    // (порядок браков) и famsDone не зависят от порядка вставки семей
-    const famsOrd = famsByGenerations(fams,
-        f => [f.hKey, f.wKey].filter(k => k != null), f => f.children);
-    for (let i = 0; i < fams.length; i++) fams[i] = famsOrd[i];
-    return [rows, fams];
+    return exportData(peerId).flatRows();
 }
 
 function chatFlatText(peerId, keys = null) {
-    // keys (опционально) — фокус-радиус: роспись только этого подмножества
-    // («Имя ГГГГ-ММ-ДД»); семьи фильтруются по касанию персон карт ключей
-    const hasKeys = Array.isArray(keys) && keys.length > 0;
-    const [rows, allFams] = flatRows(peerId);
-    const persons = rows.filter(r => !hasKeys || keys.includes(r.name + " " + (r.d ?? "")));
-    if (!hasKeys) return flatTreeText(persons, allFams, true); // canonical — рецепт порядка
-    const kOf = new Map(rows.map(r => [r.key, r.name + " " + (r.d ?? "")]));
-    // роспись радиуса — тот же канонический рецепт, что и у целого древа:
-    // порядок больше не «героевоцентричный» (герой посередине), семьи —
-    // по дате свадьбы/старшему супругу. Для резки-прививки не годится всё
-    // равно: первой строкой метка NOT_FOR_GRAFT, parseTree читает её в
-    // tree.noGraft, cutAndGraft такую роспись отвергает
-    return NOT_FOR_GRAFT + "\n" + flatTreeText(persons, allFams.filter(f =>
-        [f.hKey, f.wKey, ...f.children].some(k => k != null && keys.includes(kOf.get(k) || ""))), true);
+    return exportData(peerId).chatFlatText(keys);
 }
 
 
@@ -1387,10 +1115,6 @@ function branchFlatText(peerId, key) {
 
 
 
-// ключи диаграммы — pkey «Имя ГГГГ-ММ-ДД» без усечения (имя может содержать
-// пробелы; бездатный супруг идёт своим «Имя якорь», мимо ckey)
-const ckey = k => k;
-
 function importChartWarnings(peerId) {
     try { return chartFor(peerId, null, "", null, null, true); }
     catch (e) { return [String(e.message || e).replace(/^chart:\s*/, "")]; }
@@ -1402,149 +1126,22 @@ function chartFor(peerId, keys, title, heroKey = null, range = null, diagnose = 
 }
 
 function prepareChart(peerId, keys, title, heroKey, range, diagnose = false, fynnySetting) {
-    const snapshot = flatRows(peerId);
-    const pairs = linkPairs(peerId), spousePairs = focusSpousePairs(peerId);
-    const xOf = new Map(snapshot[0].filter(p => p.d != null).map(p => [p.name + " " + p.d, p.key]));
-    const hasKeys = Array.isArray(keys) && keys.length > 0;
-    const recs = personRows(peerId).filter(r => !hasKeys || keys.includes(pkey(r)));
-    const keySet = new Set(recs.map(r => pkey(r)));
-    let rows = recs.map(r => ({ xref: xOf.get(pkey(r)), name: r.n, birth: r.d, h: r.h, m: r.m, death: r.dd || null, sex: r.sex || null, abt: r.abt ?? 0 }));
-    const stubSpouses = [];
-    // якоря бездатных: год ДР датированного супруга (первой семьи по порядку)
-    const stubs = qa("SELECT xref,name,deat_d,sex FROM indi WHERE chat=? AND birt_d IS NULL AND name!=''", peerId);
-    const stubOf = new Map(stubs.map(r => [r.xref, r]));
-    const anchor = new Map(); // xref бездатного → { yr, spKey, fam }
-    for (const f of qa("SELECT xref,husb,wife FROM fam WHERE chat=? ORDER BY rowid", peerId)) {
-        for (const [a, b] of [[f.husb, f.wife], [f.wife, f.husb]]) {
-            if (!a || !b || !stubOf.has(a) || anchor.has(a)) continue;
-            const sp = indiOf(peerId, b);
-            if (sp && sp.birt_d)
-                anchor.set(a, { yr: Number(sp.birt_d.slice(0, 4)), spKey: sp.name + " " + sp.birt_d, fam: f.xref });
-        }
-    }
-    // явные ключи бездатных «Имя якорь»: суффиксы « » строит сам chartModel
-    // (ключи датированных — «Имя полная дата», с «Имя якорь» не пересекаются);
-    // taken — для коллизий одноимённых заглушек на одном якорном году
-    const taken = new Set();
-    for (const r of recs) taken.add(r.n + " " + r.d);
-    const famStubKey = new Map();   // fam.xref → ключ бездатного супруга в чарте
-    for (const [x, an] of anchor) {
-        if (hasKeys && !keys.includes(an.spKey)) continue;
-        const s = stubOf.get(x);
-        let k = s.name + " " + an.yr;
-        while (taken.has(k)) k += " ";
-        taken.add(k);
-        stubSpouses.push([an.spKey, k]);
-        if (!famStubKey.has(an.fam)) famStubKey.set(an.fam, k);
-        rows.push({ xref: x, name: s.name, k, birth: null, anchor: an.yr, death: s.deat_d || null, sex: s.sex || null });
-    }
-    // родители ребёнка: датированные, вошедшие в чарт + бездатный супруг
-    // (свой ключ «Имя якорь»); fill ds/sk, ключ бездатного не под ckey
-    const parentsOf = new Map();    // ребёнок (ключ «Имя ГГГГ-…») → { ds, sk }
-    for (const f of famList(peerId)) {
-        const ps = f.parents.filter(p => keySet.has(p));
-        const sk = famStubKey.get(f.xref) || null;
-        for (const c of f.children) {
-            if (!keySet.has(c)) continue;
-            const arr = parentsOf.get(c) || { ds: [], sk: null };
-            for (const p of ps) if (!arr.ds.includes(p)) arr.ds.push(p);
-            if (sk && !arr.sk) arr.sk = sk;
-            parentsOf.set(c, arr);
-        }
-    }
-    let links = [...parentsOf].filter(([, ps]) => ps.ds.length || ps.sk)
-        .map(([c, ps]) => ({ child: ckey(c), parents: [...ps.ds.map(ckey), ...(ps.sk ? [ps.sk] : [])] }));
-    // ярлыки родства — как в 🔔-списке (focusListText): linkPairs +
-    // супруги fam-семей + пол; подписи в чарте всё равно «Связь год»;
-    // диапазон героя rel.range (цифра кейапа заголовка, 4⃣ … → 4) — из sendGedArtifacts
-    const hero = heroKey ? ckey(heroKey) : null;
-    const rel = hero ? {
-        hero,
-        range,
-        fynny: fynnySetting ?? getSettings(peerId).fynny,
-        pairs: pairs.map(([p, c]) => [ckey(p), ckey(c)]),
-        spouses: [...spousePairs.map(sp => sp.map(ckey)), ...stubSpouses],
-        sex: Object.fromEntries([...personRows(peerId).map(r => [pkey(r), r.sex || null]),
-            ...rows.filter(r => r.k).map(r => [r.k, r.sex])]),
-    } : null;
-    if (diagnose) return chartDiagnostics(rows, links, chartFont());
-    rows = chartRows(rows, rel);
-    checkChartLimit(rows.length);
-    const visible = new Set(rows.map(r => r.k ?? r.name + " " + r.birth));
-    for (const k of keySet) if (!visible.has(k)) keySet.delete(k);
-    for (const [f, k] of famStubKey) if (!visible.has(k)) famStubKey.delete(f);
-    links = links.filter(l => visible.has(l.child)).map(l => ({ ...l,
-        parents: l.parents.filter(p => visible.has(p)) })).filter(l => l.parents.length);
-    // дети супругов вне фрагмента/радиуса: годы их рождения — вертикалью
-    // между супругами (дата рождения берётся из всех персон чата;
-    // заглушки без даты — пропускаются). Пара: обе датированные — как
-    // прежде; датированный + бездатный в чарте — ключ бездатного («Имя
-    // якорь»); бездатный не в чарте (вне фрагмента) — вертикали нет
-    const bornOf = new Map(personRows(peerId).map(r => [pkey(r), r.d]));
-    const phantoms = [];
-    const marriages = [];           // свадьбы с датой: { fam: [ключ, ключ], year };
-                                    // один супруг в чарте — fam: [ключ] (зарубка)
-    for (const f of famList(peerId)) {
-        const ps = f.parents.filter(p => keySet.has(p));
-        const sk = famStubKey.get(f.xref) || null;
-        const pair = ps.length === 2 ? ps.map(ckey)
-            : ps.length === 1 && sk ? [ckey(ps[0]), sk]
-            : ps.length === 1 ? [ckey(ps[0])] : null;
-        if (!pair) continue;
-        // дата свадьбы — вертикаль между супругами в год свадьбы (без точек);
-        // один супруг в чарте — зарубка на его баре (свадьба с выбывшим)
-        if (f.marr && f.marr.d)
-            marriages.push({ fam: pair, year: Number(f.marr.d.slice(0, 4)) });
-        const yrs = [...new Set(f.children.filter(c => !keySet.has(c) && bornOf.has(c))
-            .map(c => Number(bornOf.get(c).slice(0, 4))))].sort((a, b) => a - b);
-        if (yrs.length) phantoms.push({ fam: pair, years: yrs,
-            children: f.children.filter(c => !keySet.has(c) && bornOf.has(c)).map(c => ({
-                year: Number(bornOf.get(c).slice(0, 4)),
-                r: { xref: xOf.get(c), name: snapshot[0].find(p => p.key === xOf.get(c))?.name || c,
-                    birth: bornOf.get(c), h: recs.find(p => pkey(p) === c)?.h, m: recs.find(p => pkey(p) === c)?.m,
-                    abt: snapshot[0].find(p => p.key === xOf.get(c))?.abt ?? 0 },
-            })) });
-    }
-    const model = chartModel(title, rows, links, { ...rel, phantoms }, marriages);
-    return { model, persons: rows.length, renderPdf() {
-        const annotationText = createPdfAnnotationText(snapshot, pairs, spousePairs, rel?.fynny ?? fynnySetting ?? getSettings(peerId).fynny);
-        const metadata = pdfPersonMetadata(snapshot, heroKey, xOf.get(heroKey), range);
-        return chartPdf(title, rows, links, chartFont(), rel, marriages, annotationText, metadata, model);
-    } };
+    return exportData(peerId).prepareChart(keys, title, heroKey, range, diagnose, fynnySetting);
 }
 
-async function sendGedcom(peerId, keys, head, msgId, convMsgId) {
-    try {
-        const attachment = await vkUploadDoc(peerId, fileBaseOf(head) + '.ged', gedcomText(peerId, keys));
-        await messagesSend(peerId, head, msgId, convMsgId, undefined, attachment);
-    } catch (e) {
-        console.error('gedcom:', e.message);
-        await messagesSend(peerId, 'Не удалось выгрузить GEDCOM.', msgId, convMsgId);
-    }
+async function sendGedcom(peerId, keys, head, msgId, convMsgId, focus) {
+    return sendExportFile(peerId, head, msgId, convMsgId, 'gedcom', { keys, ...focus },
+        content => [fileBaseOf(head) + '.ged', content], () => 'Не удалось выгрузить GEDCOM.');
 }
 
 async function sendPdf(peerId, head, heroKey, radius, msgId, convMsgId) {
-    try {
-        const keys = heroKey ? focusKeys(linkPairs(peerId), heroKey, radius, focusSpousePairs(peerId)) : undefined;
-        const { pdf } = chartFor(peerId, keys, head.replace(/^\d\s+/, ''), heroKey, radius);
-        const attachment = await vkUploadDoc(peerId, fileBaseOf(head) + '.pdf', Buffer.from(pdf, 'latin1'));
-        await messagesSend(peerId, head, msgId, convMsgId, undefined, attachment);
-    } catch (e) {
-        console.error('pdf:', e.message);
-        const text = e.message.startsWith('PDF: лимит ') ? e.message
-            : e.message.includes('персоны пусты') ? 'Нет персон с датами для диаграммы.' : 'Не удалось выгрузить PDF.';
-        await messagesSend(peerId, text, msgId, convMsgId);
-    }
+    return sendExportFile(peerId, head, msgId, convMsgId, 'pdf', { head, heroKey, radius },
+        pdf => [fileBaseOf(head) + '.pdf', pdf], e => e.message.startsWith('PDF: лимит ') ? e.message
+            : e.message.includes('персоны пусты') ? 'Нет персон с датами для диаграммы.' : 'Не удалось выгрузить PDF.');
 }
 
 function exportViewer(peerId, g, heroKey, heroXref, radius, s, chart) {
-    const { viewerEpub, viewerWithChart, epubBase, zipFiles } = reqLib('epub');
-    const { viewerAnnotations } = reqLib('viewer');
-    const title = epubBase(heroKey, radius || 1);
-    const annotations = viewerAnnotations(g, flatRows(peerId), linkPairs(peerId), focusSpousePairs(peerId), s.fynny, chart.model);
-    const html = viewerWithChart(g, title, heroXref, annotations, { chart });
-    return format => format === 'html' ? [title + '.zip', zipFiles([[title + '.html', html]])]
-        : [title + '.epub', viewerEpub(g, title, heroXref, annotations, { heroKey, radius: radius || 1, html })];
+    return exportData(peerId).exportViewer(g, heroKey, heroXref, radius, s, chart);
 }
 
 function exportChart(peerId, keys, head, heroKey, radius, s) {
@@ -1556,19 +1153,28 @@ function exportChart(peerId, keys, head, heroKey, radius, s) {
 
 async function sendViewer(format, peerId, keys, head, heroKey, heroXref, msgId, convMsgId) {
     const label = format.toUpperCase();
-    try {
-        const g = gedcomText(peerId, keys);
-        reqLib('epub').checkEpubLimit(g, label);
-        const radius = parseInt(head, 10) || 1;
-        const s = getSettings(peerId);
-        const chart = await exportChart(peerId, keys, head, heroKey, radius, s);
-        const fileFor = exportViewer(peerId, g, heroKey, heroXref, radius, s, chart);
-        const attachment = await vkUploadDoc(peerId, ...fileFor(format));
-        await messagesSend(peerId, head, msgId, convMsgId, undefined, attachment);
-    } catch (e) {
-        console.error(format + ':', e.message);
-        await messagesSend(peerId, e.message.startsWith(label + ': лимит ') ? e.message : 'Не удалось выгрузить ' + label + '.', msgId, convMsgId);
-    }
+    const radius = parseInt(head, 10) || 1;
+    return sendExportFile(peerId, head, msgId, convMsgId, format, { head, keys, heroKey, radius, heroXref, scoped: !!heroKey && !keys },
+        file => file, e => e.message.startsWith(label + ': лимит ') ? e.message : 'Не удалось выгрузить ' + label + '.');
+}
+
+async function sendExportFile(peerId, head, msgId, convMsgId, op, input, toFile, errorText) {
+    return withWorkerIndicator(peerId, async (signal, progress, finish) => {
+        let text = head, attachment;
+        try {
+            const file = await runExportStep(peerId, op, input, undefined, signal, progress);
+            signal?.throwIfAborted();
+            attachment = await vkUploadDoc(peerId, ...toFile(file));
+        } catch (e) {
+            signal?.throwIfAborted();
+            console.error(op + ':', e.message);
+            text = errorText(e);
+        }
+        signal?.throwIfAborted();
+        if (finish && await finish(text, attachment)) return;
+        signal?.throwIfAborted();
+        await messagesSend(peerId, text, msgId, convMsgId, undefined, attachment);
+    }, { msgId, convMsgId });
 }
 
 // Повтор загрузки использует новый upload_url; docs.save повторяется при сетевом сбое.
@@ -1623,24 +1229,238 @@ async function vkUploadDoc(peerId, title, content) {
 }
 
 const activeDnaExports = new Map();
+const workerUpdates = new (require('node:async_hooks').AsyncLocalStorage)();
+const workerIndicators = new Map();
+let indicatorSerial = 0;
+const { createExportPool } = reqVk('lib/export-pool');
+let exportPool, workerTestOptions;
 
-async function sendGedArtifacts(o, keys, head, heroKey, pack, s, kb) {
+function closeExportPool() {
+    exportPool?.close();
+    exportPool = undefined;
+}
+
+async function computeExport(peerId, op, input = {}, payload, indicator) {
+    return withWorkerIndicator(peerId, (signal, progress) => runExportStep(peerId, op, input, payload, signal, progress), indicator);
+}
+
+async function runExportStep(peerId, op, input, payload, signal, progress) {
+    const lease = await openExport(peerId, undefined, { ...input, manualCancel: !!signal }, { peer: peerId }, signal, progress);
+    try {
+        if (input.scoped) await lease.step('focus_keys');
+        return await lease.step(op, payload);
+    } finally { lease.release(); }
+}
+
+async function parseImport(peerId, op, text) {
+    if (text.length < 8192) return op === 'parse_flat' ? parseTree(text) : parseGedcom(text);
+    return withWorkerIndicator(peerId, async (signal, progress) => {
+        exportPool ??= createExportPool(LOG_VK_TIMINGS ? vkTiming : undefined, workerTestOptions);
+        const lease = await exportPool.open({ manualCancel: !!signal }, { peer: peerId }, signal, text.length * 2, progress);
+        try { return await lease.step(op, text); }
+        finally { lease.release(); }
+    });
+}
+
+const isWorkerCancelled = error => error?.name === 'AbortError' && error.message === 'VK command cancelled';
+
+async function withWorkerIndicator(peerId, run, indicator) {
+    const ctx = workerUpdates.getStore();
+    if (!ctx || ctx.peerId !== peerId) return run();
+    const control = new AbortController();
+    const original = indicator?.cmid;
+    if (original) {
+        const key = `${peerId}:${original}`;
+        cancelDnaExport(peerId, original);
+        activeDnaExports.set(key, control);
+        let last = -Infinity, dots = 0;
+        const edit = () => vkApi('messages.edit', { peer_id: peerId, conversation_message_id: original,
+            message: indicator.text + '.'.repeat(dots), keyboard: indicator.keyboard })
+            .catch(e => console.error('worker progress:', e.message));
+        try {
+            await (control.progressTail = edit());
+            return await run(control.signal, () => {
+                if (control.signal.aborted || dots >= 8 || performance.now() - last < 2000) return;
+                last = performance.now();
+                dots++;
+                control.progressTail = control.progressTail.then(() => {
+                    if (!control.signal.aborted) return edit();
+                });
+            });
+        } finally {
+            await control.progressTail;
+            if (activeDnaExports.get(key) === control) activeDnaExports.delete(key);
+            if (control.signal.aborted) throw new DOMException('VK command cancelled', 'AbortError');
+        }
+    }
+    const id = `${process.pid}-${Date.now()}-${++indicatorSerial}`;
+    const keyboard = JSON.stringify({ inline: true, buttons: [[{
+        action: { type: 'callback', label: '❌', payload: JSON.stringify({ c: 'work:cancel', id }) }, color: 'secondary',
+    }]] });
+    const job = { peerId, control, tail: Promise.resolve() };
+    workerIndicators.set(id, job);
+    let messageId, dots = 0, last = -Infinity, finalized = false;
+    const finish = async (message, attachment) => {
+        await job.tail;
+        control.signal.throwIfAborted();
+        if (!messageId) return false;
+        const edit = vkApi('messages.edit', { peer_id: peerId, message_id: messageId, message,
+            attachment, keyboard: JSON.stringify({ inline: true, buttons: [] }) });
+        job.tail = edit.catch(() => {});
+        try {
+            await edit;
+            finalized = true;
+            return true;
+        } catch (e) {
+            console.error('worker result edit:', e.message);
+            return false;
+        }
+    };
+    try {
+        messageId = await messagesSend(peerId, '⏳', indicator?.msgId, indicator?.convMsgId, keyboard);
+        const result = await run(control.signal, () => {
+            if (control.signal.aborted || dots >= 8 || performance.now() - last < 2000) return;
+            last = performance.now();
+            const message = '⏳' + '.'.repeat(++dots);
+            job.tail = job.tail.then(() => {
+                if (!control.signal.aborted) return vkApi('messages.edit', { peer_id: peerId, message_id: messageId, message, keyboard });
+            }).catch(e => console.error('worker progress:', e.message));
+        }, finish);
+        return result;
+    } catch (e) {
+        control.signal.throwIfAborted();
+        throw e;
+    } finally {
+        workerIndicators.delete(id);
+        await job.tail;
+        if (messageId && !finalized && !control.signal.aborted) await vkApi('messages.delete', {
+            peer_id: peerId, message_ids: messageId, delete_for_all: 1,
+        }).catch(e => console.error('worker indicator:', e.message));
+        control.signal.throwIfAborted();
+    }
+}
+
+async function cancelWorkerIndicator(o, id) {
+    const job = workerIndicators.get(id);
+    const active = job?.peerId === o.peer_id;
+    if (active) job.control.abort(new DOMException('VK command cancelled', 'AbortError'));
+    await answerEvent(o.event_id || o.id, o.user_id, o.peer_id, active ? 'работа отменена' : 'работа уже завершена');
+    if (active) {
+        await job.tail;
+        await deleteByCmid(o.peer_id, o.conversation_message_id);
+    }
+}
+
+function cancelDnaExport(peerId, cmid) {
+    const key = peerId + ':' + cmid;
+    const job = activeDnaExports.get(key);
+    activeDnaExports.delete(key);
+    job?.abort?.();
+    return job;
+}
+
+function openExport(peerId, settings, input, trace, signal, onProgress) {
+    exportPool ??= createExportPool(LOG_VK_TIMINGS ? vkTiming : undefined, workerTestOptions);
+    const started = performance.now();
+    const snapshot = exportSnapshot(peerId);
+    if (settings) snapshot.settings = settings;
+    // Include variable-width text (especially notes), as well as a row overhead.
+    let size = 0;
+    for (const rows of [snapshot.people, snapshot.families, snapshot.children, snapshot.pairs]) {
+        for (const row of rows) {
+            size += 256;
+            for (const value of Object.values(row)) if (typeof value === 'string') size += value.length * 2;
+        }
+    }
+    if (LOG_VK_TIMINGS) vkTiming('worker_snapshot', { ...trace, bytes: size, ms: elapsedMs(started) });
+    return exportPool.open({ ...input, snapshot }, trace, signal, size, onProgress);
+}
+
+async function exportFocused(o, head, heroKey, radius, kb) {
+    return exportDna(o, head, heroKey, radius, kb);
+}
+
+async function exportWhole(o, kb) {
+    await exportDna(o, 'Древо чата', null, null, kb);
+}
+
+async function exportDna(o, head, heroKey, radius, kb) {
+    const peerId = o.peer_id;
+    const s = getSettings(peerId);
+    const id = peerId + ':' + o.conversation_message_id;
+    cancelDnaExport(peerId, o.conversation_message_id);
+    const control = new AbortController();
+    activeDnaExports.set(id, control);
+    let lastDot = -Infinity, dots = 0;
+    const isCurrent = () => activeDnaExports.get(id) === control;
+    const editProgress = (text, attachment = '') => {
+        const previous = control.progressTail;
+        return control.progressTail = Promise.resolve(previous).then(() => {
+            if (isCurrent()) return vkApi('messages.edit', { peer_id: peerId, conversation_message_id: o.conversation_message_id,
+                message: text, attachment, keyboard: kb ?? undefined });
+        }).catch(e => console.error('DNA progress:', e.message));
+    };
+    let showProgress = () => editProgress(head + '\n⏳' + '.'.repeat(dots));
+    const onProgress = progress => {
+        if (LOG_VK_TIMINGS) vkTiming('export_progress', { peer: peerId, cmid: o.conversation_message_id,
+            event_id: o.event_id || o.id, ...progress });
+        const now = performance.now();
+        if (!isCurrent() || dots >= 8 || now - lastDot < 2000) return;
+        lastDot = now;
+        dots++;
+        void showProgress();
+    };
+    let lease;
+    try {
+        const trace = { peer: peerId, cmid: o.conversation_message_id, event_id: o.event_id || o.id };
+        const started = performance.now();
+        await showProgress();
+        if (!isCurrent()) return;
+        lease = await openExport(peerId, s, { head, heroKey, radius, fullPack: !heroKey, manualCancel: true }, trace, control.signal, onProgress);
+        const pack = await lease.step(heroKey ? 'focus' : 'flat');
+        if (control.signal.aborted) { lease.release(); return; }
+        if (!heroKey) {
+            await answerEvent(o.event_id || o.id, o.user_id, peerId, pack.trim() ? 'роспись древа чата' : 'древо пусто');
+            if (!pack.trim()) {
+                await editProgress(head + '\n(древо пусто)');
+                lease.release();
+                if (isCurrent()) activeDnaExports.delete(id);
+                return;
+            }
+        }
+        if (!isCurrent()) { lease.release(); return; }
+        if (LOG_VK_TIMINGS && heroKey) vkTiming('focus_prepare', { ...trace, status: 'ok', ms: elapsedMs(started) });
+        await sendGedArtifacts(o, undefined, head, heroKey, pack, s, kb, { lease, control,
+            progress: (text, attachments) => {
+                showProgress = () => editProgress(text + '.'.repeat(dots), attachments());
+                return showProgress();
+            } });
+    } catch (e) {
+        lease?.release();
+        if (activeDnaExports.get(id) === control) activeDnaExports.delete(id);
+        if (!control.signal.aborted) throw e;
+    }
+}
+
+async function sendGedArtifacts(o, keys, head, heroKey, pack, s, kb, offload) {
     const peerId = o.peer_id;
     const base = fileBaseOf(head);
     const radius = heroKey ? parseInt(head, 10) || 1 : null;
     const max = 4000;
-    const suffix = '\n✂️⏳';
+    const suffix = '\n✂️⏳' + (offload ? '........' : '');
     const maxHead = max - suffix.length - NOT_FOR_GRAFT.length - 1;
     const prefix = !heroKey ? '' : (head.length <= maxHead ? head : head.slice(0, maxHead - 1) + '…') + '\n';
-    const overflow = prefix.length + pack.length + '\n⏳'.length > max;
+    const overflow = prefix.length + pack.length + '\n⏳'.length + (offload ? 8 : 0) > max;
     const preview = overflow ? (prefix + cutLines(pack, max, prefix.length + suffix.length, false)).trimEnd() : prefix + pack;
     const finalText = overflow ? (preview ? preview + '\n' : '') + '✂️' : preview;
     const holdText = finalText + (overflow ? '⏳' : '\n⏳');
     const formats = ['epub', 'html'].filter(format => s[format]);
     const busy = overflow || s.gedcom || s.pdf || formats.length;
     const atts = [], errors = [];
+    const timing = LOG_VK_TIMINGS && { peer: peerId, cmid: o.conversation_message_id, event_id: o.event_id || o.id };
     const exportId = peerId + ':' + o.conversation_message_id;
-    const token = Symbol();
+    const token = offload?.control ?? Symbol();
+    if (!offload) cancelDnaExport(peerId, o.conversation_message_id);
     activeDnaExports.set(exportId, token);
     const isCurrent = () => activeDnaExports.get(exportId) === token;
     // An empty list removes attachments from previous taps.
@@ -1651,36 +1471,52 @@ async function sendGedArtifacts(o, keys, head, heroKey, pack, s, kb) {
     const notice = text => messagesSend(peerId, text, 0, o.conversation_message_id).catch(e => console.error('DNA notice:', e.message));
     const publish = async (label, make) => {
         if (!isCurrent()) return;
+        let tier = 'prepare', started = timing && performance.now();
         try {
             const file = await make();
+            if (timing) vkTiming('export_stage', { ...timing, format: label, phase: tier,
+                status: file ? 'ok' : 'skipped', ms: elapsedMs(started) });
             if (!file || !isCurrent()) return;
-            atts.push(await vkUploadDoc(peerId, ...file));
+            tier = 'upload';
+            if (timing) started = performance.now();
+            const attachment = await vkUploadDoc(peerId, ...file);
+            if (!isCurrent()) return;
+            atts.push(attachment);
+            if (timing) vkTiming('export_stage', { ...timing, format: label, phase: tier, status: 'ok', ms: elapsedMs(started) });
         } catch (e) {
+            if (!isCurrent()) return;
+            if (timing) vkTiming('export_stage', { ...timing, format: label, phase: tier, status: 'error', ms: elapsedMs(started) });
             console.error('DNA ' + label + ':', e.message);
             errors.push(e.message.startsWith(label + ': лимит ') ? e.message : label);
             return;
         }
-        if (isCurrent()) await edit(holdText).catch(e => console.error('DNA progress:', e.message));
+        if (isCurrent()) await editHold();
     };
     const run = async () => {
+        const started = timing && performance.now();
+        if (timing) vkTiming('export_start', timing);
         let ged, chart, viewer;
         const getGed = () => ged ??= gedcomText(peerId, keys);
         const getChart = () => chart ??= exportChart(peerId, keys, head, heroKey, radius, s);
+        let status = 'ok';
         try {
             if (overflow) await publish('роспись', () => [base + '.ged.txt', '\uFEFF' + pack]);
-            if (s.gedcom) await publish('GEDCOM', () => [base + '.ged', getGed()]);
+            if (s.gedcom) await publish('GEDCOM', async () => [base + '.ged', offload ? await offload.lease.step('gedcom') : getGed()]);
             if (s.pdf) await publish('PDF', async () => {
                 try {
+                    if (offload) return [base + '.pdf', await offload.lease.step('pdf')];
                     const chart = await getChart();
                     if (chart.error) throw chart.error;
                     return [base + '.pdf', Buffer.from(chart.renderPdf(), 'latin1')];
                 } catch (e) {
                     const reason = e.message.replace(/^chart:\s*/, '');
+                    if (reason !== 'персоны пусты') status = 'partial';
                     if (isCurrent() && reason !== 'персоны пусты') await notice('💥 Диаграмма не построена: ' + reason);
                     return null;
                 }
             });
             for (const format of formats) await publish(format.toUpperCase(), async () => {
+                if (offload) return offload.lease.step(format);
                 const g = getGed();
                 reqLib('epub').checkEpubLimit(g, format.toUpperCase());
                 if (!viewer) {
@@ -1690,12 +1526,27 @@ async function sendGedArtifacts(o, keys, head, heroKey, pack, s, kb) {
                 }
                 return viewer(format);
             });
+        } catch (e) {
+            status = 'error';
+            throw e;
         } finally {
-            if (isCurrent()) await finish();
+            offload?.lease.release();
+            try {
+                if (isCurrent()) await finish();
+                else if (status !== 'error') status = 'superseded';
+            } catch (e) {
+                status = 'error';
+                throw e;
+            } finally {
+                if (timing) vkTiming('export_done', { ...timing, status: status === 'ok' && errors.length ? 'partial' : status,
+                    ms: elapsedMs(started) });
+            }
         }
     };
     const finish = async () => {
         try {
+            if (offload) await offload.control.progressTail;
+            if (!isCurrent()) return;
             const errorText = errors.length ? '💥 Не удалось выложить файлы:\n' + errors.join('\n') : '';
             const inlineErrors = errorText && finalText.length + 1 + errorText.length <= max;
             const text = inlineErrors ? finalText + '\n' + errorText : finalText;
@@ -1719,8 +1570,10 @@ async function sendGedArtifacts(o, keys, head, heroKey, pack, s, kb) {
             if (isCurrent()) activeDnaExports.delete(exportId);
         }
     };
+    const editHold = () => offload?.progress ? offload.progress(holdText, () => atts.join(','))
+        : edit(holdText).catch(e => console.error('DNA loading:', e.message));
     if (!busy) return run();
-    await edit(holdText).catch(e => console.error('DNA loading:', e.message));
+    await editHold();
     void run().catch(e => console.error('DNA export:', e.message));
 }
 
@@ -1847,8 +1700,22 @@ async function deleteByCmid(peerId, cmid) {
 const SEND_GAP = 400; // мс между сообщениями
 let sendChain = Promise.resolve();
 
-function queueSend(params) {
-    const job = sendChain.then(() => sendWithRetry(params));
+function queueSend(params, replyCmid) {
+    const queued = LOG_VK_TIMINGS && performance.now();
+    const job = sendChain.then(LOG_VK_TIMINGS ? async () => {
+        const started = performance.now();
+        const timing = { peer: params.peer_id, random_id: params.random_id, reply_to: params.reply_to,
+            reply_cmid: replyCmid,
+            queue_ms: elapsedMs(queued, started) };
+        let status = 'error';
+        try {
+            const result = await sendWithRetry(params);
+            status = 'ok';
+            return result;
+        } finally {
+            vkTiming('send_done', { ...timing, status, api_ms: elapsedMs(started) });
+        }
+    } : () => sendWithRetry(params));
     sendChain = job.then(() => sleep(SEND_GAP), () => sleep(SEND_GAP));
     return job;
 }
@@ -1924,10 +1791,18 @@ async function catchUp(startAt) {
             if (tm.out || tm.from_id < 0) continue;   // только чужие входящие
             if (tm.date <= lastSeen || tm.date > startAt) continue;
             n++;
+            const started = LOG_VK_TIMINGS && performance.now();
+            const trace = LOG_VK_TIMINGS && { source: 'catch_up', type: 'message_new', peer, cmid: tm.conversation_message_id,
+                message_id: tm.id, sent_at_ms: tm.date * 1000, age_ms: Date.now() - tm.date * 1000 };
+            if (trace) vkTiming('handler_start', trace);
+            let status = 'error';
             try {
-                await handleMessage(peer, String(tm.text || ""), tm.date, tm.id, tm.conversation_message_id);
+                await updateRouter.catchUp(tm, peer);
+                status = 'ok';
             } catch (e) {
                 console.error("catchUp", peer, tm.id, e.message);
+            } finally {
+                if (trace) vkTiming('handler_done', { ...trace, status, ms: elapsedMs(started) });
             }
         }
         if (n) console.log("catchUp peer", peer, "replayed", n);
@@ -1936,8 +1811,6 @@ async function catchUp(startAt) {
 
 // ============================== VK ==============================
 
-const VK_API = "https://api.vk.com/method/";
-const VK_VERSION = "5.199";
 
 // необязательное ограничение: обслуживать только эту группу (число из club…)
 const GROUP_ID = Number(process.env.VK_GROUP_ID || 0) || 0;
@@ -1952,32 +1825,22 @@ if (!token) {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const LOG_RAW = !!process.env.LOG_VK; // сырые ответы VK API и Long Poll
+const LOG_VK_TIMINGS = process.env.LOG_VK_TIMINGS === '1';
+const elapsedMs = (start, end = performance.now()) => Math.round(end - start);
+const vkTiming = (stage, fields) => console.log('vk timing', JSON.stringify({ stage, at_ms: Date.now(), ...fields }));
 
-async function vkApi(method, params) {
-    // undefined-параметры не передаём вовсе: URLSearchParams превратил бы их
-    // в строки «undefined» (ВК показывает их как текст сообщения); вложенные
-    // объекты (клавиатуры) — строкуем
-    const clean = {};
-    for (const [k, v] of Object.entries(params)) {
-        if (v === undefined) continue;
-        clean[k] = v && typeof v === "object" && !Buffer.isBuffer(v) ? JSON.stringify(v) : v;
-    }
-    const qs = new URLSearchParams(Object.assign({ access_token: token, v: VK_VERSION }, clean));
-    if (LOG_RAW) console.log(">> " + method, qs.toString().replace(/access_token=[^&]+/, "access_token=…"));
-    // POST с form-body — как в vksdk/pinguin: клавиатуры в query string
-    // (GET) ВК портит («unknown fields» на каждой кнопке)
-    const res = await fetch(VK_API + method, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: qs,
-        signal: AbortSignal.timeout(30000)
-    });
-    if (!res.ok) throw new Error(method + " HTTP " + res.status);
-    const body = await res.json();
-    if (LOG_RAW) console.log("<< " + method, JSON.stringify(body).slice(0, 800));
-    if (body.error) throw new Error(method + " " + body.error.error_code + ": " + body.error.error_msg);
-    return body.response;
+function watchVkLoop() {
+    const interval = 250;
+    let last = performance.now();
+    setInterval(() => {
+        const now = performance.now();
+        const loopLag = elapsedMs(last + interval, now);
+        last = now;
+        if (loopLag >= interval) vkTiming('loop_lag', { loop_lag_ms: loopLag });
+    }, interval).unref();
 }
+
+const vkApi = reqVk("lib/api").createVkApi(token, LOG_RAW);
 
 // ответ на сообщение: reply_to по глобальному id (личка) либо forward по
 // conversation_message_id (в чатах id приходит 0 — как в pinguin vk.go)
@@ -1994,13 +1857,12 @@ async function messagesSend(peerId, text, msgId, convMsgId, keyboard, attachment
     if (keyboard) params.keyboard = keyboard;
     if (attachment) params.attachment = attachment;
     console.log(params.attachment ? "файл отправлен" : "ответ отправлен", "peer", peerId);
-    return queueSend(params);
+    return queueSend(params, params.forward ? convMsgId : undefined);
 }
 
 let lp = null; // { server, key, ts }
 let groupId = GROUP_ID;
 let ownerId = 0; // создатель сообщества (role=creator), 0 — неизвестен
-const REACTION_EYES_ID = 32; // 👀 (детально); 👍 = 4, 👎 = 9
 
 // админ беседы или создатель сообщества; кэш на 5 минут
 const adminCache = new Map();
@@ -2066,75 +1928,32 @@ async function longPollInit() {
 // между чатами нет; узкое место (event loop на sync-SQLite) смягчают
 // транзакция и WAL
 const peerChains = new Map(); // peerId -> промис последней задачи чата
-const byPeer = (peerId, run) => {
-    const next = (peerChains.get(peerId) || Promise.resolve()).then(run);
-    peerChains.set(peerId, next.catch(() => {}));
-    return next.catch(e => console.error("handle:", e.message, "\n",
-        (e.stack || "").split("\n").slice(1, 4).join("\n")));
+const byPeer = (peerId, run, trace, urgent = false) => {
+    const tail = peerChains.get(peerId) || Promise.resolve();
+    const next = (urgent ? Promise.resolve() : tail).then(trace ? async () => {
+        const { received, ...fields } = trace;
+        const started = performance.now();
+        vkTiming('handler_start', { ...fields, queue_ms: elapsedMs(received, started) });
+        let status = 'error';
+        try {
+            await run();
+            status = 'ok';
+        } finally {
+            vkTiming('handler_done', { ...fields, status, ms: elapsedMs(started) });
+        }
+    } : run);
+    peerChains.set(peerId, urgent ? Promise.allSettled([tail, next]) : next.catch(() => {}));
+    return next.catch(e => {
+        if (!isWorkerCancelled(e)) console.error("handle:", e.message, "\n", (e.stack || "").split("\n").slice(1, 4).join("\n"));
+    });
 };
 
 // один запрос long poll; обрабатывает пришедшие message_new
 async function longPollStep() {
-    const u = new URL(lp.server);
-    u.searchParams.set("act", "a_check");
-    u.searchParams.set("key", lp.key);
-    u.searchParams.set("ts", lp.ts);
-    u.searchParams.set("wait", "25");
-    const res = await fetch(u, { signal: AbortSignal.timeout(35000) });
-    const body = await res.json();
-    if (LOG_RAW) console.log("<< poll ts=" + lp.ts, JSON.stringify(body).slice(0, 1000));
-    if (process.env.LOG_UPDATES && body.failed) console.log("poll failed:", JSON.stringify(body));
-    if (body.failed) {
-        if (body.failed === 1 && body.ts) lp.ts = body.ts;
-        else await longPollInit(); // 2/3 — смена key/server
-        return;
-    }
-    lp.ts = body.ts;
-    for (const upd of body.updates || []) {
-        if (process.env.LOG_UPDATES) console.log("upd:", JSON.stringify(upd).slice(0, 500));
-        if (groupId && Number(upd.group_id) !== groupId) continue;
-        try {
-            if (upd.type === "message_new" && upd.object) {
-                const msg = upd.object.message || upd.object;
-                if (!msg || msg.peer_id === undefined) continue;
-                byPeer(msg.peer_id, async () => {
-                    if (msg.action) { // сервисное: вход/выход участника и т.п.
-                        console.log("action:", msg.action.type, "peer", msg.peer_id, "member", msg.action.member_id ?? "");
-                        if (msg.action.type === "chat_invite_user" && msg.action.member_id !== -groupId) {
-                            await messagesSend(msg.peer_id, helpText(getSettings(msg.peer_id)), 0, msg.conversation_message_id,
-                                (ownerId && msg.action.member_id === ownerId) ? ownerKeyboard() : bellKeyboard());
-                        }
-                        return;
-                    }
-                    // дроп .ged-документа → вопрос «Да/Нет» (до разбора текста:
-                    // сообщение может быть без текста, caption не разбираем)
-                    const gedDoc = (msg.attachments || []).filter(a => a && a.type === "doc" && a.doc)
-                        .map(a => a.doc).find(d => String(d.ext || "").toLowerCase() === "ged" || /\.ged$/i.test(String(d.title || "")));
-                    if (gedDoc) {
-                        await handleGedDrop(msg.peer_id, gedDoc, msg.id, msg.conversation_message_id, msg.from_id);
-                        return;
-                    }
-                    // дроп .ged.txt-документа с родословной росписью -+= (см. handleTxtDrop);
-                    // голый .txt — мимо (не разбираем, ждём .ged или .ged.txt)
-                    const txtDoc = (msg.attachments || []).filter(a => a && a.type === "doc" && a.doc)
-                        .map(a => a.doc).find(d => /\.ged\.txt$/i.test(String(d.title || "")));
-                    if (txtDoc) {
-                        await handleTxtDrop(msg.peer_id, txtDoc, msg.id, msg.conversation_message_id, msg.from_id, msg.reply_message || null);
-                        return;
-                    }
-                    if (!msg.text && !msg.payload) return;
-                    await handleMessage(msg.peer_id, String(msg.text || ""), msg.date, msg.id, msg.conversation_message_id, msg.from_id, unpay(msg.payload || ""), msg.reply_message || null);
-                });
-            } else if (upd.type === "message_event" && upd.object) {
-                byPeer(upd.object.peer_id, () => handleEvent(upd.object));
-            } else if (upd.type && upd.type.includes("reaction") && upd.object) {
-                console.log("reaction upd:", JSON.stringify(upd.object).slice(0, 400));
-                byPeer(upd.object.peer_id, () => handleReaction(upd.object));
-            }
-        } catch (e) {
-            console.error("handle:", e.message, "\n", (e.stack || "").split("\n").slice(1, 4).join("\n"));
-        }
-    }
+    return reqVk('lib/long-poll').pollStep(lp, {
+        init: longPollInit, onUpdate: (upd, trace) => updateRouter.longPoll(upd, groupId, trace),
+        timing: LOG_VK_TIMINGS ? vkTiming : undefined, raw: LOG_RAW, logUpdates: process.env.LOG_UPDATES,
+    });
 }
 
 
@@ -2198,11 +2017,6 @@ async function holdAttach(peerId, log, sent, holdTxt, finalTxt, name, content,
 }
 
 // «Начать» (payload {"command":"start"}) работает как «/»
-const isStart = (text, payload) => {
-    if (text.trim() === "/" || /^\/start(?:@[a-z0-9_]+)?$/i.test(text.trim())) return true;
-    if (payload && typeof payload === "object") return payload.command === "start";
-    return payload === "start";
-};
 
 // дроп .ged-документа: скачать, разобрать и спросить кнопками «Да/Нет»;
 // текст файла до ответа держим в памяти (последний дроп выигрывает, живёт час)
@@ -2229,7 +2043,7 @@ async function fetchDocText(url, ged = false) {
 
 async function handleGedDrop(peerId, doc, msgId, convMsgId, fromId) {
     const name = doc.title || "gedcom.ged";
-    let text;
+    let text, g;
     try {
         text = await fetchDocText(doc.url, true);
     } catch (e) {
@@ -2237,7 +2051,8 @@ async function handleGedDrop(peerId, doc, msgId, convMsgId, fromId) {
         await messagesSend(peerId, "💥 Не удалось скачать файл " + name + " (трижды; повторите написанием файла в чат)", msgId, convMsgId);
         return;
     }
-    const g = parseGedcom(text);
+    try { g = await parseImport(peerId, 'parse_gedcom', text); }
+    catch (e) { if (isWorkerCancelled(e)) throw e; console.error('ged parse:', e.message); }
     if (!g) {
         await messagesSend(peerId, "💥 Не удалось разобрать GEDCOM-файл " + name, msgId, convMsgId);
         return;
@@ -2273,7 +2088,14 @@ async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
         await messagesSend(peerId, "💥 Не удалось скачать файл " + name + " (трижды; повторите написанием файла в чат)", msgId, convMsgId);
         return;
     }
-    const tree = parseTree(text);
+    let tree;
+    try { tree = await parseImport(peerId, 'parse_flat', text); }
+    catch (e) {
+        if (isWorkerCancelled(e)) throw e;
+        console.error('flat parse:', e.message);
+        await messagesSend(peerId, '💥 Не удалось разобрать роспись. Попробуйте ещё раз.', msgId, convMsgId);
+        return;
+    }
     if (replyMsg && resolveReply(peerId, replyMsg)?.xref !== resolved?.xref) {
         await messagesSend(peerId, REPLY_TARGET_ERROR, msgId, convMsgId);
         return;
@@ -2388,25 +2210,11 @@ function focusSpousePairs(peerId) {
 }
 
 // текст фокуса: заголовок (с датой смерти dd) + (bell ? список : гедком-фрагмент)
-function focusText(peerId, key, radius, bell, dd, byFull = false) {
-    const pairs = linkPairs(peerId);
-    const spPairs = focusSpousePairs(peerId);
-    const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
-    // fynny-ромб (супруги — по лимиту слов ярлыка) един и для списка, и для
-    // гедком-фрагмента: на r1 супруги детей для связности не нужны (черточки
-    // свадеб и точки ДР детей рисуются из fam-данных), на r2 «жена сына»
-    // (2 слова) влезает — связность сохраняется; радиус 5 — без лимита
-    const keys = focusListKeys(pairs, spPairs, key, radius, k => sexMap.get(k) ?? null, bell);
-    const items = [...personRows(peerId), ...weddingRows(peerId)];
-    // круговой порядок «от сегодня» (МСК) — ось сортировки списка; MM-DD
+function focusText(peerId, key, radius, dd, byFull = false, indicator) {
     const { mo, d: dToday } = mskNowParts();
     const mmdd = String(mo).padStart(2, "0") + "-" + String(dToday).padStart(2, "0");
-    const body = bell
-        ? (focusListText(items, keys, key, pairs, spPairs, k => sexMap.get(k) ?? null, byFull, mmdd, radius, getSettings(peerId).fynny)
-            || "(в радиусе нет событий)")
-        : gedcomText(peerId, keys);
-    const head = focusHead(key, radius, dd);
-    return bell ? focusListMessage(head, body) : head + "\n" + body;
+    return computeExport(peerId, 'bell', { heroKey: key, radius, head: focusHead(key, radius, dd) },
+        { weddings: weddingRows(peerId), mmdd, byFull }, indicator);
 }
 
 async function sendFocus(peerId, key, msgId, convMsgId, fromId, dd) {
@@ -2463,409 +2271,14 @@ function resolveReply(peerId, reply) {
     return resolveReplyRecord([...personRows(peerId), ...weddingRows(peerId)], reply.text, bot);
 }
 
-async function handleMessage(peerId, text, date, msgId, convMsgId, fromId = 0, payload = "", replyMsg = null) {
-    const resolved = resolveReply(peerId, replyMsg);
-    const originalReply = replyMsg;
-    const searchInput = /^\//.test(String(text).trim().split(/\r?\n/).find(l => l.trim() && !l.trimStart().startsWith('#')) || "");
-    const anchorInput = !searchInput && (String(text).split(/\r?\n/).some(l => /^\s*[-+=]/.test(l))
-        || (String(text).split(/\r?\n/).length === 1 && parseTrigger(text)));
-    if (process.env.LOG_UPDATES) console.log("msg from", peerId, ":", text);
-    if (text.trim().startsWith("/")) console.log("команда:", JSON.stringify(text.trim()), "peer", peerId);
-    if (date) markSeen(date);
-    const setting = CHAT_SWITCH_COMMAND.exec(text.trim());
-    if (setting && (!originalReply || setting[2] === "0")) {
-        if (originalReply) await messagesSend(peerId, CHAT_SWITCH_REPLY_ERROR, msgId, convMsgId);
-        else {
-            const key = setting[1].toLowerCase(), enabled = setting[2] === "1";
-            setChatSetting(peerId, key, enabled);
-            await messagesSend(peerId, chatSwitchText(key, enabled), msgId, convMsgId);
-        }
-        return;
-    }
-    const exportCommand = TREE_EXPORT_COMMAND.exec(text.trim());
-    const scopedCommand = isStart(text, payload) || exportCommand
-        || /^\/(?:bell[1-5]?|links)(?:@\S+)?$/i.test(text.trim())
-        || text.trim().toLowerCase() === "связи";
-    if (originalReply && (scopedCommand || anchorInput) && !parseGedcom(text)) {
-        if (!resolved) {
-            await messagesSend(peerId, REPLY_TARGET_ERROR, msgId, convMsgId);
-            return;
-        }
-    }
-    if (isStart(text, payload)) {
-        // «/» ответом на триггер — фокус-сообщение с радиусом родни
-        // (заголовок фокуса «2 Имя ГГГГ-ММ-ДД» — цифру радиуса снимаем)
-        if (resolved) {
-            const rec = resolved;
-            if (rec) {
-                await sendFocus(peerId, rec.n + " " + rec.d, msgId, convMsgId, fromId, rec.dd);
-                return;
-            }
-        }
-        let kb;
-        if (peerId < 2000000000) kb = relKeyboard(peerId);
-        else kb = (await isChatAdmin(peerId, fromId)) ? ownerKeyboard() : bellKeyboard();
-        await messagesSend(peerId, helpText(getSettings(peerId)), msgId, convMsgId, kb);
-        return;
-    }
-    const t = text.trim().toLowerCase();
-    const tm = t.match(/^\/trim([01])(?:@[a-z0-9_]+)?$/);
-    if (tm) {
-        const mode = Number(tm[1]);
-        setChatSetting(peerId, "trim", !!mode);
-        await messagesSend(peerId, "Импорт: " + (mode ? "инициалы, без мест и примечаний." : "полные данные."), msgId, convMsgId);
-        return;
-    }
-    const fm = t.match(/^\/fynny([01])(?:@[a-z0-9_]+)?$/);
-    if (fm) {
-        const mode = Number(fm[1]);
-        setChatSetting(peerId, "fynny", !!mode);
-        await messagesSend(peerId, "Родство: " + (mode ? "цепочки." : "обычные названия."), msgId, convMsgId);
-        return;
-    }
-    if (exportCommand) {
-        const format = exportCommand[1].toLowerCase();
-        const hold = await messagesSend(peerId, (format === 'pdf' ? '🖨️' : format === 'epub' || format === 'html' ? '📖' : '🧬') + '⏳', msgId, convMsgId);
-        try {
-        const radius = exportReplyRadius(exportCommand[2], replyMsg?.from_id < 0 ? replyMsg.text : null);
-        if (resolved) {
-            const skey = pkey(resolved);
-            const rows = personRows(peerId);
-            const hero = rows.find(p => pkey(p) === skey);
-            if (!hero && format !== 'gedcom') {
-                await messagesSend(peerId, REPLY_TARGET_ERROR, msgId, convMsgId);
-                return;
-            }
-            const pairs = linkPairs(peerId), spouses = focusSpousePairs(peerId);
-            const r = normalizeFocusRadius(radius, focusDepth(pairs, spouses, skey));
-            const head = focusHead(skey, r, resolved.dd);
-            if (format === 'pdf') {
-                await sendPdf(peerId, head, skey, r, msgId, convMsgId);
-                return;
-            }
-            const sex = new Map(rows.map(p => [pkey(p), p.sex ?? null]));
-            const keys = focusListKeys(pairs, spouses, skey, r, k => sex.get(k) ?? null);
-            if (format === 'epub' || format === 'html') {
-                await sendViewer(format, peerId, keys, head, skey, hero.xref, msgId, convMsgId);
-                return;
-            }
-            await sendGedcom(peerId, keys, head, msgId, convMsgId);
-            console.log("focus text:", skey, "радиус", r, "peer", peerId);
-            return;
-        }
-        if (!hasTree(peerId)) { await messagesSend(peerId, "связей пока нет", msgId, convMsgId); return; }
-        if (format === 'epub' || format === 'html') {
-            await sendViewer(format, peerId, undefined, 'Древо чата', null, null, msgId, convMsgId);
-            return;
-        }
-        if (format === 'pdf') { await sendPdf(peerId, 'Древо чата', null, null, msgId, convMsgId); return; }
-        await sendGedcom(peerId, undefined, "Древо чата", msgId, convMsgId);
-        return;
-        } catch (e) {
-            console.error('tree export:', e.message);
-            await messagesSend(peerId, 'Не удалось подготовить файл.', msgId, convMsgId);
-            return;
-        } finally {
-            if (hold) {
-                try {
-                    const result = await vkApi('messages.delete', { peer_id: peerId, message_ids: hold, delete_for_all: 1 });
-                    if (!(result?.[hold] === 1 || result?.[0]?.response === 1 || result === 1))
-                        throw new Error('Не удалось удалить индикатор экспорта');
-                } catch {
-                    await vkApi('messages.edit', { peer_id: peerId, message_id: hold, message: 'Экспорт завершён.' })
-                        .catch(e => console.error('export progress:', e.message));
-                }
-            }
-        }
-    }
-    // /bellN (в ответ на триггер): список родни в радиусе N — как тап 🔔 на
-    // фокусе; без reply — весь список чата (как 🔔 чата), не влезает —
-    // отрезаем (целые строки)
-    const bm = t.match(/^\/bell([1-5])?(?:@\S+)?$/);
-    if (bm) {
-        const sent = await messagesSend(peerId, "🔔⏳", msgId, convMsgId);
-        const finish = async text => {
-            if (sent) {
-                try { await vkApi("messages.edit", { peer_id: peerId, message_id: sent, message: text }); return; }
-                catch (e) { console.error("bell edit:", e.message); }
-            }
-            await messagesSend(peerId, text, msgId, convMsgId);
-        };
-        try {
-        const radius = Number(bm[1]) || 1;
-        if (resolved) {
-            const rec = resolved;
-            if (rec) {
-                const skey = rec.n + " " + rec.d; // показанный ключ → хранимый
-                // как тап: радиус не глубже имеющихся связей
-                const r = normalizeFocusRadius(radius, focusDepth(linkPairs(peerId), focusSpousePairs(peerId), skey));
-                const txt = focusText(peerId, skey, r, true, rec.dd, false);
-                await finish(txt);
-                console.log("bell text:", skey, "радиус", r, "peer", peerId);
-                return;
-            }
-        }
-        const { mo, d: dToday } = mskNowParts();
-        const list = upcomingEvents(peerId, false,
-            String(mo).padStart(2, "0") + "-" + String(dToday).padStart(2, "0"));
-        // как у 🔔 чата: список «от сегодня» одним сообщением — что не
-        // влезает, отрезаем (целые строки)
-        const shownList = cutLines(list || "", 4000);
-        await finish(shownList || "Событий нет");
-        console.log("bell chat:", (list ? list.split("\n").length : 0) + "->" + shownList.split("\n").length, "строк, peer", peerId);
-        return;
-        } catch (e) {
-            console.error("bell text:", e.message);
-            await finish("Не удалось подготовить список. Попробуйте ещё раз.");
-            return;
-        }
-    }
-    // «/links» (в ТГ — кнопка 🔗 под событием): роспись ВЕТВИ героя — как тап
-    // «-+=» на фокусе (>4000 — вложением); без reply — роспись
-    // древа чата (листинг сообщений-связей не восстанавливается)
-    if (/^\/links(?:@\S+)?$/i.test(t) || t === "связи") {
-        let key = null, head = "";
-        if (resolved) {
-            const rec = resolved;
-            if (rec) { key = rec.n + " " + rec.d; head = focusHead(key, 1, rec.dd); } // показанный ключ → хранимый
-        }
-        const sent = await messagesSend(peerId, (head ? head + "\n" : "") + "-+=⏳", msgId, convMsgId);
-        const edit = message => vkApi("messages.edit", { peer_id: peerId, message_id: sent, message });
-        try {
-        const pack = key ? branchFlatText(peerId, key) : chatFlatText(peerId);
-        if (!pack) { await edit(key ? "ветвь пуста" : "связей пока нет"); return; }
-        if (!key) {
-            // роспись радиуса — ВСЕГДА файлом (зеркало ТГ sendFlatPack key=null):
-            // «-+=⏳» ответом с цитатой на команду (⏳ = «выполняю, подождите»),
-            // затем ОДНА комбинированная правка того же сообщения — часы
-            // сняты, метка «-+=» и файл в нём же (комбинированная правка
-            // message+attachment по message_id применяет и текст, и вложение;
-            // цитата при ней исчезает — принято); повтор при ошибке; провал
-            // выкладки — текстовая правка «💥». Метка NOT_FOR_GRAFT —
-            // первой строкой файла (роспись радиуса прививке не подлежит)
-            void sendChatFlatArtifacts(peerId, pack, { message_id: sent }, null, "links");
-        } else if (head.length + 1 + pack.length > 4000) {
-            // голова + ✂️⏳ первым сообщением (полное — в файле); ВСЯ роспись —
-            // файлом асинхронно: upload долгий, ответ — сразу; файл правкой
-            // приклеивается к тому же сообщению (⏳ снят, ✂️ остаётся),
-            // мимо — отдельным сообщением
-            const head0 = head || "Древо чата";
-            // перелив: порядок строк — герой, метка (правило у NOT_FOR_GRAFT)
-            const ngHead0 = head0 + "\n" + NOT_FOR_GRAFT;
-            await edit(ngHead0 + "\n✂️⏳");
-            (async () => {
-                try {
-                    // ветвь — полная роспись («-+=») без метки; древо чата метку
-                    // уже несёт (chatFlatText)
-                    const att = await vkUploadDoc(peerId,
-                        fileBaseOf(head0) + ".ged.txt", "\uFEFF" + pack);
-                    try {
-                        await vkApi("messages.edit", {
-                            peer_id: peerId, message_id: sent, attachment: att });
-                        // правка без attachment сбрасывает вложения — повторяем
-                        await vkApi("messages.edit", {
-                            peer_id: peerId, message_id: sent, attachment: att,
-                            message: ngHead0 + "\n✂️" });
-                    } catch (e) {
-                        console.error("links edit:", e.message, "— отношу файлом");
-                        try { await vkApi("messages.edit", {
-                            peer_id: peerId, message_id: sent, message: ngHead0 + "\n✂️" }); } catch {}
-                        await messagesSend(peerId, head0, msgId, convMsgId, null, att);
-                    }
-                    console.log("links doc:", att, "peer", peerId);
-                } catch (e) {
-                    console.error("links doc upload:", e.message);
-                    await edit(ngHead0 + "\n💥 Не удалось выложить роспись.").catch(() => {});
-                }
-            })();
-        } else {
-            await edit((head ? head + "\n" : "") + pack);
-        }
-        } catch (e) {
-            console.error("links flat pack:", e.message);
-            const error = "Не удалось подготовить роспись. Попробуйте ещё раз.";
-            await edit(error).catch(() => messagesSend(peerId, error, msgId, convMsgId));
-        }
-        console.log("links flat pack:", key || "chat", "peer", peerId);
-        return;
-    }
-    // /Иван — префиксный поиск по родословной росписи -+= (/-Пётр — только
-    // мужчины глубины 0, /--Иван — глубины 1, /=… — женщины); "/ текст" —
-    // подстрока. В reply — события родни героя, включая неточные даты.
-    if (searchInput) {
-        const q = text.trim();
-        let parsed;
-        try { parsed = parseSearchQuery(q); }
-        catch (e) {
-            await messagesSend(peerId, e.message, msgId, convMsgId);
-            return;
-        }
-        const replySearch = !!originalReply;
-        if (replySearch && (!resolved || !resolved.xref || resolved.n.includes("+"))) {
-            await messagesSend(peerId, REPLY_TARGET_ERROR, msgId, convMsgId);
-            return;
-        }
-        const plan = replySearch ? prepareReplySearch(parsed, getSettings(peerId).fynny) : null;
-        const chain = plan?.chain ?? searchChain(parsed, false);
-        const radius = plan?.radius ?? searchRadius(parsed, chain);
-        if (plan?.error) {
-            await messagesSend(peerId, plan.error, msgId, convMsgId);
-            return;
-        }
-        if (replySearch) {
-            const fullHead = searchProgressHead(radius, chain, parsed, plan.decomposition);
-            const head = fullHead.length > 2500
-                ? searchProgressHead(radius, chain, parsed) + '\nПолное разложение — в файле.' : fullHead;
-            if (head.length + NOT_FOR_GRAFT.length + 40 > 4000) {
-                await messagesSend(peerId, "Ошибка поискового запроса: слишком длинный заголовок", msgId, convMsgId);
-                return;
-            }
-            const sent = await messagesSend(peerId, head + "\n⏳", msgId, convMsgId);
-            try {
-                const hits = focusSearch(personRows(peerId), weddingRows(peerId), linkPairs(peerId),
-                    focusSpousePairs(peerId), resolved.n + " " + resolved.d, plan.query, chain, radius);
-                const found = hits.join("\n");
-                const prefix = head + "\n" + NOT_FOR_GRAFT;
-                if (fullHead !== head || (found && prefix.length + 1 + found.length >= 4000)) {
-                    const inner = cutLines(found, 4000, prefix.length + 1 + "\n✂️⏳".length);
-                    const body = prefix + (inner ? "\n" + inner : "");
-                    const holdTxt = body + "\n✂️⏳", finalTxt = body + "\n✂️";
-                    await vkApi("messages.edit", { peer_id: peerId, message_id: sent, message: holdTxt });
-                    await holdAttach(peerId, "search", sent, holdTxt, finalTxt,
-                        fileBaseOf(searchHead(q, hits.length)) + ".txt", "\uFEFF" + fullHead + '\n' + NOT_FOR_GRAFT + "\n" + (found || 'Ничего не найдено'),
-                        null, head, msgId, convMsgId);
-                } else {
-                    await vkApi("messages.edit", { peer_id: peerId, message_id: sent,
-                        message: found ? prefix + "\n" + found : head + "\nНичего не найдено" });
-                }
-            } catch (e) {
-                console.error("reply search:", e);
-                await vkApi("messages.edit", { peer_id: peerId, message_id: sent,
-                    message: head + "\nНе удалось выполнить поиск" });
-            }
-            return;
-        }
-        const hits = flatSearch(chatFlatText(peerId), parsed);
-        if (hits.length) {
-            // ровно одно попадание, резолвящееся в персону, — сжатый юбилей
-            // с клавиатурой-юбилеем (триггера нет — реплаить не на что, новое
-            // сообщение); нерезолвимое (свадьба, заглушка, тёзки) —
-            // списком/файлом как прежде
-            if (hits.length === 1) {
-                const key = flatHitKey(hits[0], personRows(peerId));
-                const rec = key ? recordOf(peerId, key) : null;
-                if (rec) {
-                    await sendJubileeMsg(peerId, rec, "", msgId, convMsgId, fromId);
-                    console.log("flat search:", JSON.stringify(q), "-> юбилей", key, "peer", peerId);
-                    return;
-                }
-            }
-            console.log("результат готов:", hits.length, "строк");
-            // частые имена (Андрей) длиннее лимита ВК — файлом, как /links
-            // (ТГ: sendLong делает то же)
-            const found = hits.join("\n");
-            if (found.length >= 4000) {
-                // заголовок + ✂️⏳, ВЕСЬ список — файлом асинхронно (upload
-                // долгий, ответ — сразу); файл правкой в то же сообщение
-                // (⏳ снят, ✂️ остаётся)
-                const head = searchHead(q, hits.length);
-                // целые строки до ~4000 знака — в текст (как у 🧬-перелива),
-                // остальное — в файл; текст — только метка (без «Найдено…»),
-                // имя файла — из head; ✂️⏳ → после прицепа ✂️ (⏳ снят)
-                const inner = cutLines(found, 4000, NOT_FOR_GRAFT.length + 1);
-                const holdTxt = NOT_FOR_GRAFT + (inner ? "\n" + inner : "") + "\n✂️⏳";
-                const finalTxt = NOT_FOR_GRAFT + (inner ? "\n" + inner : "") + "\n✂️";
-                const sent = await messagesSend(peerId, holdTxt, msgId, convMsgId);
-                holdAttach(peerId, "search", sent, holdTxt, finalTxt,
-                    fileBaseOf(head) + ".txt", "\uFEFF" + withGraftMark(found),
-                    null, head, msgId, convMsgId);
-            } else {
-                await messagesSend(peerId, NOT_FOR_GRAFT + "\n" + found, msgId, convMsgId);
-            }
-            return;
-        }
-        await messagesSend(peerId, "Ничего не найдено", msgId, convMsgId);
-        return;
-    }
-    // цитата для родословной росписи -+=: ветвь цитируемого срезана, роспись привита
-    const replyHead = resolved;
-    // сообщение-гедком → замена древа (до разбора триггеров); не пустой чат —
-    // сначала автоматический резерв прежнего дерева файлом
-    const g = parseGedcom(text);
-    if (g) {
-        const st = gedStats(g);
-        if (st.persons || st.links) {
-            const r = await replaceWithGedcom(peerId, g, true);
-            for (const part of splitText(r.head)) await messagesSend(peerId, part, msgId, convMsgId);
-            return;
-        }
-        // гедком без персон с датами — молчим, дальше как триггеры
-    }
-    // родословная роспись -+=: строки с маркерами '-'/'=' (глубина), «+дата»/«+»
-    // (свадьбы) и безмарковыми именами вторых половин — весь разбор одним
-    // сообщением; в ответе сводка + ошибки построчно. В ответе на триггер —
-    // резка-прививка: ветвь цитируемого срезана, роспись (герой = цитируемый,
-    // ветвь целиком) привита; мимо цитаты — добавление merger'ем. (ТГ: handlers/message.js)
-    const lines0 = String(text).split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    if (lines0.some(l => /^[-+=]/.test(l))) {
-        const tree = parseTree(text);
-        if (tree.persons.length || tree.errors.length) {
-            // в ответе на триггер — ветвь цитируемого заменяется росписью
-            let anchor = null;
-            if (replyHead) {
-                const sh = resolved;
-                if (sh) anchor = sh.n + " " + sh.d;
-            }
-            const rep = anchor ? cutAndGraft(peerId, anchor, tree) : applyTree(peerId, tree);
-            const body = treeReport(rep);
-            for (const part of splitText(body)) await messagesSend(peerId, part, msgId, convMsgId);
-            console.log("tree:", rep.cut !== undefined ? "срезано " + rep.cut + ", " : "", rep.persons, "персон,", rep.fams, "семей,", rep.links, "детей,", rep.errors.length, "ошибок, peer", peerId);
-            return;
-        }
-    }
-    // поштучного ввода детей больше нет: ребёнок/ветвь добавляется родословной
-    // росписью -+= в ответе на героя (cutAndGraft выше)
-    const lines = String(text).split(/\s*\n+\s*/).filter(Boolean);
-    // точечная правка: одна строка без маркера в ответе на триггер (сообщение
-    // пользователя) — ПОЛНАЯ замена записи цитируемого (пол не трогается,
-    // ветвь и связи целы); якорь не персона — правки нет, обычный ввод
-    // (ТГ-копия: tgcloud/handlers/message.js)
-    if (lines.length === 1 && replyHead) {
-        const parsed = parseTrigger(lines[0]);
-        if (parsed && !parsed.error) {
-            const sh = resolved;
-            const anchor = sh ? sh.n + " " + sh.d : "";
-            const ed = editTrigger(peerId, anchor,
-                Object.assign({}, parsed.rec, parsed.tail ? { note: parsed.tail } : {}));
-            if (ed) {
-                if (ed.error) {
-                    await messagesSend(peerId, "💥 " + lines[0] + "\n" + ed.error, msgId, convMsgId);
-                    return;
-                }
-                await sendJubileeMsg(peerId, ed.rec, parsed.note, msgId, convMsgId, fromId);
-                console.log("edit:", anchor, "->", ed.rec.n, ed.rec.d, "peer", peerId);
-                return;
-            }
-        }
-    }
-    for (const line of lines) {
-        const parsed = parseTrigger(line);
-        if (!parsed) continue; // не триггер — молчим
-        if (parsed.error) {
-            await messagesSend(peerId, "💥 " + line + "\n" + parsed.error, msgId, convMsgId);
-            continue;
-        }
-        upsertPerson(peerId, parsed.rec);
-        await sendJubileeMsg(peerId, parsed.rec, parsed.note, msgId, convMsgId, fromId);
-        console.log("record:", parsed.rec.n, parsed.rec.d, "peer", peerId);
-    }
-}
 
 // резерв прежнего дерева чата файлом <имя>-old.ged (фолбэк — текстом);
 // true — выложен (или чат пуст), false — не смогли (замена отменяется)
 async function sendTreeBackup(peerId) {
     if (!q1("SELECT xref FROM indi WHERE chat=? LIMIT 1", peerId)) return true;
-    const g = gedcomText(peerId);
+    let g;
+    try { g = await computeExport(peerId, 'gedcom'); }
+    catch (e) { if (isWorkerCancelled(e)) throw e; console.error('backup prepare:', e.message); return false; }
     const base = fileBaseOf("Гедком-древо чата");
     try {
         await messagesSend(peerId, "🧬 Резерв прежнего дерева", 0, 0, null,
@@ -2892,14 +2305,19 @@ async function replaceWithGedcom(peerId, g, backup) {
         return { ok: false, head: "💥 Не удалось выложить резерв — замена отменена, прежнее дерево цело" };
     // одна транзакция: без неё каждый INSERT — свой коммит на диск, большое
     // древо (тысячи персон) пишется минутами
+    const started = LOG_VK_TIMINGS && performance.now();
+    let status = 'error';
     sq().exec("BEGIN");
     try {
         const r = importGedcom(peerId, g);
         sq().exec("COMMIT");
+        status = 'ok';
         return { ok: true, head: treeReport(r) };
     } catch (e) {
         sq().exec("ROLLBACK");
         throw e;
+    } finally {
+        if (LOG_VK_TIMINGS) vkTiming('import_transaction', { peer: peerId, status, ms: elapsedMs(started) });
     }
 }
 
@@ -2982,394 +2400,9 @@ async function editOriginDoc(o, name, content, kb) {
     }
 }
 
-async function handleEvent(o) {
-    const p = unpay(o.payload);
-    const peerId = o.peer_id;
-    console.log("кнопка:", JSON.stringify(p), "peer", peerId);
-    const action = p && typeof p === "object" ? p.c : p;
-    if (['foc', 'foc:bell', 'foc:flat', 'bell', 'flat', 'det', 'mon', 'del1'].includes(action))
-        activeDnaExports.delete(peerId + ':' + o.conversation_message_id);
-    // кнопки фокус-сообщения: радиус родни 1–5, 🔔/🧬 в радиусе, «-+=» ветвь
-    if (p && typeof p === "object" && (p.c === "foc" || p.c === "foc:bell" || p.c === "foc:tree" || p.c === "foc:flat")) {
-        // герой — по сообщению (findRecordByCmid), не по payload-ключу:
-        // свадьба «Имя+Имя Д» и старый стиль/примерные даты по ключу мимоходили
-        const rec = await findRecordByCmid(peerId, o.conversation_message_id);
-        if (!rec) {
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "персона не найдена");
-            return;
-        }
-        const key = pkey(rec);
-        const depth = focusDepth(linkPairs(peerId), focusSpousePairs(peerId), key);
-        // радиус не глубже имеющихся предков (старые сообщения могут нести снятые кнопки)
-        const radius = normalizeFocusRadius(p.r, depth);
-        await answerEvent(o.event_id || o.id, o.user_id, peerId,
-            p.c === "foc" ? focusLabel(radius)
-                : (p.c === "foc:bell" ? "список " : (p.c === "foc:flat" ? "пачка ветви " : "древо ")) + focusLabel(radius));
-        if (p.c === "foc:tree") {
-            const head = focusHead(key, radius, rec.dd);
-            const kb = await focusKeyboard(peerId, o.user_id, key, radius, depth);
-            try {
-                const sexMap = new Map(personRows(peerId).map(r => [pkey(r), r.sex ?? null]));
-                const keys = focusListKeys(linkPairs(peerId), focusSpousePairs(peerId),
-                    key, radius, k => sexMap.get(k) ?? null);
-                await sendGedArtifacts(o, keys, head, key, chatFlatText(peerId, keys), getSettings(peerId), kb);
-            } catch (e) {
-                console.error("DNA export:", e);
-                await editOrigin(o, head + "\n💥 Не удалось подготовить древо. Попробуйте ещё раз.", kb);
-            }
-            return;
-        }
-        // «-+=» на фокусе: роспись ВЕТВИ героя (.ged.txt) — вся глубина, герой
-        // первой строкой; реплай правленной росписью на цитату заменяет ветвь
-        if (p.c === "foc:flat") {
-            const head = focusHead(key, radius, rec.dd);
-            const kb = await focusKeyboard(peerId, o.user_id, key, radius, depth);
-            await vkApi("messages.edit", { peer_id: peerId, conversation_message_id: o.conversation_message_id,
-                message: head + "\n-+=⏳", keyboard: kb }).catch(e => console.error("flat loading:", e.message));
-            try {
-            const pack = branchFlatText(peerId, key);
-            if (!pack) { await editOrigin(o, head + "\n(ветвь пуста)", kb); return; }
-            const txt = focusHead(key, radius, rec.dd) + "\n" + pack;
-            if (txt.length <= 4000) { await editOrigin(o, txt, kb); return; }
-            // перелив: держ = голова, метка, обрезанные целые строки росписи
-            // (до ~4000) и ✂️⏳ в конце; роспись — файлом, после прицепа — тот
-            // же текст со ✂️ без часов (правка текста обязательно с
-            // повторным attachment — ВК сбрасывает вложения у правки без них)
-            const fh = focusHead(key, radius, rec.dd);
-            const inner = cutLines(pack, 4000,
-                fh.length + 1 + NOT_FOR_GRAFT.length + 1 + "\n✂️⏳".length, false);
-            const holdTxt = fh + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️⏳";
-            const finalTxt = fh + "\n" + NOT_FOR_GRAFT + "\n" + inner + "\n✂️";
-            await editOrigin(o, holdTxt, kb);
-            try {
-                const att = await vkUploadDoc(o.peer_id,
-                    fileBaseOf(fh) + ".ged.txt", "\uFEFF" + pack);
-                try {
-                    await vkApi("messages.edit", {
-                        peer_id: peerId, conversation_message_id: o.conversation_message_id,
-                        attachment: att, keyboard: kb });
-                    await vkApi("messages.edit", {
-                        peer_id: peerId, conversation_message_id: o.conversation_message_id,
-                        attachment: att, keyboard: kb, message: finalTxt });
-                } catch (e2) {
-                    console.error("foc:flat edit:", e2.message, "— отношу файлом");
-                    try { await editOrigin(o, finalTxt, kb); } catch {}
-                    await messagesSend(peerId, finalTxt, 0, 0, kb, att);
-                }
-                console.log("foc:flat doc:", att, "peer", peerId);
-            } catch (e) {
-                console.error("foc:flat doc upload:", e.message);
-                await sendTailDoc(peerId, pack, fileBaseOf(fh), ".ged.txt", o.conversation_message_id);
-                await editOrigin(o, finalTxt + "\n💥 Не удалось прикрепить файл к сообщению.", kb);
-            }
-            } catch (e) {
-                console.error("flat export:", e);
-                await editOrigin(o, head + "\n💥 Не удалось подготовить ветвь. Попробуйте ещё раз.", kb);
-            }
-            return;
-        }
-        // список всегда по ММ-ДД (сортировка подписки касается только дампа)
-        const byFull = false;
-        const head = focusHead(key, radius, rec.dd);
-        const kb = await focusKeyboard(peerId, o.user_id, key, radius, depth);
-        if (p.c === "foc") {
-            await editOrigin(o, head, kb);
-            return;
-        }
-        const loading = "🔔⏳";
-        // Не используем fallback отправки для промежуточных часов.
-        await vkApi("messages.edit", {
-            peer_id: peerId, conversation_message_id: o.conversation_message_id,
-            message: head + "\n" + loading, keyboard: kb
-        }).catch(e => console.error("focus loading:", e.message));
-        let text;
-        try {
-            text = focusText(peerId, key, radius, true, rec.dd, byFull);
-        } catch (e) {
-            console.error("focus list:", e);
-            text = head + "\nНе удалось подготовить список. Попробуйте ещё раз.";
-        }
-        await editOrigin(o, text, kb);
-        return;
-    }
-    // кнопки сообщения-юбилея: 👎 — удалить событие, 👀/🌙 — тоггл
-    // детальности (как реакции 👀/снятие, но тапом; клавиатура едина с ТГ).
-    // Запись резолвим по сообщению — findRecordByCmid, как у реакций: payload
-    // несёт хранимый ключ (старый стиль/примерная дата), а свадьба «Имя+Имя Д»
-    // и вовсе не персона — по ключу были ложные «Событие не найдено»
-    if (p && typeof p === "object" && (p.c === "del1" || p.c === "det" || p.c === "mon")) {
-        const rec = await findRecordByCmid(peerId, o.conversation_message_id);
-        if (!rec) { await answerEvent(o.event_id || o.id, o.user_id, peerId, "Событие не найдено"); return; }
-        const key = pkey(rec);
-        if (p.c === "del1") {
-            // связи персоны, свадьба пары «Имя+Имя», висячие кандидаты, семьи
-            deleteEventCascade(peerId, key);
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "удалено");
-            console.log("кнопка 👎: удалено событие", rec.n, rec.d, "peer", peerId);
-            await editOrigin(o, "🗑 Событие удалено: " + rec.n + " " + rec.d,
-                JSON.stringify({ inline: true, buttons: [] }));
-            return;
-        }
-        // det — развернуть (кнопка 🌙), mon — сжать обратно (как снятие реакции)
-        const detail = p.c === "det";
-        const depth = focusDepth(linkPairs(peerId), focusSpousePairs(peerId), key);
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, detail ? "подробно" : "сжато");
-        await editOrigin(o, jubileeText(rec, "", detail),
-            await jubileeKeyboard(peerId, o.user_id, key, depth, detail, rec.n.includes("+")));
-        return;
-    }
-    // нормализуем: {c} / {rel} либо строка "del" / "del:yes" / "rel:orth"
-    const payload = typeof p === "object" ? (p.rel ? "rel:" + p.rel : String(p.c ?? "")) : p;
-    console.log("event:", payload, "peer", peerId);
-    if (!["del", "del:yes", "del:no", "bell", "flat", "tree", "close", "ged:rep", "ged:bak", "ged:ign"].includes(payload) && !payload.startsWith("rel:")) {
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, "неизвестная кнопка");
-        return;
-    }
-    // 🗑/❌ в групповом чате — только админ беседы или создатель сообщества
-    if (peerId >= 2000000000 && ["del", "del:yes", "del:no"].includes(payload) && !(await isChatAdmin(peerId, o.user_id))) {
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, "только владелец");
-        return;
-    }
-    // «Нет / Да» на дроп: замена с резервом или отказ.
-    // ged:bak остаётся для уже отправленных подтверждений живого дропа.
-    // (в группе — только отправивший файл)
-    if (payload === "ged:rep" || payload === "ged:bak" || payload === "ged:ign") {
-        const emptyKeyboard = JSON.stringify({ inline: true, buttons: [] });
-        const pend = gedPending.get(peerId);
-        if (!pend || Date.now() - pend.ts > GED_TTL) {
-            gedPending.delete(peerId);
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "файл не найден — перешлите .ged заново");
-            return;
-        }
-        if (peerId >= 2000000000 && o.user_id !== pend.fromId) {
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "только отправивший файл");
-            return;
-        }
-        gedPending.delete(peerId);
-        // тост сразу: event_id у ВК живёт секунды, а замена большого древа
-        // идёт дольше — поздний answerEvent ВК отвергает (100 invalid
-        // event_id), и «вращение» висит на кнопке до конца работы
-        await answerEvent(o.event_id || o.id, o.user_id, peerId,
-            payload === "ged:ign" ? "не добавлено" : "идёт замена древа…");
-        if (payload === "ged:ign") {
-            await editOrigin(o, "Файл не добавлен: " + pend.name, emptyKeyboard);
-            return;
-        }
-        await editOrigin(o, "Идёт замена древа: " + pend.name, emptyKeyboard);
-        // роспись .ged.txt: ЗАМЕНА дерева чата (с резервом — прежнее дерево файлом)
-        if (/\.ged\.txt$/i.test(pend.name)) {
-            if (!(await sendTreeBackup(peerId))) {
-                await editOrigin(o, "💥 Не удалось выложить резерв — замена отменена, прежнее дерево цело",
-                    emptyKeyboard);
-                return;
-            }
-            const tree = parseTree(pend.text);
-            if (getSettings(peerId).trim) trimImport(tree);
-            clearChatTree(peerId);
-            const rep = applyTree(peerId, tree);
-            const parts = splitText(treeReport(rep));
-            await editOrigin(o, parts[0], emptyKeyboard);
-            for (const part of parts.slice(1)) await messagesSend(peerId, part);
-            console.log("txt replace:", rep.persons, "персон,", rep.links, "детей, peer", peerId);
-            return;
-        }
-        const g = parseGedcom(pend.text);
-        if (!g) {
-            await editOrigin(o, "Файл не добавлен: " + pend.name + " (ждём GEDCOM в UTF-8)", emptyKeyboard);
-            return;
-        }
-        const r = await replaceWithGedcom(peerId, getSettings(peerId).trim ? trimImport(g) : g, true);
-        const parts = splitText(r.head);
-        await editOrigin(o, parts[0], emptyKeyboard);
-        for (const part of parts.slice(1)) await messagesSend(peerId, part);
-        console.log("ged replace:", r.head, "peer", peerId);
-        return;
-    }
-    if (payload === "del") {
-        // подтверждение: список событий чата по полной дате ГГГГ-ММ-ДД + 🗑/❌
-        // (🗑-радиус снят: удаление — только глобальное)
-        const list = upcomingEvents(peerId, true); // по полной дате, со смертями
-        if (!list) {
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "событий нет");
-            return;
-        }
-        const head = "Удалить все события чата?";
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, "подтвердите удаление");
-        const kb = JSON.stringify({
-            inline: true,
-            buttons: [[
-                { action: { type: "callback", label: "🗑", payload: JSON.stringify({ c: "del:yes" }) }, color: "secondary" },
-                { action: { type: "callback", label: "❌", payload: JSON.stringify({ c: "del:no" }) }, color: "secondary" }
-            ]]
-        });
-        // длинный список — голова + ✂️⏳, весь список — одним .txt-вложением
-        // в это же сообщение (как «-+=» и .ged/.pdf), потом ⏳ снят (✂️ остаётся)
-        if ((head + "\n" + list).length >= 4000) {
-            const head0 = (head + "\n" + list).split("\n")[0];
-            await editOrigin(o, NOT_FOR_GRAFT + "\n" + head0 + "\n✂️⏳", kb);
-            await editOriginDoc(o, fileBaseOf(head0) + ".txt",
-                "\uFEFF" + withGraftMark(head + "\n" + list), kb);
-            try { await editOrigin(o, NOT_FOR_GRAFT + "\n" + head0 + "\n✂️", kb); } catch {}
-            return;
-        }
-        await editOrigin(o, head + "\n" + list, kb);
-    } else if (payload === "del:yes") {
-        // глобальное удаление: дерево чата (персоны/свадьбы/связи/семьи) целиком
-        const n = personRows(peerId).length + weddingRows(peerId).length;
-        clearChatTree(peerId);
-        console.log("deleted", n, "records peer", peerId);
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, "удалено событий: " + n);
-        await editOrigin(o, "Удалено событий: " + n + "\n" + helpText(getSettings(peerId)), await peerKeyboard(peerId, o.user_id));
-    } else if (payload === "close") {
-        await deleteByCmid(peerId, o.conversation_message_id);
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, "закрыто");
-    } else if (payload === "del:no") {
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, "отмена удаления");
-        await editOrigin(o, helpText(getSettings(peerId)), await peerKeyboard(peerId, o.user_id));
-    } else if (payload === "bell") {
-        // список событий (не родословная роспись -+=): всегда рендер по ММ-ДД,
-        // без подписного переключения тапом; список начинается с сегодня —
-        // что не влезает в сообщение, просто отрезаем (целые строки)
-        // «от сегодня» (МСК) — MM-DD
-        const { mo, d: dToday } = mskNowParts();
-        const list = upcomingEvents(peerId, false,
-            String(mo).padStart(2, "0") + "-" + String(dToday).padStart(2, "0"));
-        if (!list) {
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "событий нет");
-            const current = await cmidText(peerId, o.conversation_message_id);
-            if (current !== null && current.replace(/\((fynny|trim)=[01]\)/g, '($1=0)') !== HELP)
-                await editOrigin(o, "Событий нет", await peerKeyboard(peerId, o.user_id));
-            return;
-        }
-        // снекбар останавливает «вращение» на кнопке
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, "список событий");
-        const shownList = cutLines(list, 4000);
-        await editOrigin(o, shownList || "Событий нет", await peerKeyboard(peerId, o.user_id));
-    } else if (payload === "flat") {
-        // «-+=» — родословная роспись -+= древа чата: файлами .ged.txt и .ged.csv (зеркало ТГ:
-        // sendFlatPack key=null) — правка этого сообщения «-+=⏳», вложение
-        // правкой в него же (editOrigin без attachment сбросил бы вложение),
-        // потом держатель → «-+=» (видимая метка — цитата живёт); клавиатура
-        // (kb0) остаётся на сообщении; провал — правка «💥». Метка
-        // NOT_FOR_GRAFT — первой строкой файла
-        const flat = chatFlatText(peerId);
-        if (!flat) {
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "древо пусто");
-            return;
-        }
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, "пачка древа чата");
-        const kb0 = await peerKeyboard(peerId, o.user_id);
-        try {
-            await editOrigin(o, "-+=⏳", kb0);
-            await sendChatFlatArtifacts(peerId, flat,
-                { conversation_message_id: o.conversation_message_id }, kb0);
-        } catch (e) {
-            console.error("flat doc:", e.message);
-            await editOrigin(o, "💥 Не удалось выложить файл «Древо чата.ged.txt»", kb0);
-        }
-    } else if (payload === "tree") {
-        const pack = chatFlatText(peerId);
-        if (!pack.trim()) {
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "древо пусто");
-            return;
-        }
-        await answerEvent(o.event_id || o.id, o.user_id, peerId, "роспись древа чата");
-        await sendGedArtifacts(o, undefined, "Древо чата", null, pack, getSettings(peerId), await peerKeyboard(peerId, o.user_id));
-    } else if (payload.startsWith("rel:")) {
-        const key = payload.slice(4);
-        if (!REL_DEFS[key]) return;
-        const head = REL_DEFS[key].icon + " " + REL_DEFS[key].name + " дни";
-        // календарь уже показан в этом сообщении (заголовок совпадает) — toggle,
-        // иначе первый тап: показать календарь
-        const cur = await cmidText(peerId, o.conversation_message_id);
-        const shown = cur !== null && cur.split("\n", 1)[0] === head;
-        if (shown) {
-                const on = setChatSetting(peerId, key);
-            // снекбар останавливает «вращение» на кнопке
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, on ? "🔔 включены" : "🔕 выключены");
-            await editOrigin(o, head + "\n" + religiousYear(key), relKeyboard(peerId));
-        } else {
-            await answerEvent(o.event_id || o.id, o.user_id, peerId, "календарь на год");
-            await editOrigin(o, head + "\n" + religiousYear(key), relKeyboard(peerId));
-        }
-    }
-}
 
 // реакции на ответы/уведомления бота; формат события (по факту):
 // { reacted_id, peer_id, cmid, reaction_id } — 👎 = 9, 👀 = REACTION_EYES_ID
-async function handleReaction(o) {
-    const cmid = o.cmid ?? o.conversation_message_id ?? o.message_id;
-    if (!cmid) return;
-    const peerId = o.peer_id;
-    const from = o.reacted_id ?? o.from_id ?? o.user_id;
-    if (from <= 0) return; // реакции бота игнорируем
-
-    if (o.reaction_id === undefined) { // снятие реакции — сжать обратно
-        const rec = await findRecordByCmid(peerId, cmid);
-        if (!rec) {
-            console.log("reaction снята: запись не найдена (cmid", cmid, "peer", peerId, ")");
-            return;
-        }
-        try {
-            await vkApi("messages.edit", {
-                peer_id: peerId, conversation_message_id: cmid,
-                message: jubileeText(rec, ""),
-                // клавиатура-юбилей возвращается (сжатое состояние, 👀)
-                keyboard: await jubileeKeyboard(peerId, from, pkey(rec),
-                    focusDepth(linkPairs(peerId), focusSpousePairs(peerId), pkey(rec)), false, rec.n.includes("+"))
-            });
-            console.log("reaction снята: сжато", rec.n, rec.d, "peer", peerId);
-        } catch (e) {
-            console.error("reaction collapse:", e.message);
-        }
-        return;
-    }
-    if (o.reaction_id === 9) { // 👎 — удалить событие
-        const rec = await findRecordByCmid(peerId, cmid);
-        if (!rec) return;
-        // связи персоны, свадьба пары «Имя+Имя», висячие кандидаты, семьи
-        deleteEventCascade(peerId, pkey(rec));
-        console.log("reaction 👎: удалено событие", rec.n, rec.d, "peer", peerId);
-        // правим сообщение события в пометку об удалении (реакции сохраняются),
-        // при неудаче — reply
-        try {
-            await vkApi("messages.edit", {
-                peer_id: peerId, conversation_message_id: cmid,
-                message: "🗑 Событие удалено: " + rec.n + " " + rec.d
-            });
-        } catch (e) {
-            console.error("reaction edit:", e.message, "— reply");
-            try {
-                await messagesSend(peerId, "🗑 Событие удалено: " + rec.n + " " + rec.d, 0, cmid);
-            } catch (e2) {
-                console.error("reaction reply:", e2.message);
-            }
-        }
-        return;
-    }
-    if (REACTION_EYES_ID && o.reaction_id === REACTION_EYES_ID) { // 👀 — детализировать
-        const rec = await findRecordByCmid(peerId, cmid);
-        if (!rec) {
-            console.log("reaction 👀: запись не найдена (cmid", cmid, "peer", peerId, ") — возможно, событие уже удалено");
-            return;
-        }
-        try {
-            await vkApi("messages.edit", {
-                peer_id: peerId, conversation_message_id: cmid,
-                message: jubileeText(rec, "", true),
-                // клавиатура-юбилей с 🌙 (сворачивает обратно)
-                keyboard: await jubileeKeyboard(peerId, from, pkey(rec),
-                    focusDepth(linkPairs(peerId), focusSpousePairs(peerId), pkey(rec)), true, rec.n.includes("+"))
-            });
-            console.log("reaction 👀: детально", rec.n, rec.d, "peer", peerId);
-        } catch (e) {
-            console.error("reaction detail:", e.message);
-        }
-        return;
-    }
-    // неизвестная реакция: id в лог
-    console.log("reaction:", o.reaction_id);
-}
 
 // найти запись по тексту ответа бота (заголовок «Имя ГГГГ-ММ-ДД»)
 async function findRecordByCmid(peerId, cmid) {
@@ -3408,6 +2441,7 @@ async function findRecordByCmid(peerId, cmid) {
 // digest:<peer> в meta, пишется после успешной отправки).
 
 function mskNowParts() {
+    if (replDate) return { y: replDate[0], mo: replDate[1], d: replDate[2], h: replHour ?? 9, min: 0 };
     const t = new Date(Date.now() + TZ_MS);
     return {
         y: t.getUTCFullYear(),
@@ -3597,6 +2631,7 @@ async function main() {
         console.error("нет токена: задайте VK_TOKEN (env или .env рядом с lunarreturns.js)");
         process.exit(1);
     }
+    if (LOG_VK_TIMINGS) watchVkLoop();
     sq(); // открыть/создать базу
     await longPollInit();
     await initOwner();
@@ -3634,7 +2669,31 @@ async function main() {
     }
 }
 
-if (require.main === module) main().catch(e => { console.error("fatal:", e); process.exit(1); });
+const { createUpdateRouter } = reqVk('updates');
+const updateRouter = createUpdateRouter({
+    GED_TTL, answerEvent, applyTree, bellKeyboard,
+    clearChatTree, cmidText, cutAndGraft, deleteByCmid, deleteEventCascade, editOrigin,
+    editOriginDoc, editTrigger, findRecordByCmid, focusHead, focusLabel, focusKeyboard,
+    focusSpousePairs, focusText, gedPending, getSettings, handleGedDrop, handleTxtDrop, hasTree,
+    holdAttach, isChatAdmin, jubileeKeyboard, jubileeText, linkPairs, markSeen, messagesSend,
+    mskNowParts, ownerKeyboard, peerKeyboard, personRows, pkey, recordOf, relKeyboard,
+    replaceWithGedcom, resolveReply, sendChatFlatArtifacts, sendFocus, sendGedcom,
+    sendJubileeMsg, sendPdf, sendTailDoc, sendTreeBackup, sendViewer, setChatSetting, splitText,
+    unpay, upcomingEvents, upsertPerson, vkApi, vkUploadDoc, weddingRows,
+    exportFocused, exportWhole, cancelDnaExport, computeExport, parseImport,
+    hasDnaExport: (peer, cmid) => activeDnaExports.has(peer + ':' + cmid),
+    cancelWorkerIndicator, isWorkerCancelled,
+    withWorkerUpdate: (peerId, run) => workerUpdates.run({ peerId }, run),
+    get groupId() { return groupId; }, get ownerId() { return ownerId; },
+}, byPeer);
+
+if (require.main === module) {
+    for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => {
+        closeExportPool();
+        process.exit(0);
+    });
+    main().catch(e => { closeExportPool(); console.error("fatal:", e); process.exit(1); });
+}
 
 // Offline CLI shares the bot adapters, but must never open a persistent store.
 module.exports.convertGenealogy = function (mode, text) {
@@ -3657,7 +2716,7 @@ module.exports.convertGenealogy = function (mode, text) {
         if (rep.errors.length) throw new Error(rep.errors.map(e => "line " + e.line + ": " + e.msg).join("; "));
         return gedcomText(0);
     } finally {
-        if (sdb) { sdb.close(); sdb = null; }
+        closeStore();
     }
 };
 
@@ -3673,4 +2732,8 @@ module.exports.__test = {
     flatHitPerson, flatHitKey, packToCsv,
     cutAndGraft, setPersonByXref, editTrigger, rootOf, uniqueKeyOf, upcomingEvents, hasTree,
     recordShownOf, newStyleDate, oldStyleDate,
+    dispatch: updateRouter.direct, q1, qa, qr, dailyCheck, messagesSend, sendGedArtifacts,
+    getSettings, resolveReply, closeExportPool, vkUploadDoc,
+    setWorkerTestOptions(options) { workerTestOptions = options; },
+    setReplDate(parts, hour) { replDate = parts; replHour = hour; },
 };

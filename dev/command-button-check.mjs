@@ -9,7 +9,7 @@ import { DatabaseSync } from 'node:sqlite';
 import vm from 'node:vm';
 import { resolveReplyRecord, replyHeader } from '../tgcloud/lib/text.cjs';
 import { graftError } from '../tgcloud/lib/flat.cjs';
-import { parseTree } from '../tgcloud/lib/parse.cjs';
+import { parseGedcom, parseTree } from '../tgcloud/lib/parse.cjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const tmp = fs.mkdtempSync('/tmp/kilo/lr-command-button-');
@@ -111,14 +111,15 @@ function last(result) {
 
 try {
     const records = [{ n: 'Hero', d: '1950-01-01', xref: 'I1' }];
-    const vkSource = fs.readFileSync(path.join(root, 'lunarreturns.js'), 'utf8');
-    const vkResolve = vm.runInNewContext('(' + vkSource.match(/^function resolveReply\([\s\S]*?^\}/m)[0] + ')', {
-        groupId: 99, resolveReplyRecord, personRows: () => records, weddingRows: () => [],
-    });
+    process.env.LR_DB = path.join(tmp, 'vk-direct.db');
+    process.env.VK_GROUP_ID = '99';
+    const { resolveReply: vkResolve, importGedcom } = (await import('../lunarreturns.js')).default.__test;
+    importGedcom(1, parseGedcom(ged([]).replaceAll('\\n', '\n')));
     for (const from_id of [undefined, 0, -98])
         assert.equal(vkResolve(1, { from_id, peer_id: 1, text: '1 Hero 1950-01-01' }), null);
     assert.equal(vkResolve(1, { from_id: -99, peer_id: 2, text: '1 Hero 1950-01-01' }), null);
-    assert.equal(vkResolve(1, { from_id: -99, peer_id: 1, text: '1 Hero 1950-01-01' }), records[0]);
+    const vkRecord = vkResolve(1, { from_id: -99, peer_id: 1, text: '1 Hero 1950-01-01' });
+    assert.deepEqual({ n: vkRecord?.n, d: vkRecord?.d }, { n: records[0].n, d: records[0].d });
     let contexts = [], identity = records[0], getMeFails = false;
     const tgSource = fs.readFileSync(path.join(root, 'tgcloud/handlers/message.js'), 'utf8');
     const tgResolve = vm.runInNewContext('(' + tgSource.match(/^async function resolveReply\([\s\S]*?^\}/m)[0] + ')', {

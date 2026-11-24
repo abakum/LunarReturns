@@ -1,7 +1,7 @@
 const { script, licenses } = require('./viewer-bundle.cjs');
 const { createAnnotationRows } = require('./annotations.cjs');
 
-function viewerAnnotations(gedcom, snapshot, pairs = [], spouses = [], chain = false, model = null) {
+function viewerAnnotations(gedcom, snapshot, pairs = [], spouses = [], chain = false, model = null, progress) {
     const ids = new Set([...gedcom.matchAll(/^0 @([^\r\n@]+)@ INDI\r?$/gm)].map(m => m[1]));
     const destinations = new Set(ids);
     for (const { r, bar } of model?.annotationRegions ?? []) {
@@ -10,8 +10,12 @@ function viewerAnnotations(gedcom, snapshot, pairs = [], spouses = [], chain = f
         if (bar) destinations.add(r.xref);
     }
     const rowsOf = createAnnotationRows(snapshot, pairs, spouses, chain);
-    return Object.fromEntries(snapshot[0].filter(p => ids.has(p.key)).map(({ key }) => [key,
-        rowsOf(key).map(({ xref, ...row }) => destinations.has(xref) ? { ...row, xref } : row)]));
+    const people = snapshot[0].filter(p => ids.has(p.key));
+    return Object.fromEntries(people.map(({ key }, i) => {
+        const rows = rowsOf(key).map(({ xref, ...row }) => destinations.has(xref) ? { ...row, xref } : row);
+        if ((i + 1) % 16 === 0 || i + 1 === people.length) progress?.(i + 1, people.length);
+        return [key, rows];
+    }));
 }
 
 function viewerHtml(gedcom, title, heroXref = null, annotations = {}, { svg, notice } = {}) {

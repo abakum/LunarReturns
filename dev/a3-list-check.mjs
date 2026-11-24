@@ -10,7 +10,7 @@
 //    после волны A3 только выбирают rows из БД и зовут канон tree.cjs.
 // Импорт (из dev/sync-check.mjs) — только чистые проверки канона, без
 // прикосновений к env/БД. Прямой запуск `node dev/a3-list-check.mjs`
-// дополнительно проверяет адаптеры: ВК через временную копию lunarreturns.js
+// дополнительно проверяет адаптеры: ВК через lunarreturns.js
 // (LR_DB в своём TMP), ТГ через sdk-mock (LR_DEV_DB в своём TMP;
 // dev/tg-db.json не трогается).
 import assert from 'node:assert/strict';
@@ -440,19 +440,11 @@ function checkCanon(tag) {
 }
 
 // ============================== адаптеры (прямой запуск) ==============================
-// ВК: временная копия lunarreturns.js в тихом test-режиме (LR_DB — свой TMP);
-// вставки те же, что у снимка ожиданий; upcomingEvents после A3 — обёртка.
+// ВК: реальные адаптеры без main(), в отдельной БД.
 function checkVkAdapter() {
     const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'lr-a3list-vk-'));
     process.env.LR_DB = path.join(TMP, 'vk.db');
-    const vkFile = path.join(TMP, 'vk.cjs');
-    fs.writeFileSync(vkFile, fs.readFileSync(path.join(ROOT, 'lunarreturns.js'), 'utf8'));
-    const prevArgv = process.argv.slice();
-    process.argv = [process.argv[0], vkFile, 'test', ''];
-    const prevLog = console.log;
-    console.log = () => {};
-    let VK;
-    try { VK = require(vkFile).__test; } finally { console.log = prevLog; process.argv = prevArgv; }
+    const VK = require('../lunarreturns.js').__test;
     const CH = 501, EMPTY = 502;
     for (const p of persons) VK.upsertPerson(CH, p);
     VK.upsertPerson(CH, VK.parseTrigger('Анна+Пётр 1985~').rec);

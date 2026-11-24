@@ -60,6 +60,10 @@ pkill -u "$RUN_USER" -f "node .*$DIR/lunarreturns.js" 2>/dev/null && echo "ру�
 #    старая база из репо переносится
 install -d -m 700 /var/lib/lunarreturns
 install -m 644 "$DIR/lunarreturns.js" /var/lib/lunarreturns/lunarreturns.js
+install -d -m 755 /var/lib/lunarreturns/vk/handlers /var/lib/lunarreturns/vk/lib
+install -m 644 "$DIR"/vk/*.js /var/lib/lunarreturns/vk/
+install -m 644 "$DIR"/vk/handlers/*.js /var/lib/lunarreturns/vk/handlers/
+install -m 644 "$DIR"/vk/lib/*.js /var/lib/lunarreturns/vk/lib/
 # общий канон логики (план .kilo/plans/20261107-shared-modules-plan.md,
 # волна A2 — 20261108): lunarreturns.js требует tgcloud/lib/<мод>.cjs
 # (kinship, astro, religion, text, parse, chart, font-cyr, tree, flat);

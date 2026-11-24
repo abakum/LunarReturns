@@ -243,15 +243,7 @@ if (typeof P.gedNoteLines !== 'function') {
             const tmp = fs.mkdtempSync(path.join('/tmp/kilo', 'lr-ged-note-'));
             process.env.LR_DB = path.join(tmp, 'vk.db');
             process.env.LR_DEV_DB = path.join(tmp, 'tg.json');
-            const vkFile = path.join(tmp, 'vk.cjs');
-            fs.writeFileSync(vkFile, fs.readFileSync(path.join(ROOT, 'lunarreturns.js'), 'utf8'));
-            const argv = process.argv, log = console.log;
-            let VK;
-            try {
-                process.argv = [process.execPath, vkFile, 'test', ''];
-                console.log = () => {};
-                VK = require(vkFile).__test;
-            } finally { process.argv = argv; console.log = log; }
+            const VK = require('../lunarreturns.js').__test;
             fs.cpSync(path.join(ROOT, 'dev/sdk-mock'), path.join(ROOT, 'node_modules/sdk'), { recursive: true });
             const TG = await import('../tgcloud/lib/bot.js');
             const source = ged(['0 @I1@ INDI', '1 NAME Parent', '1 BIRT', '2 DATE 1 JAN 1950',

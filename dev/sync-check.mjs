@@ -30,21 +30,9 @@ function cmp(what, vk, tg) {
     console.log('  ТГ: ' + b);
 }
 
-// ---- ВК: копия lunarreturns.js уходит в тихий test-режим; __test-экспорт
-// уже в файле (SQLite store: personRows/weddingRows/famList/upsertPerson…);
-// __extra — низкоуровневый доступ к SQL для VK-only сценариев (sent)
+// ---- ВК: загрузить реальные адаптеры без main(), с отдельной БД.
 process.env.LR_DB = path.join(TMP, 'vk.db');
-const vkHook = '\nmodule.exports.__extra = { qa, q1, qr };\n';
-const vkFile = path.join(TMP, 'vk.cjs');
-fs.writeFileSync(vkFile, fs.readFileSync(path.join(ROOT, 'lunarreturns.js'), 'utf8') + vkHook);
-const require = createRequire(import.meta.url);
-const prevArgv = process.argv.slice();
-process.argv = [process.argv[0], vkFile, 'test', ''];
-const prevLog = console.log;
-console.log = () => {};
-let VK;
-try { VK = require(vkFile).__test; } finally { console.log = prevLog; process.argv = prevArgv; }
-const VKX = require(vkFile).__extra; // низкоуровневые qa/q1/qr для VK-only (sent)
+const VK = (await import('../lunarreturns.js')).default.__test;
 
 // ---- ТГ: tgcloud/lib через sdk-mock (как dev/repl.mjs) ----
 process.env.LR_DEV_DB = path.join(TMP, 'tg-db.json');
@@ -1861,9 +1849,9 @@ VK.confirmPair(CPS, vkL2b, vkLP[0]);
 await TG.confirmPair(CPS, tgL2b, tgLP[0]);
 cmp('тёзки: гедком после confirmPair', VK.gedcomText(CPS), await TG.gedcomText(CPS));
 // sent переживает замену (VK-only: запись планировщика по ключу остаётся)
-VKX.qr('INSERT OR REPLACE INTO sent(chat,key,last_year) VALUES(?,?,?)', CPS, vkPk, 2020);
+VK.qr('INSERT OR REPLACE INTO sent(chat,key,last_year) VALUES(?,?,?)', CPS, vkPk, 2020);
 VK.importGedcom(CPS, VK.parseGedcom(gedTz));
-const sentRow = VKX.q1('SELECT last_year FROM sent WHERE chat=? AND key=?', CPS, vkPk);
+const sentRow = VK.q1('SELECT last_year FROM sent WHERE chat=? AND key=?', CPS, vkPk);
 if (!sentRow || sentRow.last_year !== 2020) { failed++; console.log('✗ sent не пережил замену'); }
 // дубль fam: ребёнок с двумя FAMC → две fam (не слипаются в одну)
 const g2f = VK.parseGedcom(['0 HEAD',

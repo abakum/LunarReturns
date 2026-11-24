@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import vm from 'node:vm';
+import handleVkEvent from '../vk/handlers/message_event.js';
+import { createUpdateRouter } from '../vk/updates.js';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lr-a3-repl-'));
 const root = new URL('../', import.meta.url);
@@ -13,29 +14,81 @@ const huge = Array.from({ length: 180 }, (_, i) => '-Тестовый' + String(
 // REPL проверяет видимые правки; дополнительно фиксируем await до построения списка.
 const tgCallback = fs.readFileSync(new URL('../tgcloud/handlers/callback_query.js', import.meta.url), 'utf8');
 assert.match(tgCallback, /await api\.editMessageText\([\s\S]*?text: head \+ "\\n" \+ loading[\s\S]*?\)\.catch\([^\n]*\);\s*let text;\s*try \{\s*const sex = await sexOf\(\);\s*const s = await getSettings\(chatId\);\s*const keys = focusListKeys/);
-const vkSource = fs.readFileSync(new URL('../lunarreturns.js', import.meta.url), 'utf8');
-assert.match(vkSource, /await vkApi\("messages.edit", \{\s*peer_id: peerId,[\s\S]*?message: head \+ "\\n" \+ loading, keyboard: kb\s*\}\)\.catch\([^\n]*\);\s*let text;\s*try \{\s*text = focusText/);
-// Сетевая ошибка на любом этапе загрузки повторяется, постоянная save-ошибка нет.
-const uploadSource = vkSource.match(/^async function vkUploadDoc\([\s\S]*?^\}/m)[0];
-for (const failure of ['server', 'post', 'save', 'permanent', 'exhausted']) {
-    const calls = { server: 0, post: 0, save: 0 };
-    const upload = vm.runInNewContext(uploadSource + '; vkUploadDoc', {
-        groupId: 0, FormData, Blob, AbortSignal, console: { error() {} }, sleep: async () => {},
-        vkApi: async method => {
-            const stage = method === 'docs.save' ? 'save' : 'server';
-            calls[stage]++;
-            if (failure === stage && calls[stage] === 1 || failure === 'exhausted' && stage === 'server') throw new TypeError('fetch failed');
-            if (failure === 'permanent' && stage === 'save') throw new Error('docs.save 100: invalid file');
-            return stage === 'save' ? { doc: { owner_id: 1, id: 2 } } : { upload_url: 'https://upload.invalid' };
-        },
-        fetch: async () => {
-            calls.post++;
-            if (failure === 'post' && calls.post === 1) throw new TypeError('fetch failed');
-            return { text: async () => '{"file":"accepted"}' };
+{
+    const order = [];
+    await handleVkEvent({ payload: { c: 'foc:bell', r: 1 }, conversation_message_id: 42 }, {
+        peerId: 1,
+        deps: {
+            unpay: p => p, activeDnaExports: new Map(), cancelDnaExport() {},
+            findRecordByCmid: async () => ({ n: 'Person', d: '2000-01-01' }), pkey: r => r.n + ' ' + r.d,
+            linkPairs: () => [], focusSpousePairs: () => [], focusLabel: String,
+            focusHead: () => 'Person', answerEvent: async () => {}, focusKeyboard: async () => 'keyboard',
+            vkApi: async (_, params) => { await Promise.resolve(); order.push(params.message); },
+            focusText: () => { order.push('build'); return 'List'; },
+            editOrigin: async (_, text) => { order.push(text); },
         },
     });
-    if (failure === 'permanent' || failure === 'exhausted') await assert.rejects(upload(1, 'test.ged', 'test'));
-    else assert.equal(await upload(1, 'test.ged', 'test'), 'doc1_2');
+    assert.deepEqual(order, ['Person\n🔔⏳', 'build', 'List']);
+}
+{
+    const seen = [];
+    const router = createUpdateRouter({
+        groupId: 99, ownerId: 1001,
+        resolveReply: (_, reply) => { assert.equal(reply, null); return null; },
+        markSeen: date => seen.push(['date', date]),
+        parseImport: () => null,
+        unpay: value => value,
+        activeDnaExports: new Map(), cancelDnaExport() {},
+        answerEvent: async (_, user, peer, text) => seen.push(['answer', peer, user, text]),
+        findRecordByCmid: async (peer, cmid) => { seen.push(['reaction', peer, cmid]); return null; },
+    }, async (peer, run, trace) => {
+        seen.push(['queue', peer, trace]);
+        return run();
+    });
+    const trace = (update, payload) => [update.type, payload.peer_id];
+    for (const update of [null, { type: 'message_event', group_id: 99, object: {} },
+        { type: 'unknown', group_id: 99, object: { peer_id: 1 } },
+        { type: 'message_new', group_id: 98, object: { peer_id: 1, text: 'ignored' } }]) {
+        assert.equal(router.longPoll(update, 99, trace), undefined);
+    }
+    await router.longPoll({ type: 'message_new', group_id: 99, object: { peer_id: 1, text: 'plain', date: 10 } }, 99, trace);
+    await router.longPoll({ type: 'message_new', group_id: 99, object: { message: { peer_id: 2, text: 'plain', date: 20 } } }, 99, trace);
+    await router.longPoll({ type: 'message_reaction_remove', group_id: 99, object: { peer_id: 2, from_id: 5, message_id: 8 } }, 99, trace);
+    await router.longPoll({ type: 'message_event', group_id: 99, object: { peer_id: 1, user_id: 5, payload: 'old:unknown' } }, 99, trace);
+    // Historical replay ignores action, attachments and the original author/reply.
+    await router.catchUp({ peer_id: 4, text: '', date: 30, from_id: 5, reply_message: {}, action: {} }, 1);
+    assert.deepEqual(seen, [
+        ['queue', 1, ['message_new', 1]], ['date', 10],
+        ['queue', 2, ['message_new', 2]], ['date', 20],
+        ['queue', 2, ['message_reaction_remove', 2]], ['reaction', 2, 8],
+        ['queue', 1, ['message_event', 1]], ['answer', 1, 5, 'неизвестная кнопка'],
+        ['date', 30],
+    ]);
+}
+process.env.LR_DB = path.join(tmp, 'vk-direct.db');
+process.env.VK_TOKEN = 'repl-token';
+const { vkUploadDoc, sendGedArtifacts } = (await import('../lunarreturns.js')).default.__test;
+const realFetch = globalThis.fetch;
+const apiResult = response => Response.json({ response });
+const saveError = () => Response.json({ error: { error_code: 100, error_msg: 'invalid file' } });
+// Сетевая ошибка на любом этапе загрузки повторяется, постоянная save-ошибка нет.
+for (const failure of ['server', 'post', 'save', 'permanent', 'exhausted']) {
+    const calls = { server: 0, post: 0, save: 0 };
+    globalThis.fetch = async input => {
+        const stage = {
+            'https://api.vk.com/method/docs.getMessagesUploadServer': 'server',
+            'https://api.vk.com/method/docs.save': 'save',
+            'https://upload.invalid': 'post',
+        }[input];
+        assert.ok(stage, `Unexpected URL: ${input}`);
+        calls[stage]++;
+        if (failure === stage && calls[stage] === 1 || failure === 'exhausted' && stage === 'server') throw new TypeError('fetch failed');
+        if (failure === 'permanent' && stage === 'save') return saveError();
+        if (stage === 'post') return Response.json({ file: 'accepted' });
+        return apiResult(stage === 'save' ? { doc: { owner_id: 1, id: 2 } } : { upload_url: 'https://upload.invalid' });
+    };
+    if (failure === 'permanent' || failure === 'exhausted') await assert.rejects(vkUploadDoc(1, 'test.ged', 'test'));
+    else assert.equal(await vkUploadDoc(1, 'test.ged', 'test'), 'doc1_2');
     assert.deepEqual(calls, {
         server: failure === 'exhausted' ? 3 : ['server', 'post'].includes(failure) ? 2 : 1,
         post: failure === 'exhausted' ? 0 : failure === 'post' ? 2 : 1,
@@ -43,30 +96,31 @@ for (const failure of ['server', 'post', 'save', 'permanent', 'exhausted']) {
     });
 }
 // Ошибка одного артефакта не теряет успешные и не останавливает следующие.
-const artifactsSource = vkSource.match(/^async function sendGedArtifacts\([\s\S]*?^\}/m)[0];
 const artifactNames = ['test.ged.txt', 'test.ged', 'test.pdf', 'test.epub'];
 for (const failed of ['.ged', '.pdf', '.ged.txt', '.epub', 'all', 'none']) {
     const attempted = [];
     const edits = [];
     const final = Promise.withResolvers();
-    const send = vm.runInNewContext(artifactsSource + '; sendGedArtifacts', {
-        Buffer, activeDnaExports: new Map(), fileBaseOf: () => 'test',
-        NOT_FOR_GRAFT: '#not for cut and graft', cutLines: () => '-Person',
-        gedcomText: () => 'ged', exportChart: async () => ({ renderPdf: () => 'pdf' }),
-        reqLib: () => ({ checkEpubLimit() {} }), exportViewer: () => () => ['test.epub', 'epub'],
-        vkApi: async (method, params) => {
-            edits.push({ method, ...params });
-            if (params.message && !params.message.includes('⏳')) final.resolve();
-        },
-        console: { log() {}, error() {} },
-        vkUploadDoc: async (peer, name) => {
+    globalThis.fetch = async (input, { body }) => {
+        const method = input.split('/').at(-1);
+        if (method === 'docs.getMessagesUploadServer') return apiResult({ upload_url: 'https://upload.invalid' });
+        if (input === 'https://upload.invalid') return Response.json({ file: body.get('file').name });
+        if (method === 'docs.save') {
+            const name = body.get('title');
             attempted.push(name);
-            if (failed === 'all' || name === 'test' + failed) throw new Error('timeout');
-            return name;
-        },
-    });
-    await send({ peer_id: 1, conversation_message_id: 42 }, undefined, 'Tree', null, 'x'.repeat(4000),
-        { gedcom: true, pdf: true, epub: true }, 'keyboard');
+            if (failed === 'all' || name === 'test' + failed) return saveError();
+            return apiResult({ doc: { owner_id: 1, id: attempted.length } });
+        }
+        assert.equal(method, 'messages.edit');
+        const edit = Object.fromEntries(body);
+        edits.push(edit);
+        if (edit.message && !edit.message.includes('⏳')) final.resolve();
+        return apiResult(1);
+    };
+    const lease = { async step(op) { return op === 'epub' ? ['test.epub', 'epub'] : op; }, release() {} };
+    await sendGedArtifacts({ peer_id: 1, conversation_message_id: 42 }, undefined, 'test', null,
+        '-Person\n' + 'x'.repeat(4000), { gedcom: true, pdf: true, epub: true }, 'keyboard',
+        { lease, control: new AbortController() });
     let timer;
     try {
         await Promise.race([final.promise, new Promise((_, reject) => {
@@ -74,12 +128,11 @@ for (const failed of ['.ged', '.pdf', '.ged.txt', '.epub', 'all', 'none']) {
         })]);
     } finally { clearTimeout(timer); }
     assert.deepEqual(attempted, artifactNames);
-    const successful = failed === 'all' ? [] : artifactNames.filter(n => n !== 'test' + failed);
+    const successful = failed === 'all' ? [] : artifactNames.map((n, i) => n === 'test' + failed ? null : `doc1_${i + 1}`).filter(Boolean);
     const progress = edits.filter(edit => edit.message?.includes('⏳'));
     assert.equal(progress.length, successful.length + 1);
     progress.forEach((edit, i) => {
-        assert.equal(edit.method, 'messages.edit');
-        assert.equal(edit.conversation_message_id, 42);
+        assert.equal(edit.conversation_message_id, '42');
         assert.equal(edit.message, '-Person\n✂️⏳');
         assert.equal(edit.attachment, successful.slice(0, i).join(','));
     });
@@ -89,6 +142,7 @@ for (const failed of ['.ged', '.pdf', '.ged.txt', '.epub', 'all', 'none']) {
     if (failed === 'none') assert.equal(ready.message, '-Person\n✂️');
     else assert.match(ready.message, /Не удалось выложить файлы/);
 }
+globalThis.fetch = realFetch;
 for (const platform of ['tg', 'vk']) {
     const trace = path.join(tmp, platform + '-radius.jsonl');
     const env = { ...process.env, LR_DEV_DB: path.join(tmp, platform + '.json'), LR_DB: path.join(tmp, platform + '.db'),

@@ -63,7 +63,15 @@ const preload = path.join(tmp, 'offline.cjs');
 fs.writeFileSync(preload, `
 const fs = require('node:fs');
 const fail = process.env.VIEWER_FAIL;
-if (process.env.LR_VK_TRACE && process.argv[1]?.endsWith('vk-repl.mjs')) {
+const { isMainThread } = require('node:worker_threads');
+if (isMainThread && process.env.LR_VK_TRACE && process.argv[1]?.endsWith('vk-repl.mjs')) {
+    process.env.VK_TOKEN = 'repl-token';
+    process.env.VK_GROUP_ID = '99';
+    require(${JSON.stringify(path.join(root, 'lunarreturns.js'))}).__test.setWorkerTestOptions({
+        execArgv: ['--require', __filename], env: { LR_VK_TRACE: process.env.LR_VK_TRACE, VIEWER_FAIL: fail || '' },
+    });
+}
+if (!isMainThread && process.env.LR_VK_TRACE) {
     const viewer = require(${JSON.stringify(path.join(root, 'tgcloud/lib/viewer.cjs'))});
     const annotate = viewer.viewerAnnotations;
     viewer.viewerAnnotations = (...args) => {
