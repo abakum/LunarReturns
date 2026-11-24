@@ -761,6 +761,8 @@ try {
         if (!f) return;
         await reader.mouse.move(180, view.y + mid);
         await reader.mouse.down();
+        // Keep even a tiny correction a drag, not a click on a person row.
+        await reader.mouse.move(180, view.y + mid + 16);
         await reader.mouse.move(180, view.y + mid - f);
         await reader.mouse.up();
     }
@@ -788,13 +790,14 @@ try {
     const parentPoint = reader.locator('[data-parent-point][data-xref="OUT"]');
     await reader.keyboard.press('Escape');
     const parentBounds = await parentPoint.boundingBox();
-    await reader.mouse.click(parentBounds.x + parentBounds.width / 2, parentBounds.y + parentBounds.height / 2);
+    await parentPoint.press('Enter');
     assert(await panel.isVisible());
     assert.match(await panel.locator('strong').textContent(), /Брат вне файла/);
     const hintBounds = await panel.boundingBox();
     assert(Math.abs(hintBounds.y - parentBounds.y - parentBounds.height) < 1);
     assert(Math.min(Math.abs(hintBounds.x - parentBounds.x - parentBounds.width),
         Math.abs(hintBounds.x + hintBounds.width - parentBounds.x)) < 1);
+    await reader.keyboard.press('Escape');
     await reader.locator('#plus').click();
     assert((await matrix()).a > fitted.a);
     await reader.locator('#minus').click();
@@ -804,12 +807,14 @@ try {
     await reader.mouse.wheel(0, -200);
     await reader.waitForFunction(scale => new DOMMatrix(getComputedStyle(document.getElementById('life-chart')).transform).a > scale, fitted.a);
     const zoomed = await matrix();
+    const selectedHash = new URL(reader.url()).hash;
     await reader.mouse.down();
     await reader.mouse.move(220, cy + 30);
     await reader.mouse.up();
     assert(Math.abs((await matrix()).e - zoomed.e - 40) < 0.001);
     assert(Math.abs((await matrix()).f - zoomed.f - 30) < 0.001);
     assert(await panel.isHidden());
+    assert.equal(new URL(reader.url()).hash, selectedHash, 'mouse pan preserves selection');
     const cdp = await reader.context().newCDPSession(reader);
     const touch = (type, touchPoints) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints });
     await touch('touchStart', [{ x: 110, y: cy, id: 1 }, { x: 210, y: cy, id: 2 }]);
@@ -817,8 +822,10 @@ try {
     await touch('touchEnd', []);
     const panned = await matrix();
     assert(panned.a > zoomed.a);
+    assert.equal(new URL(reader.url()).hash, selectedHash, 'pinch preserves selection');
     const historyLength = await reader.evaluate(() => history.length);
     await checkScrollbar(reader, lifeScroll, matrix, false, true);
+    assert.equal(new URL(reader.url()).hash, selectedHash, 'scrollbar preserves selection');
     assert.equal(await reader.evaluate(() => history.length), historyLength);
     await toggle.click();
     assert(await panel.isHidden());

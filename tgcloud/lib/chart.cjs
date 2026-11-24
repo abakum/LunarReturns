@@ -57,7 +57,7 @@ const rangeLevel = L => L === 1 ? "родители-дети" : L === 2 ? "де�
     : L === 3 ? "прадеды-правнуки"
     : "пра" + (L - 2) + "деды-пра" + (L - 2) + "внуки";
 const KIND_W = 170;          // колонка подписей слева (минимум)
-const TITLE_H = 34;          // поле заголовка
+const PLOT_TOP = 30;         // первая строка начинается сразу под заголовком
 const ROW_H = 16;            // высота строки персоны
 const PLOT_W = 950;          // ширина поля графика
 const BAR_H = 11;            // высота бара жизни
@@ -282,10 +282,10 @@ function chartModel(title, rows, links, rel = null, marriages = null,
     // колонка подписей «Связь год»: под самую длинную строку, все — одной строкой
     const labelWidth = Math.ceil(Math.max(...people.map(p => textW(p.label))));
     const KW = Math.max(KIND_W, labelWidth + 12);
-    const xS = x => KW + (x - xMin) / (xMax - xMin) * PLOT_W;
+    const xS = x => KW + (Math.min(x, xMax) - xMin) / (xMax - xMin) * PLOT_W;
     let acc = 0;
     for (const p of people) { p.h = ROW_H; p.y0 = acc; acc += p.h; }
-    const plotTop = TITLE_H + 12;
+    const plotTop = PLOT_TOP;
     const H = plotTop + acc + 42;
     const W = KW + PLOT_W + 16;
 
@@ -360,8 +360,8 @@ function chartModel(title, rows, links, rel = null, marriages = null,
     // (имя выровнено перед баром) — xMin уходит в прошлое, пока хватает места
     // у самой стеснённой персоны; итерация до сходимости (span растёт вместе
     // с xMin назад)
-    const xMinRaw = Math.floor(Math.min(...allYears) / 10) * 10;
-    const xMax = Math.max(Math.ceil(Math.max(...allYears) / 10) * 10, xMinRaw + 10);
+    const xMinRaw = Math.floor(Math.min(TODAY_Y - 1, ...allYears) / 10) * 10;
+    const xMax = Math.min(TODAY_Y, Math.max(Math.ceil(Math.max(...allYears) / 10) * 10, xMinRaw + 10));
     let xMin = xMinRaw;
     for (let it = 0; it < 8; it++) {
         const span = xMax - xMin;
@@ -375,10 +375,15 @@ function chartModel(title, rows, links, rel = null, marriages = null,
     const draws = [];
     // фон и заголовок
     draws.push({ k: "rect", x: 0, y: 0, w: W, h: H, fill: "#ffffff" });
-    draws.push({ k: "text", x: KW + PLOT_W / 2, y: 22, s: title, size: 16, fill: "#111111", bold: true, anchor: "mid" });
+    draws.push({ k: "text", x: KW + PLOT_W / 2, y: 22, s: title, size: 12, fill: "#111111", bold: true, anchor: "mid" });
     // сетка-декады и подписи оси X (от первой декады — ниже некруглого xMin — xMin может
     // уйти в прошлое на некруглое число лет ради места под имена)
-    for (let x = Math.ceil(xMin / 10) * 10; x <= xMax; x += 10) {
+    const ticks = [];
+    for (let x = Math.ceil(xMin / 10) * 10; x < xMax; x += 10) ticks.push(x);
+    // Prefer the final year when its label would overlap the preceding decade.
+    if (xS(xMax) - xS(ticks.at(-1)) < 14) ticks.pop();
+    ticks.push(xMax);
+    for (const x of ticks) {
         draws.push({ k: "line", x1: xS(x), y1: plotTop, x2: xS(x), y2: H - 38, stroke: "#eeeeee", w: 1 });
         draws.push({ k: "line", x1: xS(x), y1: H - 38, x2: xS(x), y2: H - 32, stroke: "#888888", w: 1 });
         const year = String(x).padStart(4, "0");
@@ -409,7 +414,7 @@ function chartModel(title, rows, links, rel = null, marriages = null,
         p.bar = { x: x1, y: cy - BAR_H / 2, w: Math.max(2, x2 - x1), h: BAR_H };
         draws.push({ k: "rrect", ...p.bar, r: 2,
             ...(p.r.sex === "M" || p.r.sex === "F" ? { fill: bar } : { stroke: bar, lineWidth: 1 }) });
-        if (p.dy !== null && p.r.birth != null && (p.r.abt ?? 0) < 15) // известная смерть — N прожитых лет за баром (у фиктивной ДР abt>=15, EST — не пишем)
+        if (p.dy !== null && p.dy <= TODAY_Y && p.r.birth != null && (p.r.abt ?? 0) < 15) // известная смерть — N прожитых лет за баром (у фиктивной ДР abt>=15, EST — не пишем)
             draws.push({ k: "text", x: x2 + 4, y: cy + 3.5, s: String(p.dy - p.yr), size: 10, fill: bar });
     }
     // связи родитель→ребёнок (в год рождения ребёнка), точки на строках;
@@ -629,16 +634,16 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, a
     // страницы: полотно масштабируется на ширину A4 landscape, режется по
     // высоте на полосы не выше страницы; границы полос — строго по границам
     // строк персон — персона не делится пополам между страницами.
-    // Шкала — отдельный XObject: внизу страницы, на последней — под строками.
+    // Шкала — отдельный XObject: над нижним полем, на последней — под строками.
     const s = PAGE_W / (m.W - m.left);
     const shiftX = n(-s * m.left);
     const footer = 42;
     const contentH = m.H - footer;
-    const avail = PAGE_H / s - footer;
-    const plotTop = TITLE_H + 12;
+    const bottomMargin = s * ROW_H;
+    const avail = (PAGE_H - bottomMargin) / s - footer;
     const cuts = [];
     for (let t = 0; contentH - t > avail + 1e-9;) {
-        let c = plotTop + ROW_H * Math.floor((Math.min(t + avail, contentH) - plotTop) / ROW_H);
+        let c = PLOT_TOP + ROW_H * Math.floor((Math.min(t + avail, contentH) - PLOT_TOP) / ROW_H);
         if (c <= t) c = t + ROW_H;
         cuts.push(c);
         t = c;
@@ -713,7 +718,7 @@ function chartPdf(title, rows, links, fontBytes, rel = null, marriages = null, a
     }
     for (let i = 0; i < pages; i++) {
         const band = bands[i + 1] - bands[i];        // высота полосы, единицы чарта
-        const axisY = i === pages - 1 ? Math.max(0, PAGE_H - s * (band + footer)) : 0;
+        const axisY = i === pages - 1 ? Math.max(bottomMargin, PAGE_H - s * (band + footer)) : bottomMargin;
         obj(3 + 2 * i, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + PAGE_W + " " + PAGE_H + "]"
             + " /Resources << /XObject << /C " + chartObj + " 0 R /A " + axisObj + " 0 R >> >> /Contents " + (4 + 2 * i) + " 0 R"
             + (annotations[i].length ? " /Annots [" + annotations[i].join(" ") + "]" : "") + " >>");

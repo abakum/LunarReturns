@@ -4,7 +4,9 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
-import { chartRows, chartModel, chartPdf, chartFont, parseTtf } from '../tgcloud/lib/chart.cjs';
+import { chartRows, chartModel, chartPdf, chartSvg, chartFont, parseTtf } from '../tgcloud/lib/chart.cjs';
+import { viewerWithChart, viewerEpub } from '../tgcloud/lib/epub.cjs';
+import { unzipSync, strFromU8 } from 'fflate';
 import { focusKeys, focusListKeys } from '../tgcloud/lib/tree.cjs';
 import { createPdfAnnotationText } from '../tgcloud/lib/annotations.cjs';
 import { viewerAnnotations } from '../tgcloud/lib/viewer.cjs';
@@ -141,9 +143,31 @@ for (const [h, m, expected] of [[null, null, '20000101090000'], [12, 34, '200001
     assert.ok(pdf.includes('1 w 0 0 0 RG'), 'neutral bar uses black outline');
     assert.ok(pdf.includes(' c h S'), 'rounded outline strokes without filling');
 }
-for (const count of [1, 39, 40, 100]) {
+const yearNow = new Date().getFullYear();
+const axisRows = [{ name: 'Person0', birth: '1960-01-01', death: `${yearNow + 10}-01-01`, sex: 'M' }];
+const axisModel = chartModel('Page axis', axisRows, []);
+const axisScale = 842 / (axisModel.W - axisModel.left);
+const firstPageRows = Math.floor((595 / axisScale - 42 - 16 - 30) / 16);
+const otherPageRows = Math.floor((595 / axisScale - 42 - 16) / 16);
+{
+    const svg = chartSvg(axisModel);
+    const labels = [...svg.matchAll(/fill="#666666" text-anchor="middle">(\d{2})<\/text>/g)].map(m => m[1]);
+    assert.equal(labels.slice(-2).join(''), String(yearNow));
+    for (let i = 0; i < labels.length; i += 2) assert(Number(labels[i] + labels[i + 1]) <= yearNow);
+    assert.match(svg, /font-size="12"[^>]*>Page axis<\/text>/);
+    const heading = axisModel.draws.find(d => d.k === 'text' && d.s === 'Page axis');
+    const firstBar = axisModel.draws.find(d => d.k === 'rrect');
+    assert(firstBar.y - heading.y > 0 && firstBar.y - heading.y < 12, 'compact title-to-bar gap');
+    const ged = '0 HEAD\n0 @I1@ INDI\n1 NAME Person0\n0 TRLR';
+    const html = viewerWithChart(ged, 'Page axis', 'I1', {}, { chart: { model: axisModel } });
+    const xhtml = strFromU8(unzipSync(viewerEpub(ged, 'Page axis', 'I1', {}, { html }))['EPUB/Page axis.xhtml']);
+    assert.ok(html.includes(svg) && xhtml.includes(svg));
+    const historical = chartModel('Historical', [{ name: 'Person', birth: '1860-01-01', death: '1892-01-01' }], []);
+    assert.equal(historical.draws.filter(d => d.k === 'text' && d.fill === '#666666').slice(-2).map(d => d.s).join(''), '1900');
+}
+for (const count of [1, firstPageRows, firstPageRows + 1, firstPageRows + otherPageRows + 1, 100]) {
     const rows = Array.from({ length: count }, (_, i) => ({
-        name: 'Person' + i, birth: '1960-01-01', death: '2030-01-01', sex: 'M',
+        ...axisRows[0], name: 'Person' + i,
     }));
     const file = path.join(tmp, 'page-axis-' + count + '.pdf');
     const model = chartModel('Page axis', rows, []);
@@ -163,20 +187,26 @@ for (const count of [1, 39, 40, 100]) {
     const bbox = spawnSync('pdftotext', ['-bbox', file, '-'], { encoding: 'utf8' });
     assert.equal(bbox.status, 0, bbox.stderr);
     const pages = [...bbox.stdout.matchAll(/<page\b[^>]*>([\s\S]*?)<\/page>/g)];
-    assert.equal(pages.length, count <= 39 ? 1 : count === 40 ? 2 : 3);
+    assert.equal(pages.length, 1 + Math.ceil(Math.max(0, count - firstPageRows) / otherPageRows));
     const bodyHeights = [...pdf.matchAll(/stream\nq\n0 [\d.]+ 842 ([\d.]+) re W n\n[^\n]+\n\/C Do/g)].map(m => Number(m[1]));
     assert.equal(bodyHeights.length, pages.length);
+    assert(bodyHeights.every(h => h + (42 + 16) * scale <= 595.001));
+    const axisOffsets = [...pdf.matchAll(/q\n0 ([\d.]+) 842 [\d.]+ re W n\n[^\n]+\n\/A Do/g)].map(m => Number(m[1]));
+    assert.equal(axisOffsets.length, pages.length);
     let expectedAxis;
     const people = [];
     for (const [pageIndex, [, page]] of pages.entries()) {
         const words = [...page.matchAll(/<word xMin="([\d.-]+)" yMin="([\d.-]+)" xMax="([\d.-]+)" yMax="([\d.-]+)">([^<]+)<\/word>/g)]
             .map(m => ({ x: +m[1], y: +m[2], bottom: +m[4], s: m[5] }));
-        const axisYs = new Set(words.filter(w => /^(19|20|00|10|30)$/.test(w.s) && w.y >= 0 && w.bottom < 595).map(w => w.y));
+        const axisYs = new Set(words.filter(w => /^\d{2}$/.test(w.s) && w.y >= 0 && w.bottom < 595).map(w => w.y));
         const axis = words.filter(w => /^\d{2}$/.test(w.s) && axisYs.has(w.y));
-        assert.ok(axis.length >= 16, 'axis present on every page');
+        assert.ok(axis.length >= 14, 'axis present on every page');
         assert.equal(new Set(axis.map(w => w.y)).size, 2, 'two axis rows');
-        assert.ok(axis.every(w => w.bottom < 595), 'axis inside page');
+        assert.ok(axis.every(w => w.bottom < 595 - 16 * scale), 'axis above print margin');
         const signature = axis.map(w => [w.x, w.s]);
+        const end = axis.filter(w => w.x === Math.max(...axis.map(word => word.x))).sort((a, b) => a.y - b.y);
+        assert.equal(end.map(w => w.s).join(''), String(yearNow));
+        assert.equal(words.filter(w => w.s === 'Page' && w.y >= 0 && w.bottom <= bodyHeights[pageIndex]).length, pageIndex === 0 ? 1 : 0);
         if (expectedAxis) assert.deepEqual(signature, expectedAxis, 'identical axis horizontal position and years');
         expectedAxis = signature;
         // Poppler bbox includes text outside a body clip; count visible rows only.
@@ -186,7 +216,7 @@ for (const count of [1, 39, 40, 100]) {
         if (pageIndex === pages.length - 1) {
             const gap = axisTop - Math.max(...persons.map(w => w.bottom));
             assert.ok(gap > 0 && gap < 30 * scale, 'final axis immediately below last person: ' + gap);
-        } else assert.ok(axisTop > 560, 'intermediate axis at page bottom');
+        } else assert.ok(Math.abs(axisOffsets[pageIndex] - 16 * scale) <= 0.001, 'intermediate axis raised by one row');
         people.push(...persons.map(w => w.s));
     }
     assert.deepEqual(people.sort(), rows.map(r => r.name).sort(), 'all people exactly once');

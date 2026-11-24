@@ -1930,7 +1930,8 @@ for (const [t, rows, ln] of [
 }
 // Декады в две строки: век над последними двумя цифрами, включая 00.
 {
-    const rows = [{ name: 'Axis', birth: '1960-01-01', death: '2030-01-01', sex: 'M' }];
+    const yearNow = new Date().getFullYear();
+    const rows = [{ name: 'Axis', birth: '1960-01-01', death: `${yearNow + 10}-01-01`, sex: 'M' }];
     const m = VK.chartModel('axis', rows, []);
     cmp('chartModel двухстрочная шкала', m, TGC.chartModel('axis', rows, []));
     const ticks = m.draws.filter(d => d.k === 'line' && d.stroke === '#888888' && d.x1 === d.x2);
@@ -1941,7 +1942,8 @@ for (const [t, rows, ln] of [
         || ds.some(d => !/^\d{2}$/.test(d.s) || d.size !== 10)))
         { failed++; console.log('✗ chart.axis: не две центрированные строки на декаду'); }
     const joined = years.map(ds => ds.map(d => d.s).join(''));
-    if (['1960', '1970', '2000', '2020', '2030'].some(y => !joined.includes(y)))
+    if (['1960', '1970', '2000', '2020'].some(y => !joined.includes(y))
+        || joined.at(-1) !== String(yearNow) || joined.slice(0, -1).some(y => +y >= yearNow))
         { failed++; console.log('✗ chart.axis: потеряны декады/ведущий ноль: ' + joined.join(', ')); }
     // Высокий чарт: нижняя строка шкалы остаётся внутри последней PDF-полосы.
     const tallRows = Array.from({ length: 100 }, (_, i) => ({ ...rows[0], name: 'Axis ' + i }));
@@ -2055,8 +2057,10 @@ cmp('chartPdf свадьба-зарубка (байты)', VK.chartPdf('w', CHAR
 // sanity PDF: заголовок/шрифт/страницы согласованы с моделью
 const pdf = VK.chartPdf('Пётр I: линии жизни', CHART_ROWS, CHART_LINKS, FONT);
 const model = VK.chartModel('Пётр I: линии жизни', CHART_ROWS, CHART_LINKS);
-const scale = 842 / model.W;
-const wantPages = Math.max(1, Math.ceil((model.H - 42) / (595 / scale - 42) - 1e-9));
+const scale = 842 / (model.W - model.left);
+const firstRows = Math.floor((595 / scale - 42 - 16 - 30) / 16);
+const laterRows = Math.floor((595 / scale - 42 - 16) / 16);
+const wantPages = 1 + Math.ceil(Math.max(0, CHART_ROWS.length - firstRows) / laterRows);
 const gotPages = (pdf.match(/\/Type \/Page[^s]/g) || []).length;
 if (!pdf.startsWith('%PDF-1.4\n') || !pdf.includes('/Subtype /Type0') || !pdf.includes('/FontFile2'))
     { failed++; console.log('✗ chartPdf: нет заголовка PDF/встроенного шрифта'); }
