@@ -9,7 +9,8 @@ const group = document.getElementById('chart');
 const annotation = document.getElementById('annotation');
 const annotationText = document.getElementById('annotation-text');
 const lifeView = document.getElementById('life-view');
-const showingLife = () => lifeView && !lifeView.hidden;
+const lifeMode = document.getElementById('life-mode');
+const showingLife = () => lifeMode && !lifeMode.hidden;
 function closeAnnotation() {
     annotation.hidden = true;
 }
@@ -87,8 +88,11 @@ document.addEventListener('pointerdown', event => {
     if (!annotation.contains(event.target) && !event.target.closest('#chart .indi, #life-targets rect')) closeAnnotation();
 });
 document.addEventListener('keydown', event => { if (event.key === 'Escape') closeAnnotation(); });
-let size = [1, 1], scale = 1, x = 0, y = 0;
-function transform() { group.setAttribute('transform', `translate(${x},${y}) scale(${scale})`); }
+let size = [1, 1], scale = 1, x = 0, y = 0, treeBounds;
+function transform() {
+    group.setAttribute('transform', `translate(${x},${y}) scale(${scale})`);
+    updateTreeScroll();
+}
 function fit() {
     scale = Math.min(svg.clientWidth / size[0], svg.clientHeight / size[1], 1) * 0.95;
     x = (svg.clientWidth - size[0] * scale) / 2;
@@ -138,6 +142,81 @@ function gestures(view, zoomAt, pan) {
         if (dragged && event.detail) { event.stopPropagation(); event.preventDefault(); }
     }, true);
 }
+function scrollbar(track, view, horizontal, camera, move) {
+    const thumb = track.firstElementChild;
+    const axis = horizontal ? 'clientX' : 'clientY';
+    const dimension = horizontal ? 'clientWidth' : 'clientHeight';
+    const limit = (value, max) => Math.max(0, Math.min(value, max));
+    let viewport, max, offset, travel, drag;
+    function update() {
+        const [extent, position] = camera();
+        viewport = view[dimension];
+        max = Number.isFinite(extent) ? Math.max(0, extent - viewport) : 0;
+        track.hidden = !viewport || !max;
+        if (track.hidden) return;
+        const length = track[dimension];
+        const thumbLength = Math.min(length * 0.95, Math.max(28, length * viewport / extent));
+        travel = length - thumbLength;
+        offset = limit(position, max);
+        thumb.style[horizontal ? 'width' : 'height'] = `${thumbLength}px`;
+        thumb.style[horizontal ? 'left' : 'top'] = `${travel * offset / max}px`;
+        track.setAttribute('aria-valuemax', String(Math.round(max)));
+        track.setAttribute('aria-valuenow', String(Math.round(offset)));
+    }
+    function scrollTo(value) {
+        const next = limit(value, max);
+        if (next === camera()[1]) return;
+        closeAnnotation();
+        move(next);
+    }
+    track.addEventListener('wheel', event => {
+        event.preventDefault();
+        const delta = horizontal && Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+        if (delta) scrollTo(offset + delta * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport : 1));
+    }, { passive: false });
+    track.addEventListener('keydown', event => {
+        const { key } = event;
+        let next;
+        if (key === 'Home') next = 0;
+        else if (key === 'End') next = max;
+        else if (key === 'PageUp' || key === 'PageDown') next = offset + (key === 'PageUp' ? -viewport : viewport);
+        else if (key === (horizontal ? 'ArrowLeft' : 'ArrowUp')) next = offset - 40;
+        else if (key === (horizontal ? 'ArrowRight' : 'ArrowDown')) next = offset + 40;
+        else return;
+        event.preventDefault();
+        scrollTo(next);
+    });
+    track.addEventListener('pointerdown', event => {
+        if (event.button !== 0 || drag) return;
+        event.preventDefault();
+        track.focus({ preventScroll: true });
+        if (event.target === thumb) {
+            drag = { id: event.pointerId, start: event[axis], offset };
+            track.setPointerCapture(event.pointerId);
+        } else {
+            const bounds = thumb.getBoundingClientRect();
+            scrollTo(offset + (event[axis] < (horizontal ? bounds.left : bounds.top) ? -viewport : viewport));
+        }
+    });
+    track.addEventListener('pointermove', event => {
+        if (drag?.id !== event.pointerId || !travel) return;
+        const delta = event[axis] - drag.start;
+        if (delta || drag.moved) {
+            drag.moved = true;
+            scrollTo(drag.offset + delta * max / travel);
+        }
+    });
+    for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+        track.addEventListener(name, event => { if (drag?.id === event.pointerId) drag = undefined; });
+    }
+    if (typeof ResizeObserver !== 'undefined') new ResizeObserver(update).observe(view);
+    else window.addEventListener('resize', update);
+    return update;
+}
+const treeScrollSlot = document.getElementById('tree-scroll-slot');
+const updateTreeScroll = scrollbar(document.getElementById('tree-scroll'), svg, true,
+    () => [treeBounds ? treeBounds.width * scale : 0, -x - (treeBounds?.x ?? 0) * scale],
+    offset => { x = -treeBounds.x * scale - offset; transform(); });
 try {
     // Refuse oversized inputs explicitly instead of silently dropping relatives.
     if ((input.gedcom.match(/^0 @[^\r\n]+@ INDI\r?$/gm) || []).length > 10000)
@@ -145,13 +224,20 @@ try {
     const data = gedcomToJson(input.gedcom);
     const people = new Map();
     const normalize = text => text.toLocaleLowerCase('ru').replace(/ё/g, 'е');
+    function searchPerson(id, name, birth) {
+        const marker = '~' + id;
+        const alias = ' ~' + id.replace(/#/g, '№');
+        if (name.endsWith(' ' + marker)) name = name.slice(0, -marker.length - 1);
+        else if (name.endsWith(alias)) name = name.slice(0, -alias.length);
+        const label = [name, marker, birth].filter(Boolean).join(' ');
+        return { id, label, searchable: normalize(label) };
+    }
     // Strip display-only fields before Topola measures cards. The original GEDCOM stays embedded.
     for (const person of data.indis) {
         delete person.images;
         for (const event of [person.birth, person.death, ...(person.events || [])]) if (event) delete event.place;
-        const birth = person.birth?.date?.year || '';
-        const label = [person.firstName, person.lastName, birth, '(' + person.id + ')'].filter(Boolean).join(' ');
-        people.set(person.id, { id: person.id, label, searchable: normalize(label) });
+        const name = [person.firstName, person.lastName].filter(Boolean).join(' ');
+        people.set(person.id, searchPerson(person.id, name, Object.hasOwn(input.births, person.id) ? input.births[person.id] : ''));
     }
     for (const family of data.fams) if (family.marriage) delete family.marriage.place;
     if (!data.indis.length) throw new Error('В файле нет персон.');
@@ -160,28 +246,28 @@ try {
     const sorted = [...people.values()].sort(byLabel);
     const targets = document.getElementById('life-targets');
     const bars = new Map([...(targets?.querySelectorAll('[data-bar]') ?? [])].map(bar => [bar.getAttribute('data-xref'), bar]));
-    const lifePeople = new Map([...bars].map(([id, bar]) => {
-        const label = [bar.getAttribute('aria-label').slice('Роспись: '.length), bar.getAttribute('data-year'), '(' + id + ')'].filter(Boolean).join(' ');
-        return [id, { id, label, searchable: normalize(label) }];
-    }));
+    const lifePeople = new Map([...bars].map(([id, bar]) => [id, people.get(id) ?? searchPerson(id,
+        bar.getAttribute('aria-label').slice('Роспись: '.length), bar.getAttribute('data-birth'))]));
     const sortedLife = [...lifePeople.values()].sort(byLabel);
     const defaultId = people.has(input.heroXref) ? input.heroXref : data.indis[0].id;
-    let currentId, currentBar;
-    let fitLife, zoomLife, navigateBar;
+    let currentId, treeId;
+    let fitLife, zoomLife, showBar;
     const chart = createChart({ json: data, chartType: HourglassChart, renderer: DetailedRenderer,
         svgSelector: '#chart', animate: false, updateSvgSize: false, locale: 'ru', expanders: false,
         indiCallback: info => { dismissTip(); navigate(info.id); } });
-    function render(refocus = false, openAnnotation = false) {
+    function render(id, refocus = false, openAnnotation = false) {
         try {
             closeAnnotation();
             for (const button of group.querySelectorAll('.name-button')) button.replaceWith(...button.childNodes);
             group.removeAttribute('transform');
-            const info = chart.render({ startIndi: currentId });
+            const info = chart.render({ startIndi: id });
             size = info.size;
+            try { treeBounds = group.getBBox(); }
+            catch { treeBounds = undefined; }
             let selected;
             for (const node of group.querySelectorAll('.indi')) {
                 const person = node.__data__;
-                if ((refocus || openAnnotation) && person.indi.id === currentId && (!selected || person.generation === 0)) selected = node;
+                if ((refocus || openAnnotation) && person.indi.id === id && (!selected || person.generation === 0)) selected = node;
                 for (const text of node.querySelectorAll('text.name')) {
                     const button = document.createElementNS('http://www.w3.org/2000/svg', 'g');
                     button.setAttribute('class', 'name-button');
@@ -213,9 +299,14 @@ try {
                 y = svg.clientHeight / 2 - (bounds.top + bounds.height / 2 - viewport.top - svg.clientTop) * scale;
                 transform();
             } else fit();
-            if (openAnnotation && selected) showAnnotation(currentId, selected, people, navigate);
+            if (openAnnotation && selected) showAnnotation(id, selected, people, navigate);
+            treeId = id;
             status.textContent = '';
-        } catch (error) { status.textContent = 'Не удалось построить дерево: ' + error.message; }
+        } catch (error) {
+            treeBounds = undefined;
+            updateTreeScroll();
+            status.textContent = 'Не удалось построить дерево: ' + error.message;
+        }
     }
     const tip = document.getElementById('touch-tip');
     const tipKey = 'lunarreturns.viewer.touch-tip-dismissed';
@@ -232,11 +323,11 @@ try {
         results.hidden = true;
         search.setAttribute('aria-expanded', 'false');
         search.removeAttribute('aria-activedescendant');
-        search.value = (showingLife() ? lifePeople.get(currentBar) : people.get(currentId))?.label ?? '';
+        search.value = (people.get(currentId) ?? lifePeople.get(currentId))?.label ?? '';
     }
-    function showResults(query = '') {
+    function showResults(query = '', unavailable = false) {
         const words = normalize(query).trim().split(/\s+/).filter(Boolean);
-        matches = (showingLife() ? sortedLife : sorted).filter(person => words.every(word => person.searchable.includes(word)));
+        matches = unavailable ? [] : (showingLife() ? sortedLife : sorted).filter(person => words.every(word => person.searchable.includes(word)));
         active = -1;
         search.removeAttribute('aria-activedescendant');
         results.replaceChildren(...matches.map(({ label }, i) => {
@@ -258,11 +349,16 @@ try {
         results.scrollTop = 0;
         search.setAttribute('aria-expanded', 'true');
     }
-    function showPerson(id, refocus = false, openAnnotation = false) {
-        const previousId = currentId;
+    const unavailable = () => !(showingLife() ? lifePeople : people).has(currentId);
+    function showPerson(id, explicit = false, openAnnotation = false) {
         currentId = id;
         closeResults();
-        if (refocus || previousId !== id) render(previousId !== undefined, openAnnotation);
+        if (showingLife()) {
+            if (bars.has(id)) showBar(id, explicit);
+        } else if (people.has(id)) {
+            if (explicit || treeId !== id) render(id, treeId !== undefined, openAnnotation);
+        } else if (treeId === undefined) render(defaultId);
+        if (unavailable()) showResults('', true);
     }
     function navigate(id, openAnnotation = false) {
         const fragment = '#person=' + encodeURIComponent(id);
@@ -273,19 +369,20 @@ try {
         try {
             const fragment = /^#person=(.+)$/.exec(location.hash);
             const id = fragment && decodeURIComponent(fragment[1]);
-            if (people.has(id)) return id;
+            if (people.has(id) || bars.has(id)) return id;
         } catch { /* Ignore malformed fragments. */ }
         return defaultId;
     }
-    search.addEventListener('focus', () => { search.select(); showResults(); });
-    search.addEventListener('click', () => { if (results.hidden) { search.select(); showResults(); } });
+    const openResults = () => { search.select(); showResults('', unavailable()); };
+    search.addEventListener('focus', openResults);
+    search.addEventListener('click', () => { if (results.hidden) openResults(); });
     search.addEventListener('input', () => showResults(search.value));
     search.addEventListener('blur', closeResults);
     search.addEventListener('keydown', event => {
         if (event.isComposing) return;
         if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
             event.preventDefault();
-            if (results.hidden) showResults();
+            if (results.hidden) showResults('', unavailable());
             if (!matches.length) return;
             if (active !== -1) results.children[active].setAttribute('aria-selected', 'false');
             active = event.key === 'ArrowDown' ? Math.min(active + 1, matches.length - 1)
@@ -296,7 +393,7 @@ try {
             option.scrollIntoView({ block: 'nearest' });
         } else if (event.key === 'Enter' && !results.hidden && matches.length) {
             event.preventDefault();
-            (showingLife() ? navigateBar : navigate)(matches[Math.max(0, active)].id);
+            navigate(matches[Math.max(0, active)].id);
         } else if (event.key === 'Escape' && !results.hidden) {
             event.preventDefault();
             closeResults();
@@ -306,29 +403,41 @@ try {
     results.addEventListener('click', event => {
         const option = event.target.closest('[data-index]');
         if (option) {
-            (showingLife() ? navigateBar : navigate)(matches[option.dataset.index].id);
+            navigate(matches[option.dataset.index].id);
             if (event.pointerType === 'touch') search.blur();
         }
     });
-    window.addEventListener('hashchange', () => { const id = readFragment(); if (!showingLife() && id !== currentId) showPerson(id); });
+    window.addEventListener('hashchange', () => {
+        const id = readFragment();
+        if (id !== currentId) { closeAnnotation(); showPerson(id); }
+    });
     const fitButton = document.getElementById('fit');
     fitButton.onclick = () => (showingLife() ? fitLife : fit)();
     document.getElementById('plus').onclick = () => (showingLife() ? zoomLife : zoom)(1.3);
     document.getElementById('minus').onclick = () => (showingLife() ? zoomLife : zoom)(1 / 1.3);
     gestures(svg, zoom, (dx, dy) => { x += dx; y += dy; transform(); });
     svg.removeAttribute('hidden');
+    treeScrollSlot.hidden = false;
     document.querySelector('header').hidden = false;
     if (lifeView) {
         const toggle = document.getElementById('switch-view');
         const lifeSvg = document.getElementById('life-chart');
-        const { width } = lifeSvg.viewBox.baseVal;
+        const { width, height } = lifeSvg.viewBox.baseVal;
         let lifeScale = 1, lifeX = 0, lifeY = 0;
-        const position = () => { lifeSvg.style.transform = `translate(${lifeX}px,${lifeY}px) scale(${lifeScale})`; };
+        const position = () => {
+            lifeSvg.style.transform = `translate(${lifeX}px,${lifeY}px) scale(${lifeScale})`;
+            updateLifeScroll();
+        };
+        const updateLifeScroll = scrollbar(document.getElementById('life-scroll'), lifeView, false,
+            () => [height * lifeScale, -lifeY], offset => { lifeY = -offset; position(); });
         const pan = (dx, dy) => { lifeX += dx; lifeY += dy; position(); };
         fitLife = () => {
             closeAnnotation();
-            lifeScale = lifeView.clientWidth / width;
-            lifeX = lifeY = 0;
+            const cy = lifeView.clientHeight / 2;
+            const next = lifeView.clientWidth / width;
+            lifeY = cy - (cy - lifeY) * next / lifeScale;
+            lifeScale = next;
+            lifeX = 0;
             position();
         };
         zoomLife = (factor, cx = lifeView.clientWidth / 2, cy = lifeView.clientHeight / 2) => {
@@ -340,17 +449,17 @@ try {
             position();
         };
         lifeView.classList.add('interactive');
+        document.getElementById('life-scroll-slot').hidden = false;
         gestures(lifeView, zoomLife, pan);
-        navigateBar = id => {
+        showBar = (id, explicit) => {
             const bar = bars.get(id);
-            closeAnnotation();
-            currentBar = id;
-            closeResults();
-            bar.focus({ preventScroll: true });
             const rect = bar.getBoundingClientRect();
             const view = lifeView.getBoundingClientRect();
-            pan(0, view.top + 12 - rect.top);
-            showAnnotation(id, bar, bars, navigateBar, true);
+            if (explicit || rect.top < view.top || rect.bottom > view.bottom) pan(0, view.top + 12 - rect.top);
+            if (explicit) {
+                bar.focus({ preventScroll: true });
+                showAnnotation(id, bar, bars, navigate, true);
+            }
         };
         for (const target of targets.children) {
             target.setAttribute('role', 'button');
@@ -360,8 +469,8 @@ try {
         function open(event) {
             const id = event.target.getAttribute('data-xref');
             if (!id) return;
-            if (event.target.hasAttribute('data-bar') || event.target.hasAttribute('data-row')) navigateBar(id);
-            else showAnnotation(id, event.target, bars, navigateBar, true);
+            if (event.target.hasAttribute('data-bar') || event.target.hasAttribute('data-row')) navigate(id);
+            else showAnnotation(id, event.target, bars, navigate, true);
         }
         targets.addEventListener('click', open);
         targets.addEventListener('keydown', event => {
@@ -369,17 +478,19 @@ try {
             event.preventDefault();
             if (!event.repeat) open(event);
         });
-        lifeView.hidden = true;
+        lifeMode.hidden = true;
         let tipWasHidden, openedLife = false;
         toggle.onclick = () => {
-            const showLife = lifeView.hidden;
+            const showLife = lifeMode.hidden;
             closeAnnotation();
             if (showLife) tipWasHidden = tip.hidden;
             tip.hidden = showLife || tipWasHidden;
             svg.toggleAttribute('hidden', showLife);
-            lifeView.hidden = !showLife;
+            treeScrollSlot.hidden = showLife;
+            lifeMode.hidden = !showLife;
             if (showLife && !openedLife) {
-                fitLife();
+                lifeScale = lifeView.clientWidth / width;
+                position();
                 openedLife = true;
             }
             toggle.textContent = showLife ? '🌳' : '📊';
@@ -389,8 +500,9 @@ try {
             fitButton.textContent = showLife ? '↔' : '⤢';
             fitButton.title = showLife ? 'Вместить по ширине' : 'Вместить';
             fitButton.setAttribute('aria-label', fitButton.title);
-            if (!showLife && readFragment() !== currentId) showPerson(readFragment());
-            else closeResults();
+            showPerson(currentId);
+            if (showLife) updateLifeScroll();
+            else updateTreeScroll();
         };
     }
     showPerson(readFragment());

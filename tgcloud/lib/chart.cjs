@@ -550,7 +550,7 @@ function chartSvg({ W, H, left, draws, annotationRegions }) {
         const data = `data-xref="${escape(r.xref)}" aria-label="${escape('Роспись: ' + r.name)}"`;
         const target = `<rect ${rect({ x, y, w, h })} ${data}${bar ? ' data-row=""' : childPoint ? ' data-child-point=""' : parentPoint ? ' data-parent-point=""' : ''}/>`;
         (childPoint || parentPoint ? points : targets).push(target);
-        if (bar) bars.push(`<rect ${rect(bar)} ${data} data-bar=""${r.birth != null && (r.abt ?? 0) < 15 ? ` data-year="${escape(String(r.birth).slice(0, 4))}"` : ''}/>`);
+        if (bar) bars.push(`<rect ${rect(bar)} ${data} data-bar=""${r.birth != null ? ` data-birth="${escape(approxOut(r.birth, r.abt))}"` : ''}/>`);
     }
     return `<svg id="life-chart" xmlns="http://www.w3.org/2000/svg" aria-label="График жизни" width="${W - left}" height="${H}" viewBox="${left} 0 ${W - left} ${H}"><g>${shapes.join('')}</g><g id="life-targets" visibility="hidden" fill="transparent">${bars.join('')}${targets.join('')}${points.join('')}</g></svg>`;
 }

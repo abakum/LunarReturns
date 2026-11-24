@@ -549,9 +549,10 @@ for (const platform of ['tg', 'vk']) {
     const mixedHtml = readHtml(platform, htmlFiles[0], chatTitle);
     const htmlOnly = readHtml(platform, htmlFiles[1], chatTitle);
     assert.ok(htmlOnly.bytes.equals(mixedHtml.bytes), 'PDF and EPUB flags must not affect standalone HTML');
-    const { gedcom, heroXref, annotations, xhtml } = readBook(formats.files.find(f => f.name.endsWith('.epub')));
+    const { gedcom, heroXref, annotations, births, xhtml } = readBook(formats.files.find(f => f.name.endsWith('.epub')));
     assert.match(xhtml, /<svg[^>]*\bid="life-chart"/);
-    assert.deepEqual(mixedHtml.data, { gedcom, heroXref, annotations });
+    assert.deepEqual(mixedHtml.data, { gedcom, heroXref, annotations, births });
+    assert.ok(Object.values(births).includes('1754-09-20'));
     assert.equal(gedcom, outputs[platform]);
     assert.equal(heroXref, null);
     assert.ok(Object.keys(annotations).length > 0);
