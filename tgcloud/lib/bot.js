@@ -11,7 +11,7 @@ import { findShownRecord, REPLY_TARGET_ERROR } from './text.cjs';
 import { graftError } from './flat.cjs';
 import { localRecord, mskGedcom } from './event-time.cjs';
 import { viewerAnnotations } from './viewer.cjs';
-import { createPdfAnnotationText, pdfPersonMetadata } from './annotations.cjs';
+import { createPdfAnnotationText, pdfPersonMetadata, prepareXrefChart } from './annotations.cjs';
 import { viewerWithChart, viewerEpub, EPUB_TYPE, epubBase, checkEpubLimit, epubChart } from './epub.cjs';
 import { chatFlatArtifacts, gedNoteLines, gedText, gedFictiveDates, trimImport } from './parse.cjs';
 import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys, famsByGenerations, eventListText, isExactEvent } from './tree.cjs';
@@ -20,7 +20,8 @@ import { familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusW
 // чистые функции родословной росписи -+= — общий канон tgcloud/lib/flat.cjs
 // (волна A2): handlers берут flatSearch/flatHitKey/treeReport реэкспортом
 // ниже; правки — только в .cjs
-import { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, treeReport, rootOf, cutLines } from './flat.cjs';
+import { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, treeReport, rootOf, cutLines,
+    createFlatAnnotationScope, datelessSearchLine } from './flat.cjs';
 // реэкспорт: точки импорта handlers не менялись с волны A
 export { flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey, treeReport, rootOf } from './flat.cjs';
 export { searchHead, cutLines } from './flat.cjs';
@@ -763,15 +764,16 @@ export async function parentKeys(chatId, childKey) {
     return [...new Set((await edgeRows(chatId)).filter(l => l.child === childKey).map(l => l.parent))];
 }
 
-async function normalizeFam(chatId, fx) {
+async function normalizeFam(chatId, fx, expectedId = null) {
     const f = await getFam(chatId, fx);
-    if (!f) return;
+    if (!f || expectedId !== null && f.id !== expectedId) return;
     const parents = [f.husb, f.wife].filter(Boolean).length;
-    const kids = (await db.select().from(chil).where(and(eq(chil.chatId, chatId), eq(chil.fam, fx))).all()).length;
+    const children = await db.select().from(chil).where(and(eq(chil.chatId, chatId), eq(chil.fam, fx))).all();
     const linksN = (await edgeRows(chatId)).filter(l => l.famXref === fx).length;
-    if (parents === 0 || (kids === 0 && linksN === 0 && parents < 2 && !f.marrD)) {
-        await db.delete(fam).where(and(eq(fam.chatId, chatId), eq(fam.xref, fx))).run();
-        await db.delete(chil).where(and(eq(chil.chatId, chatId), eq(chil.fam, fx))).run();
+    if (parents === 0 || (children.length === 0 && linksN === 0 && parents < 2 && !f.marrD)) {
+        const deleted = await db.delete(fam).where(and(eq(fam.chatId, chatId), eq(fam.id, f.id))).run();
+        if (deleted.rowsAffected && children.length)
+            await db.delete(chil).where(and(eq(chil.chatId, chatId), inArray(chil.id, children.map(c => c.id)))).run();
     }
 }
 
@@ -887,10 +889,79 @@ export async function confirmPair(chatId, link, cand) {
 
 // очистить дерево чата (замена при импорте; настройки остаются)
 export async function clearChatTree(chatId) {
+    await clearDatelessViews(chatId);
     await db.delete(indi).where(eq(indi.chatId, chatId)).run();
     await db.delete(fam).where(eq(fam.chatId, chatId)).run();
     await db.delete(chil).where(eq(chil.chatId, chatId)).run();
     await db.delete(edges).where(eq(edges.chatId, chatId)).run();
+}
+
+export const isDatelessView = row => row?.pkey?.startsWith('dateless:[') && row.pkey.endsWith(']');
+
+async function clearDatelessViews(chatId, person = null) {
+    const rows = await db.select().from(focusView).where(eq(focusView.chatId, chatId)).all();
+    const ids = rows.filter(r => person ? r.pkey === datelessViewKey(person) : isDatelessView(r)).map(r => r.id);
+    for (let i = 0; i < ids.length; i += 100)
+        await db.delete(focusView).where(and(eq(focusView.chatId, chatId), inArray(focusView.id, ids.slice(i, i + 100)))).run();
+}
+
+const datelessViewKey = p => 'dateless:' + JSON.stringify([p.key, p.id, p.name]);
+const VIEW_AGE = 7 * 24 * 3600000;
+
+function datelessLine(snapshot, key) {
+    const line = datelessSearchLine(snapshot, key);
+    return line ? NOT_FOR_GRAFT + '\n' + (line.length > 3000 ? line.slice(0, 2999) + '…' : line) : null;
+}
+
+export async function sendDatelessView(chatId, person, snapshot, replyTo) {
+    const text = datelessLine(snapshot, person.key);
+    if (!text || !Number.isSafeInteger(person.id)) return false;
+    const scope = createFlatAnnotationScope(snapshot, await linkPairs(chatId), []);
+    const sent = await api.sendMessage({ chat_id: chatId, text,
+        reply_markup: datelessMarkup(1, scope.depthOf(person.key)),
+        reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } });
+    const now = Date.now();
+    const rows = await db.select().from(focusView).where(eq(focusView.chatId, chatId)).all();
+    const stale = rows.filter(r => r.ts < now - VIEW_AGE).map(r => r.id);
+    for (const id of stale) await db.delete(focusView).where(eq(focusView.id, id)).run();
+    await db.insert(focusView).values({ chatId, messageId: sent.message_id,
+        pkey: datelessViewKey(person), radius: 1, ts: now }).run();
+    return true;
+}
+
+export async function loadDatelessView(chatId, messageId) {
+    const row = await db.select().from(focusView)
+        .where(and(eq(focusView.chatId, chatId), eq(focusView.messageId, messageId))).get();
+    if (!isDatelessView(row) || row.ts < Date.now() - VIEW_AGE) return null;
+    let key;
+    try { [key] = JSON.parse(row.pkey.slice('dateless:'.length)); }
+    catch { return null; }
+    const snapshot = await flatRows(chatId);
+    const person = snapshot[0].find(p => p.key === key);
+    if (!person || !Number.isSafeInteger(person.id) || person.d != null || datelessViewKey(person) !== row.pkey) return null;
+    const scope = createFlatAnnotationScope(snapshot, await linkPairs(chatId), []);
+    return { row, person, scope, snapshot, text: datelessLine(snapshot, person.key) };
+}
+
+export async function deleteDatelessPerson(chatId, p) {
+    const cs = await chilRows(chatId);
+    const childLinks = cs.filter(c => c.indi === p.key);
+    const includedFamilies = new Set(childLinks.map(c => c.fam));
+    const fs = (await famRowsOf(chatId)).filter(f => f.husb === p.key || f.wife === p.key || includedFamilies.has(f.xref));
+    const current = await getIndi(chatId, p.key);
+    if (!current || current.id !== p.id || current.birtD != null) return false;
+    const deleted = await db.delete(indi).where(and(eq(indi.chatId, chatId), eq(indi.id, p.id),
+        eq(indi.xref, p.key), eq(indi.name, p.name), sql`birt_d IS NULL`)).run();
+    if (deleted.rowsAffected !== 1) return false;
+    await clearDatelessViews(chatId, p);
+    for (const c of childLinks) await db.delete(chil).where(and(eq(chil.chatId, chatId), eq(chil.id, c.id))).run();
+    for (const f of fs) {
+        const where = and(eq(fam.chatId, chatId), eq(fam.id, f.id));
+        if (f.husb === p.key) await db.update(fam).set({ husb: null }).where(and(where, eq(fam.husb, p.key))).run();
+        if (f.wife === p.key) await db.update(fam).set({ wife: null }).where(and(where, eq(fam.wife, p.key))).run();
+        await normalizeFam(chatId, f.xref, f.id);
+    }
+    return true;
 }
 
 // удалить событие с каскадом: связи персоны; у пары «Имя+Имя» — свадьба/развод
@@ -1058,6 +1129,13 @@ export function focusMarkup(chat, chatId, s, radius, depth, xref, detail = false
     return { inline_keyboard: digits.length ? [digits, base] : [base] };
 }
 
+export function datelessMarkup(radius, depth) {
+    const btn = (text, action) => ({ text, callback_data: 'dateless:' + action });
+    const digits = [1, 2, 3, 4, 5].filter(n => n !== radius && n <= depth).map(n => btn(String(n), n));
+    return { inline_keyboard: [[...digits, btn('👎', 'delete')],
+        [btn('🔔', 'bell'), btn('🧬', 'tree'), btn('-+=', 'flat'), btn('❌', 'close')]] };
+}
+
 // разбить длинный текст на куски < 4000 по границам строк (как splitText VK)
 export function splitText(text, MAX = 4000) {
     if (text.length <= MAX) return [text];
@@ -1100,38 +1178,58 @@ export async function gedcomText(chatId, keys) {
             : gdate(d);
         return (ABT_TAG[q] ? ABT_TAG[q] + " " : "") + s;
     };
+    const xrefs = Array.isArray(keys?.xrefs) ? new Set(keys.xrefs) : null;
     const hasKeys = Array.isArray(keys) && keys.length > 0;
-    const persons = (await personRows(chatId)).filter(r => !hasKeys || keys.includes(pkey(r))).map(localRecord);
+    const selected = xrefs ? (await indiRows(chatId)).filter(r => xrefs.has(r.xref)).sort((a, b) => a.id - b.id) : null;
+    if (keys?.snapshot && selected) {
+        const expected = new Map(keys.snapshot[0].filter(p => xrefs.has(p.key)).map(p => [p.key, p]));
+        if (expected.size !== selected.length || selected.some(r => {
+            const p = expected.get(r.xref);
+            return !p || p.id !== r.id || p.name !== r.name || (p.d ?? null) !== (r.birtD ?? null);
+        })) throw new Error('Выбранные персоны изменились.');
+    }
+    const dated = selected ? selected.filter(r => r.birtD != null).map(recOfIndi)
+        : (await personRows(chatId)).filter(r => !hasKeys || keys.includes(pkey(r)));
+    const persons = dated.map(localRecord);
     const idOf = new Map(persons.map(r => [r.xref, r.xref]));
     // усыновления: xref ребёнка → xref семьи (chil.adopted)
+    const children = await chilRows(chatId);
     const adoptedOf = new Map();
-    for (const c of (await chilRows(chatId)).filter(x => x.adopted)) adoptedOf.set(c.indi, c.fam);
+    for (const c of children) if (c.adopted) adoptedOf.set(c.indi, c.fam);
+    const childrenOf = new Map();
+    for (const c of children.sort((a, b) => a.id - b.id)) {
+        if (!childrenOf.has(c.fam)) childrenOf.set(c.fam, []);
+        childrenOf.get(c.fam).push(c);
+    }
     // fam-строки в {xref, par — [{x, k}] датированные половины (k — ключ,
     // только для фильтра фрагмента), stubs — бездатные супруги, kstubs —
     // бездатные дети, chd — датированные дети, marr, div}: семьи НЕ схлопываются
     // — каждая строка fam БД даёт ровно одну FAM (у двух жён одного мужа
     // остаются две FAM, а не один FAM с двумя WIFE)
-    const fams = [];
+    const fams = [], stubInfo = new Map();
+    const stubFrom = i => ({ xref: i.xref, name: i.name, sex: i.sex || null, deat: i.deatD || null, dp: i.deatPlac || null,
+        dh: i.deatH, dm: i.deatM, dsrcH: i.dsrcH, dsrcM: i.dsrcM,
+        dabt: i.deatD ? i.deatAbt || 0 : 0, note: i.note || null });
+    if (selected) for (const i of selected) if (i.birtD == null) stubInfo.set(i.xref, stubFrom(i));
     for (const f of (await famRowsOf(chatId)).sort((a, b) => a.id - b.id)) {
         const par = [], chd = [], stubs = [], kstubs = [];
         const stubOfX = async x => {
+            if (xrefs) return stubInfo.get(x) || null;
             const i = await getIndi(chatId, x);
-            if (!i || !i.name) return null;
-            return { xref: x, name: i.name, sex: i.sex || null, deat: i.deatD || null, dp: i.deatPlac || null,
-                dh: i.deatH, dm: i.deatM, dsrcH: i.dsrcH, dsrcM: i.dsrcM,
-                dabt: i.deatD ? i.deatAbt || 0 : 0, note: i.note || null };
+            return i?.name ? stubFrom(i) : null;
         };
         for (const [role, x] of [['HUSB', f.husb], ['WIFE', f.wife]]) {
-            if (!x) continue;
-            const k = await keyOfXref(chatId, x);
+            if (!x || xrefs && !xrefs.has(x)) continue;
+            const k = xrefs ? idOf.get(x) : await keyOfXref(chatId, x);
             if (k) par.push({ x, k, role });
             else {
                 const st = await stubOfX(x);
                 if (st) stubs.push({ ...st, role });
             }
         }
-        for (const r of (await db.select().from(chil).where(and(eq(chil.chatId, chatId), eq(chil.fam, f.xref))).all()).sort((a, b) => a.id - b.id)) {
-            const k = await keyOfXref(chatId, r.indi);
+        for (const r of childrenOf.get(f.xref) || []) {
+            if (xrefs && !xrefs.has(r.indi)) continue;
+            const k = xrefs ? idOf.get(r.indi) : await keyOfXref(chatId, r.indi);
             if (k) chd.push({ x: r.indi, k });
             else {
                 const st = await stubOfX(r.indi);
@@ -1167,7 +1265,7 @@ export async function gedcomText(chatId, keys) {
     // заглушки-INDI и FAM печатаются собственными xref'ами БД (уникальны
     // по построению): round-trip .ged → .ged сохраняет xref'ы, а значит
     // и метки «~xref» в именах заглушек
-    const stubId = new Map(), stubInfo = new Map();
+    const stubId = new Map([...stubInfo.keys()].map(x => [x, x]));
     const addStub = st => {
         if (!stubId.has(st.xref)) { stubId.set(st.xref, st.xref); stubInfo.set(st.xref, st); }
     };
@@ -1257,10 +1355,10 @@ export async function gedcomText(chatId, keys) {
 // fam в виде полу: hKey/wKey — xref реальных персон, hName/wName — имена
 // заглушек (супруг без записи), children — xref детей, marr/div/note;
 // строки персон/семей чата — общий вход chatFlatText и branchFlatText
-async function flatRows(chatId) {
+export async function flatRows(chatId) {
     const rows = (await indiRows(chatId)).sort((a, b) => a.id - b.id);
     const persons = rows.map(r => ({
-        key: r.xref, name: r.name, sex: r.sex || null,
+        key: r.xref, id: r.id, name: r.name, sex: r.sex || null,
         d: r.birtD ?? undefined, dd: r.deatD ?? undefined,
         h: r.birtH ?? undefined, m: r.birtM ?? undefined,
         srcH: r.srcH ?? undefined, srcM: r.srcM ?? undefined,
@@ -1270,19 +1368,20 @@ async function flatRows(chatId) {
         note: r.note ?? undefined, nameOnly: r.birtD == null,
         abt: r.birtAbt ?? undefined, dabt: r.deatAbt || undefined,
     }));
+    const known = new Set(persons.map(p => p.key));
+    const children = new Map();
+    for (const r of (await chilRows(chatId)).sort((a, b) => a.id - b.id)) {
+        if (!known.has(r.indi)) continue;
+        if (!children.has(r.fam)) children.set(r.fam, []);
+        children.get(r.fam).push(r.indi);
+    }
     const fams = [];
     for (const f of (await famRowsOf(chatId)).sort((a, b) => a.id - b.id)) {
         const F = { xref: f.xref, hKey: null, hName: null, wKey: null, wName: null, children: [], marr: null, div: null, note: f.note || null };
         for (const [slot, x] of [['hKey', f.husb], ['wKey', f.wife]]) {
-            if (!x) continue;
-            const r = await getIndi(chatId, x);
-            if (!r) continue;
-            F[slot] = x;
+            if (known.has(x)) F[slot] = x;
         }
-        for (const r of (await db.select().from(chil).where(and(eq(chil.chatId, chatId), eq(chil.fam, f.xref))).all()).sort((a, b) => a.id - b.id)) {
-            const i = await getIndi(chatId, r.indi);
-            if (i) F.children.push(r.indi);
-        }
+        F.children = children.get(f.xref) || [];
         F.marr = f.marrD ? { d: f.marrD, ...(f.marrAbt ? { abt: f.marrAbt } : {}), ...(f.marrPlac ? { plac: f.marrPlac } : {}) } : null;
         F.div = f.divD ? { d: f.divD, ...(f.divAbt ? { abt: f.divAbt } : {}), ...(f.divPlac ? { plac: f.divPlac } : {}) } : null;
         fams.push(F);
@@ -1303,11 +1402,20 @@ async function flatRows(chatId) {
 // строки «#» парсер росписи пропускает как комментарии — состав не меняется
 export const NOT_FOR_GRAFT = "#not for cut and graft";
 
-export async function chatFlatText(chatId, keys = null) {
+export async function chatFlatText(chatId, keys = null, snapshot = null) {
     // keys (опционально) — фокус-радиус: роспись только этого подмножества
     // (сродни gedcomText); семьи фильтруются по касанию персон/детей
     const hasKeys = Array.isArray(keys) && keys.length > 0;
-    const [allPersons, allFams] = await flatRows(chatId);
+    const [allPersons, allFams] = snapshot ?? await flatRows(chatId);
+    if (Array.isArray(keys?.xrefs)) {
+        const xrefs = new Set(keys.xrefs);
+        const selected = allPersons.filter(p => xrefs.has(p.key));
+        if (!selected.length) return '';
+        const fams = allFams.map(f => ({ ...f, hKey: xrefs.has(f.hKey) ? f.hKey : null,
+            wKey: xrefs.has(f.wKey) ? f.wKey : null, children: f.children.filter(k => xrefs.has(k)) }))
+            .filter(f => f.hKey || f.wKey || f.children.length);
+        return NOT_FOR_GRAFT + '\n' + flatTreeText(selected, fams, true);
+    }
     const persons = allPersons.filter(p => !hasKeys
         || keys.includes(p.name + " " + (p.d ?? "")));
     if (!hasKeys) return flatTreeText(persons, allFams, true); // canonical — рецепт порядка
@@ -1348,10 +1456,15 @@ export async function edgeKids(chatId) {
 // глубину (семьи + интерактивные связи), герой — корневой строкой
 // «-»×1/«=»×1; ввод/вывод симметричны
 export async function branchFlatText(chatId, key) {
-    const [allPersons, allFams] = await flatRows(chatId);
-    const x = (allPersons.find(p => p.name + " " + (p.d ?? "") === key) || {}).key;
+    const [allPersons, allFams] = key?.snapshot ?? await flatRows(chatId);
+    const x = allPersons.find(p => key?.xref != null ? p.key === key.xref : p.name + " " + (p.d ?? "") === key)?.key;
     if (x == null) return "";
-    const [picked, fams] = subsetBranch(allPersons, allFams, x, await edgeKids(chatId));
+    let kids = key?.pairs ? new Map() : await edgeKids(chatId);
+    if (key?.pairs) for (const [p, c] of key.pairs) {
+        if (!kids.has(p)) kids.set(p, []);
+        kids.get(p).push(c);
+    }
+    const [picked, fams] = subsetBranch(allPersons, allFams, x, kids);
     // герой — первой строкой росписи ветви (корень разбора): переставляем
     // его вперёд массива персон — корни flatTreeText визитуются
     // в порядке массива
@@ -1411,6 +1524,12 @@ export async function chartFor(chatId, keys, title, heroKey = null, range = null
 }
 
 async function prepareChart(chatId, keys, title, heroKey, range, diagnose = false, fynnySetting) {
+    if (Array.isArray(keys?.xrefs)) {
+        const snapshot = keys.snapshot ?? await flatRows(chatId);
+        const fynny = fynnySetting ?? (await getSettings(chatId)).fynny;
+        return prepareXrefChart(snapshot, await linkPairs(chatId), await focusSpousePairs(chatId), keys.xrefs,
+            title, keys.heroXref, range, fynny);
+    }
     const snapshot = await flatRows(chatId);
     const pairs = await linkPairs(chatId), spousePairs = await focusSpousePairs(chatId);
     const xOf = new Map(snapshot[0].filter(p => p.d != null).map(p => [p.name + " " + p.d, p.key]));
@@ -1553,17 +1672,18 @@ export async function sendPdf(chatId, head, heroKey, radius, replyTo) {
     }
 }
 
-const exportChart = (chatId, head, heroKey, radius, s) => epubChart(async () => {
+const exportChart = (chatId, head, heroKey, radius, s, selector = null) => epubChart(async () => {
     // PDF and SVG use the same chart candidates; viewer GEDCOM uses the list keys.
-    const keys = heroKey ? focusKeys(await linkPairs(chatId), heroKey, radius, await focusSpousePairs(chatId)) : undefined;
+    const keys = selector ?? (heroKey ? focusKeys(await linkPairs(chatId), heroKey, radius, await focusSpousePairs(chatId)) : undefined);
     return prepareChart(chatId, keys, head.replace(/^\d\s+/, ''), heroKey, radius, false, s.fynny);
 });
 
-async function exportViewer(chatId, g, heroKey, heroXref, radius, s, chart) {
-    const title = epubBase(heroKey, radius);
-    const annotations = viewerAnnotations(g, await flatRows(chatId), await linkPairs(chatId),
+async function exportViewer(chatId, g, heroKey, heroXref, radius, s, chart, selector = null) {
+    const title = selector ? fileBaseOf(focusHead(heroKey, radius)) : epubBase(heroKey, radius);
+    const snapshot = selector?.snapshot ?? await flatRows(chatId);
+    const annotations = viewerAnnotations(g, snapshot, await linkPairs(chatId),
         await focusSpousePairs(chatId), s.fynny, chart.model);
-    const html = viewerWithChart(g, title, heroXref, annotations, { chart });
+    const html = viewerWithChart(g, title, heroXref, annotations, { chart, snapshot });
     return format => format === 'html'
         ? new InputFile(new TextEncoder().encode(html), title + '.html', { type: 'text/html' })
         : new InputFile(viewerEpub(g, title, heroXref, annotations, { heroKey, radius, html }),
@@ -1595,10 +1715,12 @@ export async function sendGedPdf(chatId, keys, head, heroKey, pack, s, replyTo, 
     const enc = new TextEncoder();
     const base = fileBaseOf(head);
     const radius = heroKey ? parseInt(head, 10) || 1 : null;
+    const selector = Array.isArray(keys?.xrefs) ? keys : null;
     const max = 4000;
     const suffix = '\n✂️⏳';
     const maxHead = max - suffix.length - NOT_FOR_GRAFT.length - 1;
-    const prefix = !heroKey ? '' : (head.length <= maxHead ? head : head.slice(0, maxHead - 1) + '…') + '\n';
+    const heading = selector?.text ?? head;
+    const prefix = !heroKey ? '' : (heading.length <= maxHead ? heading : heading.slice(0, maxHead - 1) + '…') + '\n';
     const overflow = prefix.length + pack.length + '\n⏳'.length > max;
     const preview = overflow ? (prefix + cutLines(pack, max, prefix.length + suffix.length, false)).trimEnd() : prefix + pack;
     const finalText = overflow ? (preview ? preview + '\n' : '') + '✂️' : preview;
@@ -1616,11 +1738,11 @@ export async function sendGedPdf(chatId, keys, head, heroKey, pack, s, replyTo, 
     const busy = overflow || s.gedcom || s.pdf || formats.length;
     let ged, chart, viewer;
     const getGed = () => ged ??= gedcomText(chatId, keys);
-    const getChart = () => chart ??= exportChart(chatId, head, heroKey, radius, s);
+    const getChart = () => chart ??= exportChart(chatId, head, heroKey, radius, s, selector);
     const getViewer = async g => {
-        const hero = heroKey ? (await personRows(chatId)).find(r => pkey(r) === heroKey) : null;
-        const heroXref = hero && g.split('\n').includes('0 @' + hero.xref + '@ INDI') ? hero.xref : null;
-        return exportViewer(chatId, g, heroKey, heroXref, radius, s, await getChart());
+        const xref = selector?.heroXref ?? (heroKey ? (await personRows(chatId)).find(r => pkey(r) === heroKey)?.xref : null);
+        const heroXref = xref && g.split('\n').includes('0 @' + xref + '@ INDI') ? xref : null;
+        return exportViewer(chatId, g, heroKey, heroXref, radius, s, await getChart(), selector);
     };
     if (busy) await edit(finalText + (overflow ? '⏳' : '\n⏳')).catch(e => console.error('DNA loading:', e.message));
     try {
@@ -1981,7 +2103,7 @@ export async function sendFlatPack(chatId, key, head = "", replyTo = 0, origin =
         await edit(prefix + pack);
         return true;
     }
-    const base = fileBaseOf(head || "Древо чата") + ".ged.txt";
+    const base = fileBaseOf(origin?.name || head || "Древо чата") + ".ged.txt";
     try {
         // не влезает: голова + метка + ✂️⏳ первым сообщением (порядок строк —
         // герой/голова, метка; полное — в файле; у ромба метка и так первая

@@ -334,7 +334,61 @@ const outputs = {};
 const flatOutputs = {};
 const htmlOutputs = {};
 const metadataOnly = process.argv.includes('--metadata-only');
+const searchOnly = process.argv.includes('--person-search-only');
+const searchFixture = path.join(tmp, 'person-search.ged');
+fs.writeFileSync(searchFixture, [
+    '0 HEAD', '1 CHAR UTF-8',
+    '0 @I1@ INDI', '1 NAME Дометий Муквич', '1 BIRT', '2 DATE 4 AUG 1913',
+    '0 @I4720@ INDI', '1 NAME Дометий Муквич', '1 BIRT', '2 DATE 4 AUG 1913',
+    '0 @I2@ INDI', '1 NAME Мария Доценко', '1 BIRT', '2 DATE EST 1 JAN 1878',
+    '0 @I2276@ INDI', '1 NAME Мария Доценко', '1 BIRT', '2 DATE EST 1 JAN 1878',
+    '0 @I42@ INDI', '1 NAME Бездатный', '1 SEX M',
+    '0 @I4@ INDI', '1 NAME Бездатный', '1 SEX F',
+    '0 @F1@ FAM', '1 HUSB @I42@', '1 WIFE @I4@', '0 TRLR',
+].join('\n'));
 for (const platform of ['tg', 'vk']) {
+    if (!metadataOnly && !process.argv.includes('--loading-only')) {
+        const database = 'person-search';
+        const result = run(platform, database, ['!ged ' + searchFixture, '/2 2', '/html', '/epub']);
+        const html = readHtml(platform, result.files.find(f => /\.(?:html|zip)$/.test(f.name)), 'Древо чата').data;
+        const book = readBook(result.files.find(f => f.name.endsWith('.epub')));
+        assert.deepEqual(html.keys, book.keys);
+        const [ordinary, duplicate, estimated, dateless, otherStub] = ['I1', 'I4720', 'I2276', 'I42', 'I4'].map(x => html.keys[x]);
+        assert.equal(ordinary, '/Дометий Муквич 1913-08-04');
+        assert.equal(duplicate, '/Дометий Муквич ~I4720 1913-08-04');
+        assert.equal(estimated, '/Мария Доценко ~I2276 1878-01-01~');
+        assert.equal(dateless, '/Бездатный ~I42');
+        assert.equal(otherStub, '/Бездатный ~I4');
+        const before = platform === 'tg' ? JSON.parse(fs.readFileSync(path.join(tmp, 'tg-' + database + '.json'))).indi
+            : new DatabaseSync(path.join(tmp, 'vk-' + database + '.db'), { readOnly: true });
+        const rows = platform === 'tg' ? before : before.prepare('SELECT * FROM indi ORDER BY rowid').all();
+        const stale = ordinary.replace('1913-08-04', '1913-08-05');
+        const lookup = run(platform, 'person-lookup', [ordinary, duplicate, estimated, dateless, otherStub, stale,
+            '/8 2', '/8 4', '/10 5'], '',
+            { database, fresh: false });
+        const replies = lookup.events.filter(e => e.method === (platform === 'tg' ? 'sendMessage' : 'messages.send'))
+            .map(e => ({ text: e.params.text ?? e.params.message, keyboard: e.params.reply_markup ?? JSON.parse(e.params.keyboard || 'null') }));
+        for (const [i, key] of [ordinary, duplicate, estimated].entries()) {
+            assert.ok(replies[i].text.includes(key.slice(1, key.lastIndexOf(' '))), lookup.log);
+            assert.match(JSON.stringify(replies[i].keyboard), /👀/);
+        }
+        for (const [i, key] of [dateless, otherStub].entries()) {
+            assert.ok(replies[i + 3].text.includes(key.slice(1)), lookup.log);
+            const keyboard = JSON.stringify(replies[i + 3].keyboard);
+            assert.doesNotMatch(keyboard, /👀|🌙/);
+            for (const button of ['🔔', '🧬', '-+=', '👎', '❌']) assert.ok(keyboard.includes(button), keyboard);
+        }
+        assert.equal(replies.at(-1).text, 'Ничего не найдено');
+        assert.match(lookup.log, /в радиусе нет событий/);
+        assert.ok(lookup.events.some(e => (e.params?.text ?? e.params?.message ?? '').includes('Бездатный ~I42')
+            && !JSON.stringify(e.params?.reply_markup ?? e.params?.keyboard ?? '').includes('👀')));
+        const after = platform === 'tg' ? JSON.parse(fs.readFileSync(path.join(tmp, 'tg-' + database + '.json'))).indi
+            : before.prepare('SELECT * FROM indi ORDER BY rowid').all();
+        assert.deepEqual(rows, after, 'Copied searches must not mutate people');
+        if (platform === 'vk') before.close();
+        console.log(platform + ': copied HTML/EPUB person keys and read-only search: OK');
+        if (searchOnly) continue;
+    }
     if (metadataOnly) {
         const result = run(platform, 'export-metadata', [...setup, '/Павел I', '/epub', '>4 /epub1', '>4 /epub2',
             '/pdf', '>4 /pdf1', '>4 /pdf2']);
@@ -549,9 +603,9 @@ for (const platform of ['tg', 'vk']) {
     const mixedHtml = readHtml(platform, htmlFiles[0], chatTitle);
     const htmlOnly = readHtml(platform, htmlFiles[1], chatTitle);
     assert.ok(htmlOnly.bytes.equals(mixedHtml.bytes), 'PDF and EPUB flags must not affect standalone HTML');
-    const { gedcom, heroXref, annotations, births, xhtml } = readBook(formats.files.find(f => f.name.endsWith('.epub')));
+    const { gedcom, heroXref, annotations, births, keys, xhtml } = readBook(formats.files.find(f => f.name.endsWith('.epub')));
     assert.match(xhtml, /<svg[^>]*\bid="life-chart"/);
-    assert.deepEqual(mixedHtml.data, { gedcom, heroXref, annotations, births });
+    assert.deepEqual(mixedHtml.data, { gedcom, heroXref, annotations, births, keys });
     assert.ok(Object.values(births).includes('1754-09-20'));
     assert.equal(gedcom, outputs[platform]);
     assert.equal(heroXref, null);
@@ -666,7 +720,7 @@ for (const platform of ['tg', 'vk']) {
     }
     console.log(platform + ': Romanov GED/flat import and bell, DNA register and flags, HTML transport/replies, isolated failures OK');
 }
-if (!metadataOnly && !process.argv.includes('--loading-only')) {
+if (!searchOnly && !metadataOnly && !process.argv.includes('--loading-only')) {
     assert.equal(outputs.tg, outputs.vk, 'Full GED exports must match between platforms');
     assert.equal(flatOutputs.tg, flatOutputs.vk, 'Full flat-import GED exports must match between platforms');
     for (const [i, bytes] of htmlOutputs.tg.entries()) {

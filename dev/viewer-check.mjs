@@ -148,10 +148,11 @@ assert.equal(annotations.I2.find(row => row.xref === 'I1').kinship, 'сын');
         assert.deepEqual(row.links.filter(l => l.start >= row.text.indexOf('Похоронен:')).map(l => l.href), linked ? [href] : []);
     }
 }
-const html = viewerHtml(gedcom, 'Тест <дерева>', 'I1', annotations);
+const html = viewerHtml(gedcom, 'Тест <дерева>', 'I1', annotations, { snapshot });
 const data = JSON.parse(html.match(/<script id="tree-data" type="application\/json">(.*?)<\/script>/s)[1]);
 assert.equal(data.gedcom, gedcom);
 assert.equal(data.heroXref, 'I1');
+assert.deepEqual(data.keys, { I1: '/Иван Тест 1980-01-01', I2: '/Отец Тест', I3: '/Мать Тест' });
 const hostile = viewerHtml('</script><script>globalThis.pwned=1</script>\u2028', '<img src=x onerror=alert(1)>');
 assert(!hostile.includes('<img src=x'));
 assert(!hostile.includes('</script><script>globalThis.pwned'));
@@ -246,7 +247,7 @@ try {
         const hash = () => new URL(page.url()).hash;
         assert.equal(await page.locator('#status').textContent(), '');
         assert.equal(await page.locator('h1, label, details, .privacy').count(), 0);
-        assert.equal(await picker.inputValue(), 'Иван Тест ~I1 1980-01-01');
+        assert.equal(await picker.inputValue(), '/Иван Тест 1980-01-01');
         const tip = page.locator('#touch-tip');
         assert(await tip.isVisible());
         const treeLink = tip.getByRole('link', { name: 'дерево', exact: true });
@@ -306,20 +307,21 @@ try {
                 assert.equal(await chartTransform(), beforeSearch);
             }
         }
-        assert.deepEqual(await options.allTextContents(), ['Иван Тест ~I1 1980-01-01', 'Мать Тест ~I3', 'Отец Тест ~I2']);
-        for (const query of ['1980 ИВ', '1980-01-01', '~I1']) {
+        assert.deepEqual(await options.allTextContents(), ['/Иван Тест 1980-01-01', '/Мать Тест', '/Отец Тест']);
+        for (const query of ['1980 ИВ', '1980-01-01', '~I1', '/1980', 'Иван Тест', '/Иван Тест',
+            'Иван Тест 1980-01-01', '  /Иван Тест 1980-01-01  ']) {
             await picker.fill(query);
-            assert.deepEqual(await options.allTextContents(), ['Иван Тест ~I1 1980-01-01']);
+            assert.deepEqual(await options.allTextContents(), ['/Иван Тест 1980-01-01']);
         }
         await picker.fill('нет такой персоны');
         assert.match(await page.locator('#person-results').textContent(), /Никого не найдено/);
         await picker.press('Escape');
-        assert.match(await picker.inputValue(), / ~I1\b/);
+        assert.equal(await picker.inputValue(), '/Иван Тест 1980-01-01');
         await picker.fill('ОТ');
         await picker.press('ArrowDown');
         assert.equal(await options.first().getAttribute('aria-selected'), 'true');
         await picker.press('Enter');
-        assert.match(await picker.inputValue(), / ~I2$/);
+        assert.equal(await picker.inputValue(), '/Отец Тест');
         assert.equal(hash(), '#person=I2');
         assert.equal(await page.locator('#status').textContent(), '');
         await page.locator('#fit').click();
@@ -355,14 +357,14 @@ try {
         assert.equal(await page.evaluate(() => history.length), historyLength);
         await page.evaluate(() => { document.body.dataset.sameDocument = 'yes'; });
         await page.goBack();
-        await page.waitForFunction(() => document.getElementById('person').value.endsWith('~I2'));
+        await page.waitForFunction(() => document.getElementById('person').value === '/Отец Тест');
         await page.goBack();
-        await page.waitForFunction(() => document.getElementById('person').value.includes('~I1 '));
+        await page.waitForFunction(() => document.getElementById('person').value === '/Иван Тест 1980-01-01');
         assert.equal(hash(), '');
         await page.goForward();
-        await page.waitForFunction(() => document.getElementById('person').value.endsWith('~I2'));
+        await page.waitForFunction(() => document.getElementById('person').value === '/Отец Тест');
         await page.goForward();
-        await page.waitForFunction(() => document.getElementById('person').value.includes('~I1 '));
+        await page.waitForFunction(() => document.getElementById('person').value === '/Иван Тест 1980-01-01');
         assert.equal(await page.locator('body').getAttribute('data-same-document'), 'yes');
         assert(await page.locator('#annotation').isHidden());
         await name.click();
@@ -387,28 +389,28 @@ try {
             else if (viewport.width < 500) await mother.tap();
             else await mother.click();
             assert.equal(hash(), '#person=I3');
-            assert.match(await picker.inputValue(), / ~I3$/);
+            assert.equal(await picker.inputValue(), '/Мать Тест');
             assert(await page.locator('#annotation').isVisible());
             assert.match(await hero.textContent(), /Мать Тест/);
             assert(await page.locator('#annotation-text').getByRole('button', { name: 'Иван Тест 1980-01-01', exact: true }).isVisible());
             await page.goBack();
-            await page.waitForFunction(() => document.getElementById('person').value.includes('~I1 '));
+            await page.waitForFunction(() => document.getElementById('person').value === '/Иван Тест 1980-01-01');
             assert(await page.locator('#annotation').isHidden());
             await page.goForward();
-            await page.waitForFunction(() => document.getElementById('person').value.endsWith('~I3'));
+            await page.waitForFunction(() => document.getElementById('person').value === '/Мать Тест');
             assert(await page.locator('#annotation').isHidden());
             await page.goBack();
-            await page.waitForFunction(() => document.getElementById('person').value.includes('~I1 '));
+            await page.waitForFunction(() => document.getElementById('person').value === '/Иван Тест 1980-01-01');
         }
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
         const localUrl = page.url().split('#')[0];
         for (const [fragment, id] of [['#person=I3', 'I3'], ['#person=missing', 'I1'], ['#person=%ZZ', 'I1']]) {
             await page.goto(localUrl + fragment);
-            await page.waitForFunction(expected => document.getElementById('person').value.split(' ').includes(`~${expected}`), id);
+            await page.waitForFunction(expected => document.getElementById('person').value === expected, data.keys[id]);
         }
         await page.goto(localUrl + '#person=I3');
         await page.reload();
-        assert.match(await picker.inputValue(), / ~I3$/);
+        assert.equal(await picker.inputValue(), '/Мать Тест');
         await page.goto(pathToFileURL(path.join(dir, 'empty.html')).href);
         assert.match(await page.locator('#status').textContent(), /нет персон/);
         await page.goto(pathToFileURL(path.join(dir, 'romanov.html')).href);
@@ -421,7 +423,7 @@ try {
             assert.equal(await page.locator('#status').textContent(), '');
         }
         await page.goto(pathToFileURL(path.join(dir, 'single.html')).href);
-        assert.match(await picker.inputValue(), / ~I1$/);
+        assert.equal(await picker.inputValue(), 'Один ~I1');
         assert.match(await page.locator('#chart').textContent(), /Один/);
         await page.goto(pathToFileURL(path.join(dir, 'large.html')).href);
         await picker.click();
@@ -503,7 +505,7 @@ try {
     const chartAnnotations = viewerAnnotations(gedcom, chartSnapshot, [], [], false, model);
     assert.ok(chartAnnotations.OUTCHILD.some(row => row.hero));
     assert.ok(chartAnnotations.I1.some(row => row.xref === 'OUT'));
-    const chartHtml = viewerWithChart(gedcom, title, 'I1', chartAnnotations, { chart: { model } });
+    const chartHtml = viewerWithChart(gedcom, title, 'I1', chartAnnotations, { chart: { model }, snapshot: chartSnapshot });
     const htmlName = `${title}.html`;
     const htmlBytes = new TextEncoder().encode(chartHtml);
     const zip = zipFiles([[htmlName, chartHtml]]);
@@ -519,6 +521,7 @@ try {
     const xhtml = new TextDecoder().decode(book[`EPUB/${title}.xhtml`]);
     assert.match(xhtml, /<!DOCTYPE html><html xmlns="http:\/\/www.w3.org\/1999\/xhtml"/);
     const payload = /<script id="tree-data" type="application\/json">(.*?)<\/script>/s;
+    assert.deepEqual(JSON.parse(chartHtml.match(payload)[1]).keys, { ...data.keys, OUT: '/Брат вне файла 2000-01-01' });
     assert.deepEqual(JSON.parse(xhtml.match(payload)[1].slice(9, -3).replaceAll(']]]]><![CDATA[>', ']]>')),
         JSON.parse(chartHtml.match(payload)[1]));
     const lifeView = /<div id="life-view">(.*?)<\/div>/s;
@@ -579,29 +582,29 @@ try {
     await standalone.goto(htmlUrl);
     const standaloneSearch = standalone.getByRole('combobox');
     await standaloneSearch.fill('Мать');
-    await standalone.getByRole('option', { name: 'Мать Тест ~I3' }).click();
+    await standalone.getByRole('option', { name: '/Мать Тест' }).click();
     assert.match(standalone.url(), /#person=I3$/);
     await standalone.getByRole('button', { name: /Роспись: Мать/ }).first().click();
     assert.match(await standalone.locator('#annotation strong').textContent(), /Мать Тест/);
     await standalone.getByRole('button', { name: 'График' }).click();
     assert(await standalone.locator('#tree').isHidden());
     assert(await standalone.locator('#life-chart').isVisible());
-    assert.equal(await standaloneSearch.inputValue(), 'Мать Тест ~I3');
+    assert.equal(await standaloneSearch.inputValue(), '/Мать Тест');
     assert(await standalone.getByRole('status').getByText('Никого не найдено').isVisible());
     await standaloneSearch.fill('Мать Тест ~I3');
-    assert.deepEqual(await standalone.getByRole('option').allTextContents(), ['Мать Тест ~I30 1990-01-01']);
+    assert.deepEqual(await standalone.getByRole('option').allTextContents(), ['Мать Тест 1990-01-01']);
     await standaloneSearch.press('Escape');
     await standalone.locator('[data-bar][data-xref="I1"]').press('Enter');
     assert.match(await standalone.locator('#annotation strong').textContent(), /Иван Тест/);
     await standalone.getByRole('button', { name: 'Древо' }).click();
     assert(await standalone.locator('#life-chart').isHidden());
     assert(await standalone.locator('#tree').isVisible());
-    assert.equal(await standaloneSearch.inputValue(), 'Иван Тест ~I1 1980-01-01');
+    assert.equal(await standaloneSearch.inputValue(), '/Иван Тест 1980-01-01');
     const standaloneHistory = await standalone.evaluate(() => history.length);
     await standalone.goBack();
-    assert.equal(await standaloneSearch.inputValue(), 'Мать Тест ~I3');
+    assert.equal(await standaloneSearch.inputValue(), '/Мать Тест');
     await standalone.goForward();
-    assert.equal(await standaloneSearch.inputValue(), 'Иван Тест ~I1 1980-01-01');
+    assert.equal(await standaloneSearch.inputValue(), '/Иван Тест 1980-01-01');
     assert.equal(await standalone.evaluate(() => history.length), standaloneHistory);
     assert.deepEqual(external, []);
     assert.deepEqual(errors, []);
@@ -612,24 +615,48 @@ try {
     const granularities = [['6 MAY 1234', '1234-05-06'], ['MAY 1234', '1234-05'], ['1234', '1234']];
     const dates = qualifiers.flatMap(([prefix, suffix]) => granularities.map(([date, label]) => [prefix + date, label + suffix]));
     const dateGed = '0 HEAD\n1 CHAR UTF-8\n' + dates.map(([date], i) =>
-        `0 @D${i + 10}@ INDI\n1 NAME Тёзка\n1 BIRT\n2 DATE ${date}\n`).join('') + '0 TRLR';
+        `0 @D${i + 10}@ INDI\n1 NAME Тёзка\n1 BIRT\n2 DATE ${date.replace('1234', '1235')}\n`).join('')
+        + '0 @I42@ INDI\n1 NAME Бездатный\n0 @CMD@ INDI\n1 NAME today\n0 @MULTI@ INDI\n1 NAME Сырой\n'
+        + '0 @I#4@ INDI\n1 NAME Слеш\n0 TRLR';
     const dateModel = chartModel('Точность', dates.map(([, label], i) => ({
         xref: 'D' + (i + 10), name: 'Тёзка', k: String(i), birth: ['1234-05-06', '1234-05-01', '1234-01-01'][i % 3],
         abt: i,
     })), []);
-    const dateHtml = viewerWithChart(dateGed, 'Точность', 'D10', {}, { chart: { model: dateModel } });
-    const dateBook = unzipSync(viewerEpub(dateGed, 'Точность', 'D10', {}, { html: dateHtml }));
+    const dateSnapshot = [dates.map((_, i) => ({ key: 'D' + (i + 10), name: 'Тёзка ~D' + (i + 10),
+        d: ['1234-05-06', '1234-05-01', '1234-01-01'][i % 3], abt: i })).concat([
+        { key: 'I42', name: 'Бездатный ~I42' }, { key: 'CMD', name: 'today' }, { key: 'MULTI', name: 'Первая\n/bell' },
+        { key: 'I#4', name: 'Слеш А/Б ~I№4', d: '1999-05-04', abt: 9 },
+    ]), []];
+    const dateOptions = { chart: { model: dateModel }, snapshot: dateSnapshot };
+    const dateHtml = viewerWithChart(dateGed, 'Точность', 'D10', {}, dateOptions);
+    const dateBook = unzipSync(viewerEpub(dateGed, 'Точность', 'D10', {}, dateOptions));
     fs.writeFileSync(path.join(dir, 'dates.html'), dateHtml);
     fs.writeFileSync(path.join(dir, 'dates.xhtml'), dateBook['EPUB/Точность.xhtml']);
     const datePage = await browser.newPage({ offline: true });
     for (const file of ['dates.html', 'dates.xhtml']) {
         await datePage.goto(pathToFileURL(path.join(dir, file)).href);
         const search = datePage.getByRole('combobox');
+        const options = datePage.getByRole('option');
+        for (const [query, expected] of [['~I4', '/Бездатный ~I42'], ['/А/Б', '/Слеш А/Б ~I№4 1999-05-04<'],
+            ['~I#4', '/Слеш А/Б ~I№4 1999-05-04<'], ['~CMD', 'today'], ['~MULTI', 'Сырой']]) {
+            await search.fill(query);
+            assert.deepEqual(await options.allTextContents(), [expected]);
+            await search.press('Enter');
+            assert.equal(await search.evaluate(node => node.value), expected);
+        }
+        await search.fill('АБ');
+        assert.deepEqual(await options.allTextContents(), []);
+        await search.press('Escape');
         for (const switchMode of [false, true]) {
             if (switchMode) await datePage.getByRole('button', { name: 'График' }).click();
             await search.fill('тезка 1234');
-            assert.deepEqual(await datePage.getByRole('option').allTextContents(),
-                dates.map(([, label], i) => `Тёзка ~D${i + 10} ${label}`));
+            assert.deepEqual(await options.allTextContents(), dates.map(([, label], i) => `/Тёзка ~D${i + 10} ${label}`));
+            for (const prefix of ['', '/']) {
+                await search.fill(prefix + 'Тёзка ~D27 1234~');
+                assert.deepEqual(await options.allTextContents(), ['/Тёзка ~D27 1234~']);
+            }
+            await search.press('Enter');
+            assert.equal(await search.evaluate(node => node.value), '/Тёзка ~D27 1234~');
             await search.press('Escape');
         }
     }
@@ -664,7 +691,7 @@ try {
     assert.equal(new URL(reader.url()).hash, '#person=I3');
     assert.match(await panel.locator('strong').textContent(), /Мать Тест/);
     await reader.goBack();
-    await reader.waitForFunction(() => document.getElementById('person').value.includes('~I1 '));
+    await reader.waitForFunction(() => document.getElementById('person').value === '/Иван Тест 1980-01-01');
     assert(await panel.isHidden());
     const toggle = reader.locator('#switch-view');
     assert.equal(await toggle.evaluate(node => node.previousElementSibling.id), 'fit');
@@ -714,7 +741,7 @@ try {
     await panel.getByRole('button', { name: /Брат вне файла/ }).click();
     assert.equal(await toggle.textContent(), '🌳');
     assert.equal(new URL(reader.url()).hash, '#person=OUT');
-    assert.equal(await search.evaluate(node => node.value), 'Брат вне файла ~OUT 2000-01-01');
+    assert.equal(await search.evaluate(node => node.value), '/Брат вне файла 2000-01-01');
     assert.match(await panel.locator('strong').textContent(), /Брат вне файла/);
     const centered = await bar('OUT').boundingBox();
     assert(Math.abs(centered.y - view.y - 12) <= 1);
@@ -726,21 +753,21 @@ try {
     await search.fill('нет такой персоны');
     assert.match(await reader.locator('#person-results').textContent(), /Никого не найдено/);
     await search.fill('1980 ИВАН');
-    assert.deepEqual(await reader.getByRole('option').allTextContents(), ['Иван Тест ~I1 1980-01-01']);
+    assert.deepEqual(await reader.getByRole('option').allTextContents(), ['/Иван Тест 1980-01-01']);
     await search.press('ArrowDown');
     await search.press('Enter');
     assert.match(await panel.locator('strong').textContent(), /Иван Тест/);
     assert.equal(new URL(reader.url()).hash, '#person=I1');
     await reader.goBack();
-    await reader.waitForFunction(() => document.getElementById('person').value.includes('~OUT '));
+    await reader.waitForFunction(() => document.getElementById('person').value === '/Брат вне файла 2000-01-01');
     assert(await panel.isHidden());
     await toggle.click();
-    assert.equal(await search.evaluate(node => node.value), 'Брат вне файла ~OUT 2000-01-01');
+    assert.equal(await search.evaluate(node => node.value), '/Брат вне файла 2000-01-01');
     assert(await reader.getByText('Никого не найдено', { exact: true }).isVisible());
     await toggle.click();
     assert(await reader.locator('#person-results').isHidden());
     await reader.goForward();
-    await reader.waitForFunction(() => document.getElementById('person').value.includes('~I1 '));
+    await reader.waitForFunction(() => document.getElementById('person').value === '/Иван Тест 1980-01-01');
     assert(await reader.locator('#tree').isHidden());
     await bar('I1').press('Enter');
     const topOffset = async () => (await bar('I1').boundingBox()).y - (await reader.locator('#life-view').boundingBox()).y;
@@ -833,13 +860,13 @@ try {
     assert.equal(await toggle.getAttribute('aria-label'), 'График');
     assert.equal(await reader.locator('#fit').textContent(), '⤢');
     assert.equal(await reader.locator('#chart').getAttribute('transform'), transformBefore);
-    assert.match(await search.evaluate(node => node.value), / ~I1\b/);
+    assert.equal(await search.evaluate(node => node.value), '/Иван Тест 1980-01-01');
     await toggle.click();
     assert.equal((await matrix()).a, panned.a);
     assert(Math.abs((await matrix()).e - panned.e) < 0.001);
     await reader.goto(bookUrl + '#person=OUT');
     await reader.reload();
-    assert.equal(await search.evaluate(node => node.value), 'Брат вне файла ~OUT 2000-01-01');
+    assert.equal(await search.evaluate(node => node.value), '/Брат вне файла 2000-01-01');
     assert(await reader.getByText('Никого не найдено', { exact: true }).isVisible());
     await toggle.click();
     assert(await reader.locator('#person-results').isHidden());

@@ -3,11 +3,11 @@ import { eq } from 'sdk/db';
 import { gedDrops, focusView } from '../schema.js';
 import { parseTrigger, decodeGedcom, parseGedcom, gedStats, parseTree } from '../lib/parse.cjs';
 import { fileBaseOf } from '../lib/chart.cjs';
-import { parseSearchQuery } from '../lib/flat.cjs';
+import { parseSearchQuery, personSearchLines } from '../lib/flat.cjs';
 import { jubileeText } from '../lib/text.js';
 import { normalizeFocusRadius, focusListMessage, focusSearch, searchChain, searchRadius, searchProgressHead, prepareReplySearch } from '../lib/tree.cjs';
 import { REPLY_TARGET_ERROR, resolveReplyRecord, TREE_EXPORT_COMMAND, exportReplyRadius,
-    CHAT_SWITCH_COMMAND, CHAT_SWITCH_REPLY_ERROR, chatSwitchText } from '../lib/text.cjs';
+    CHAT_SWITCH_COMMAND, CHAT_SWITCH_REPLY_ERROR, chatSwitchText, findPersonSearch } from '../lib/text.cjs';
 import {
     helpText, startMarkup, chatAdmin, getSettings, patchSetting, todayText, jubileeMarkup, sendLong,
     recordOf, recordShownOf, recordByXref, replaceWithGedcom,
@@ -15,6 +15,7 @@ import {
     focusListKeys, focusSpousePairs, focusDepth, focusListText, mmddToday, upcomingText, upsertPerson, applyTree, cutAndGraft, treeReport,
     editTrigger, hasTree, NOT_FOR_GRAFT,
     chatFlatText, flatSearch, sendFlatPack, flatHitKey, searchHead, cutLines,
+    flatRows, sendDatelessView, isDatelessView,
 } from '../lib/bot.js';
 
 async function resolveReply(chatId, reply) {
@@ -30,6 +31,8 @@ async function resolveReply(chatId, reply) {
             .filter(r => r.messageId === reply.message_id);
         if (contexts.length > 1) return null;
         context = contexts[0] || null;
+        if (isDatelessView(context) || reply.reply_markup?.inline_keyboard?.some(row =>
+            row.some(b => b.callback_data?.startsWith('dateless:')))) return null;
     }
     const rec = resolveReplyRecord([...await personRows(chatId), ...await weddingRows(chatId)], reply.text, bot, context);
     if (!rec) return null;
@@ -539,12 +542,24 @@ export default async function (message, ctx) {
             }
             return;
         }
-        const hits = flatSearch(await chatFlatText(chatId), parsed);
+        const snapshot = await flatRows(chatId);
+        const ambiguous = [];
+        const exact = /[\r\n\u2028\u2029]/.test(message.text) ? null : findPersonSearch(snapshot[0], parsed, ambiguous);
+        if (exact?.d != null) {
+            const rec = await recordByXref(chatId, exact.key);
+            if (rec?.xref === exact.key && rec.d === exact.d && rec.n === exact.name) {
+                await sendJubilee(chatId, rec, '', message.message_id);
+                return;
+            }
+        } else if (exact && await sendDatelessView(chatId, exact, snapshot, message.message_id)) return;
+
+        const hits = exact === false ? personSearchLines(snapshot, ambiguous.map(p => p.key))
+            : flatSearch(await chatFlatText(chatId, null, snapshot), parsed);
         if (hits.length) {
             // ровно одно попадание, резолвящееся в персону, — сжатый юбилей
             // с единой клавиатурой, реплаем на запрос; нерезолвимое (свадьба,
             // заглушка, тёзки) — списком
-            if (hits.length === 1) {
+            if (exact === null && hits.length === 1) {
                 const key = flatHitKey(hits[0], await personRows(chatId));
                 const rec = key ? await recordOf(chatId, key) : null;
                 if (rec && rec.xref) { // резолвится в персону (xref есть)

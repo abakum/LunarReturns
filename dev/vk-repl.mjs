@@ -154,12 +154,12 @@ const srv = http.createServer((req, res) => {
             if (method === 'messages.send') {
                 // новый ответ бота; reply — если messagesSend с forward/reply_to
                 const cmid = ++cmid0;
-                const m = { cmid, mid: ++mid0, peer: Number(p.peer_id), fromBot: true, text: String(p.message || ''), kb: p.keyboard || null };
+                const m = { cmid, mid: ++mid0, peer: Number(p.peer_ids ?? p.peer_id), fromBot: true, text: String(p.message || ''), kb: p.keyboard || null };
                 if (p.forward) { try { m.reply = 'д №' + JSON.parse(p.forward).conversation_message_ids[0]; } catch { /* — */ } }
                 if (p.reply_to) m.reply = 'д №' + p.reply_to;
                 msgs.push(m);
                 showBot(m);
-                return json({ response: m.mid });
+                return json({ response: p.peer_ids ? [{ peer_id: m.peer, message_id: m.mid, conversation_message_id: m.cmid }] : m.mid });
             }
             if (method === 'messages.edit') {
                 if (p.attachment && ++attachmentEdits === 1 && process.env.LR_EDIT_FAIL1)

@@ -68,7 +68,7 @@ async function epubChart(prepare) {
     }
 }
 
-function viewerWithChart(gedcom, title, heroXref, annotations, { chart } = {}) {
+function viewerWithChart(gedcom, title, heroXref, annotations, { chart, snapshot } = {}) {
     let svg, notice = chart?.notice;
     if (chart?.model) {
         try { svg = chartSvg(chart.model); }
@@ -77,11 +77,12 @@ function viewerWithChart(gedcom, title, heroXref, annotations, { chart } = {}) {
             notice = 'Не удалось построить график.';
         }
     }
-    return viewerHtml(gedcom, title, heroXref, annotations, { svg, notice });
+    const barXrefs = svg ? chart.model.annotationRegions.filter(({ r, h, bar }) => r.xref && h > 0 && bar).map(({ r }) => r.xref) : [];
+    return viewerHtml(gedcom, title, heroXref, annotations, { svg, notice, snapshot, barXrefs });
 }
 
-function viewerEpub(gedcom, title, heroXref, annotations, { heroKey, radius = 1, chart, html } = {}) {
-    html ??= viewerWithChart(gedcom, title, heroXref, annotations, { chart });
+function viewerEpub(gedcom, title, heroXref, annotations, { heroKey, radius = 1, chart, snapshot, html } = {}) {
+    html ??= viewerWithChart(gedcom, title, heroXref, annotations, { chart, snapshot });
     const escapedTitle = html.match(/<title>(.*?)<\/title>/s)[1];
     let metadata = `<dc:title>${escapedTitle}</dc:title>`;
     if (heroKey) {

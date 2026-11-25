@@ -87,6 +87,33 @@ const TREE_EXPORT_COMMAND = /^\/(gedcom|epub|pdf|html)([1-5])?(?:@\S+)?$/i;
 const CHAT_SWITCH_COMMAND = /^\/(gedcom|pdf|epub|html|bell)([01])(?:@[a-z0-9_]+)?$/i;
 const CHAT_SWITCH_REPLY_ERROR = 'Отправьте переключатель без ответа на сообщение.';
 
+function chatPersonKey(name, date, abt) {
+    if (!name || name !== name.trim() || /^[\/+\-=]/.test(name) || /[#\x00-\x1f\x7f\u2028\u2029]/.test(name)) return null;
+    const query = '/' + name + (date != null ? ' ' + approxOut(date, abt) : '');
+    if (TREE_EXPORT_COMMAND.test(query) || CHAT_SWITCH_COMMAND.test(query)
+        || /^\/(?:start|today|bell[1-5]?|links|trim[01]|fynny[01])(?:@\S+)?$/i.test(query)) return null;
+    return query;
+}
+
+function findPersonSearch(rows, parsed, ambiguousRows) {
+    const { lines, conditions } = parsed;
+    if (lines.length !== 1 || conditions.length !== 1) return null;
+    const { sub, mark, comment } = conditions[0];
+    if (sub || mark || comment !== null) return null;
+    const query = lines[0].trim();
+    const folded = query.toLowerCase();
+    const exact = [], insensitive = [];
+    for (const p of rows) {
+        if (p.d == null && !/ ~\S+$/.test(p.name)) continue;
+        const key = chatPersonKey(p.name, p.d, p.abt);
+        if (key === query) exact.push(p);
+        else if (key?.toLowerCase() === folded) insensitive.push(p);
+    }
+    const matches = exact.length ? exact : insensitive;
+    if (matches.length > 1) ambiguousRows?.push(...matches);
+    return matches.length > 1 ? false : matches[0] ?? null;
+}
+
 function chatSwitchText(key, enabled) {
     if (key === 'bell') return 'Ежедневные оповещения о годовщинах ' + (enabled ? 'включены.' : 'выключены.');
     return '🧬 ' + key.toUpperCase() + ': ' + (enabled ? 'включён.' : 'выключен.');
@@ -97,4 +124,5 @@ function exportReplyRadius(suffix, botReplyText) {
 }
 
 module.exports = { REPLY_TARGET_ERROR, HELP, helpText, approxOut, eventDate, findShownRecord, replyHeader, resolveReplyRecord,
-    TREE_EXPORT_COMMAND, exportReplyRadius, CHAT_SWITCH_COMMAND, CHAT_SWITCH_REPLY_ERROR, chatSwitchText };
+    TREE_EXPORT_COMMAND, exportReplyRadius, CHAT_SWITCH_COMMAND, CHAT_SWITCH_REPLY_ERROR, chatSwitchText,
+    chatPersonKey, findPersonSearch };

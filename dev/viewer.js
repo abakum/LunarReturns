@@ -226,11 +226,19 @@ try {
     const normalize = text => text.toLocaleLowerCase('ru').replace(/ё/g, 'е');
     function searchPerson(id, name, birth) {
         const marker = '~' + id;
-        const alias = ' ~' + id.replace(/#/g, '№');
-        if (name.endsWith(' ' + marker)) name = name.slice(0, -marker.length - 1);
-        else if (name.endsWith(alias)) name = name.slice(0, -alias.length);
-        const label = [name, marker, birth].filter(Boolean).join(' ');
-        return { id, label, searchable: normalize(label) };
+        if (input.keys && Object.hasOwn(input.keys, id)) {
+            const label = input.keys[id];
+            return { id, label, searchable: [normalize(label.slice(1)), normalize(marker)] };
+        }
+        name = name.replace(/\s+/g, ' ').trim();
+        if (!input.keys) {
+            const alias = marker.replace(/#/g, '№');
+            if (name.endsWith(' ' + marker)) name = name.slice(0, -marker.length - 1);
+            else if (name.endsWith(' ' + alias)) name = name.slice(0, -alias.length - 1);
+            name = name.startsWith('/') ? marker + ' ' + name : [name, marker].filter(Boolean).join(' ');
+        } else if (name.startsWith('/')) name = '· ' + name;
+        const label = [name || id, birth].filter(Boolean).join(' ');
+        return { id, label, searchable: [normalize(label), normalize(marker)] };
     }
     // Strip display-only fields before Topola measures cards. The original GEDCOM stays embedded.
     for (const person of data.indis) {
@@ -326,8 +334,9 @@ try {
         search.value = (people.get(currentId) ?? lifePeople.get(currentId))?.label ?? '';
     }
     function showResults(query = '', unavailable = false) {
-        const words = normalize(query).trim().split(/\s+/).filter(Boolean);
-        matches = unavailable ? [] : (showingLife() ? sortedLife : sorted).filter(person => words.every(word => person.searchable.includes(word)));
+        const words = normalize(query.trim().replace(/^\//, '')).split(/\s+/).filter(Boolean);
+        matches = unavailable ? [] : (showingLife() ? sortedLife : sorted).filter(person =>
+            words.every(word => person.searchable.some(text => text.includes(word))));
         active = -1;
         search.removeAttribute('aria-activedescendant');
         results.replaceChildren(...matches.map(({ label }, i) => {

@@ -5,6 +5,7 @@ import { jubileeText } from '../lib/text.js';
 import { normalizeFocusRadius, focusListMessage } from '../lib/tree.cjs';
 import { parseGedcom, parseTree, trimImport } from '../lib/parse.cjs';
 import { fileBaseOf } from '../lib/chart.cjs';
+import { datelessFocusList } from '../lib/flat.cjs';
 import { sendFlatPack } from '../lib/bot.js';
 import { REL_DEFS, religiousYear } from '../lib/religion.cjs';
 import {
@@ -16,6 +17,7 @@ import {
     upcomingText, mmddToday, focusKeys, focusHasPair, focusHead, focusLabel, focusMarkup, splitText,
     focusWithSpouses, focusListKeys, focusSpousePairs, focusListText, focusDepth, sendGedPdf,
     applyTree, cutAndGraft, treeReport, chatFlatText,
+    isDatelessView, loadDatelessView, datelessMarkup, deleteDatelessPerson,
 } from '../lib/bot.js';
 
 export default async function (cq, ctx) {
@@ -210,6 +212,70 @@ export default async function (cq, ctx) {
         return;
     }
 
+    if (data.startsWith('dateless:')) {
+        const action = data.slice('dateless:'.length);
+        const select = /^[1-5]$/.test(action);
+        if (!select && !['close', 'delete', 'bell', 'tree', 'flat'].includes(action)) { await answer(); return; }
+        const messageId = cq.message?.message_id;
+        const view = chatId != null && messageId && cq.message.date !== 0 ? await loadDatelessView(chatId, messageId) : null;
+        const stale = 'сообщение устарело — найдите персону заново';
+        if (!view?.text) { await answer(stale); return; }
+        const { row, person, scope, snapshot, text } = view;
+        const rowWhere = and(eq(focusView.chatId, chatId), eq(focusView.id, row.id), eq(focusView.messageId, messageId),
+            eq(focusView.pkey, row.pkey));
+        if (action === 'close') {
+            await db.delete(focusView).where(rowWhere).run();
+            await editMarkup(undefined);
+            await answer();
+            return;
+        }
+        if (action === 'delete') {
+            if (!(await chatAdmin(cq.message.chat, cq.from?.id))) { await answer('только владелец'); return; }
+            if (!(await db.select().from(focusView).where(rowWhere).get())) { await answer(stale); return; }
+            if (await deleteDatelessPerson(chatId, person)) {
+                await editText('🗑 Персона удалена: ' + person.name, { inline_keyboard: [] });
+                await answer();
+            } else await answer(stale);
+            return;
+        }
+        const depth = scope.depthOf(person.key);
+        const radius = normalizeFocusRadius(select ? Number(action) : row.radius, depth);
+        const head = focusHead(person.name, radius);
+        const label = text + '\n\n' + head;
+        const kb = datelessMarkup(radius, depth);
+        // The context belongs only to this message; never copy its keyboard to a fallback reply.
+        const edit = (body, markup = kb) => api.editMessageText({ chat_id: chatId, message_id: messageId,
+            text: body, reply_markup: markup }).catch(e => {
+            if (!/not modified/i.test(e.description || e.message || '')) console.error('dateless edit:', e.message);
+        });
+        try {
+            if (select) {
+                if (Number(action) !== radius) { await answer('радиус недоступен'); return; }
+                await db.update(focusView).set({ radius }).where(rowWhere).run();
+                await answer(focusLabel(radius));
+                await edit(focusListMessage(text, head));
+            } else if (action === 'bell') {
+                await answer('список ' + focusLabel(radius));
+                const body = datelessFocusList(snapshot, scope, person.key, radius, mmddToday(), (await getSettings(chatId)).fynny);
+                await edit(focusListMessage(text, '\n' + head + '\n' + (body || '(в радиусе нет событий)')));
+            } else if (action === 'tree') {
+                const keys = { xrefs: [...scope.keysOf(person.key, radius)], heroXref: person.key, snapshot, text: label };
+                const pack = await chatFlatText(chatId, keys, snapshot);
+                if (!pack) { await answer('древо пусто'); return; }
+                await answer('древо ' + focusLabel(radius));
+                await sendGedPdf(chatId, keys, head, person.name, pack, await getSettings(chatId), messageId, kb);
+            } else {
+                await answer('пачка ветви');
+                await sendFlatPack(chatId, { xref: person.key, snapshot, pairs: scope.pairs }, label, 0,
+                    { edit: { message_id: messageId, markup: kb }, name: head });
+            }
+        } catch (e) {
+            console.error('dateless focus:', e);
+            await edit(focusListMessage(text, '💥 Не удалось подготовить ответ. Попробуйте ещё раз.'));
+        }
+        return;
+    }
+
     if (data.startsWith("del1:")) {
         // 👎 — удалить событие правкой сообщения (как реакция 👎 в VK-боте);
         // xref — персоны (INDI) либо fam-пары (свадьба/развод)
@@ -268,7 +334,7 @@ export default async function (cq, ctx) {
     // фокус-сообщение: радиус родни 1–5, 🔔/🧬 в радиусе; «-+=» — ветвь героя
     if (/^foc[1-5]$/.test(data) || data === "focbell" || data === "foctree" || data === "focflat") {
         const row = await fvOf();
-        if (!row) { await answer("сообщение устарело — ответьте «/» на триггер заново"); return; }
+        if (!row || isDatelessView(row)) { await answer("сообщение устарело — ответьте «/» на триггер заново"); return; }
         const rec = await recordOf(chatId, row.pkey);
         if (!rec) { await answer("персона не найдена"); return; }
         const selectRadius = /^foc[1-5]$/.test(data);

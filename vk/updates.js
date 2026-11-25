@@ -31,7 +31,8 @@ function createUpdateRouter(deps, byPeer) {
             if (peerId == null) return;
             if (handler === messageEvent && (deps.hasDnaExport || deps.cancelWorkerIndicator)) {
                 const p = deps.unpay(payload.payload);
-                if (p?.c === 'work:cancel' || ((p === 'close' || p?.c === 'close') && deps.hasDnaExport?.(peerId, payload.conversation_message_id))) {
+                const close = p === 'close' || p?.c === 'close' || (p?.c === 'dateless' && p.a === 'close');
+                if (p?.c === 'work:cancel' || (close && deps.hasDnaExport?.(peerId, payload.conversation_message_id))) {
                     return byPeer(peerId, () => invoke(handler, payload, peerId, 'long_poll', update, groupId),
                         trace && trace(update, payload), true);
                 }

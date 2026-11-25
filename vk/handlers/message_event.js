@@ -20,6 +20,78 @@ module.exports = async (o, { deps, peerId, source }) => {
     console.log("кнопка:", JSON.stringify(p), "peer", peerId);
     const action = p && typeof p === "object" ? p.c : p;
     if (action === 'work:cancel') return deps.cancelWorkerIndicator(o, p.id);
+    if (action === 'dateless') {
+        const cmid = o.conversation_message_id;
+        const panel = deps.datelessPanel(peerId, cmid, p.id);
+        const answer = text => answerEvent(o.event_id || o.id, o.user_id, peerId, text);
+        const current = () => !!panel && deps.datelessPanel(peerId, cmid, panel.id) === panel;
+        if (!current()) return answer('панель устарела — повторите поиск');
+        if (p.a === 'delete' && peerId >= 2000000000 && !(await isChatAdmin(peerId, o.user_id)))
+            return answer('только владелец');
+        if (!current()) return answer('панель устарела — повторите поиск');
+        if (!['radius', 'bell', 'tree', 'branch', 'delete', 'close'].includes(p.a)
+            || (p.a === 'radius' && (!Number.isInteger(p.r) || p.r < 1 || p.r > 5)))
+            return answer('неизвестная кнопка');
+        const job = cancelDnaExport(peerId, cmid);
+        if (p.a === 'close') {
+            deps.closeDatelessPanel(panel);
+            await answer(job ? 'экспорт отменён' : 'закрыто');
+            await job?.progressTail;
+            await deleteByCmid(peerId, cmid);
+            return;
+        }
+        const edit = (message, keyboard, attachment = '') => vkApi('messages.edit', {
+            peer_id: peerId, conversation_message_id: cmid, message, keyboard, attachment,
+        });
+        if (p.a === 'delete') {
+            if (!deps.deleteDatelessPerson(peerId, cmid, panel)) return answer('панель устарела — повторите поиск');
+            await answer('удалено');
+            await job?.progressTail;
+            await edit('🗑 Персона удалена: ' + panel.name, JSON.stringify({ inline: true, buttons: [] }));
+            return;
+        }
+        const { head, kb, scope, radius } = deps.datelessView(peerId, panel, p.a === 'radius' ? p.r : panel.radius);
+        const label = { radius: '', bell: 'список ', tree: 'древо ', branch: 'пачка ветви ' }[p.a];
+        await answer(label + focusLabel(radius));
+        await job?.progressTail;
+        if (!current()) return;
+        try {
+            if (p.a === 'radius') {
+                await edit(head, kb);
+                panel.radius = radius;
+                return;
+            }
+            if (p.a === 'tree') {
+                const xrefs = [...scope.keysOf(panel.xref, radius)];
+                if (!xrefs.includes(panel.xref)) throw new Error('Нет персоны в росписи радиуса');
+                await exportFocused(o, head, null, radius, kb,
+                    { heroXref: panel.xref, keys: { xrefs }, title: panel.name, current });
+                return;
+            }
+            const loading = head + '\n' + (p.a === 'bell' ? '🔔' : '-+=') + '⏳';
+            const indicator = { cmid, text: loading, keyboard: kb };
+            if (p.a === 'bell') {
+                const { mo, d } = mskNowParts();
+                const mmdd = String(mo).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+                const text = await computeExport(peerId, 'dateless_bell', { head, heroXref: panel.xref, radius }, { mmdd }, indicator);
+                if (current()) await edit(text, kb);
+                return;
+            }
+            const pack = await computeExport(peerId, 'branch', {}, { xref: panel.xref }, indicator);
+            if (!current()) return;
+            if (!pack) { await edit(head + '\n(ветвь пуста)', kb); return; }
+            if (head.length + 1 + pack.length <= 4000) { await edit(head + '\n' + pack, kb); return; }
+            const preview = head + '\n' + cutLines(pack, 4000, head.length + '\n\n✂️⏳'.length, false) + '\n✂️';
+            await edit(preview + '⏳', kb);
+            const att = await vkUploadDoc(peerId, fileBaseOf(panel.name) + '.ged.txt', '\uFEFF' + withGraftMark(pack));
+            if (current()) await edit(preview, kb, att);
+        } catch (e) {
+            if (deps.isWorkerCancelled?.(e) || !current()) return;
+            console.error('dateless ' + p.a + ':', e);
+            await edit(head + '\n💥 Не удалось выполнить действие. Попробуйте ещё раз.', kb);
+        }
+        return;
+    }
     if (action === 'close') {
         const job = cancelDnaExport(peerId, o.conversation_message_id);
         await job?.progressTail;

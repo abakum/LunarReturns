@@ -36,7 +36,7 @@ const { kinLabel } = reqLib("kinship");
 // ТГ-копия через ESM-шим; правки — только в .cjs, дословных копий больше нет.
 const {
     familyXref, focusDepth, focusKeys, focusGraphKeys, focusHasPair, focusWithSpouses, focusListKeys,
-    focusListText, eventListText } = reqLib("tree");
+    focusListText, eventListText, normalizeFocusRadius } = reqLib("tree");
 
 
 // ============================== ГЕДКОМ → PDF (общий модуль) ==============================
@@ -80,7 +80,7 @@ const { graftError } = reqLib("flat");
 // ТГ-копия напрямую из bot.js (`import … from './flat.cjs'`, как tree.cjs); правки — только в .cjs.
 const {
     flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey,
-    treeReport, rootOf, cutLines } = reqLib("flat");
+    treeReport, rootOf, cutLines, createFlatAnnotationScope } = reqLib("flat");
 
 
 // ============================== ВЫВОД ==============================
@@ -594,7 +594,10 @@ function cutBranch(peerId, px, extraNames = []) {
             stubDel++;
         }
     }
-    for (const x of victims) qr("DELETE FROM indi WHERE chat=? AND xref=?", peerId, x);
+    for (const x of victims) {
+        invalidateDatelessPanels(peerId, x);
+        qr("DELETE FROM indi WHERE chat=? AND xref=?", peerId, x);
+    }
     for (const fx of fams) qr("DELETE FROM fam WHERE chat=? AND xref=?", peerId, fx);
     const chParts = [], chArgs = [];
     if (victims.size) { chParts.push("indi IN (" + [...victims].map(() => "?").join(",") + ")"); chArgs.push(...victims); }
@@ -837,15 +840,41 @@ function dropStubIfOrphan(peerId, xref) {
     if (!i || i.birt_d !== null) return;
     if (q1("SELECT xref FROM fam WHERE chat=? AND (husb=? OR wife=?) LIMIT 1", peerId, xref, xref)) return;
     if (q1("SELECT fam FROM chil WHERE chat=? AND indi=? LIMIT 1", peerId, xref)) return;
+    invalidateDatelessPanels(peerId, xref);
     qr("DELETE FROM indi WHERE chat=? AND xref=?", peerId, xref);
 }
 
 // очистить дерево чата (замена при импорте; настройки/sent остаются)
 function clearChatTree(peerId) {
+    invalidateDatelessPanels(peerId);
     qr("DELETE FROM indi WHERE chat=?", peerId);
     qr("DELETE FROM fam WHERE chat=?", peerId);
     qr("DELETE FROM chil WHERE chat=?", peerId);
     qr("DELETE FROM links WHERE chat=?", peerId);
+}
+
+function deleteDatelessPerson(peerId, cmid, panel) {
+    if (datelessPanel(peerId, cmid, panel.id) !== panel) return false;
+    const x = panel.xref;
+    sq().exec('BEGIN');
+    try {
+        const fams = qa(`SELECT xref FROM fam WHERE chat=? AND (husb=? OR wife=?)
+            UNION SELECT fam FROM chil WHERE chat=? AND indi=?`, peerId, x, x, peerId, x);
+        qr('DELETE FROM chil WHERE chat=? AND indi=?', peerId, x);
+        qr('UPDATE fam SET husb=NULL WHERE chat=? AND husb=?', peerId, x);
+        qr('UPDATE fam SET wife=NULL WHERE chat=? AND wife=?', peerId, x);
+        qr('DELETE FROM indi WHERE chat=? AND xref=? AND birt_d IS NULL', peerId, x);
+        for (const { xref } of fams) {
+            normalizeFam(peerId, xref);
+            if (!famRaw(peerId, xref)) qr('UPDATE links SET fam=NULL WHERE chat=? AND fam=?', peerId, xref);
+        }
+        sq().exec('COMMIT');
+    } catch (e) {
+        sq().exec('ROLLBACK');
+        throw e;
+    }
+    invalidateDatelessPanels(peerId, x);
+    return true;
 }
 
 // удалить событие с каскадом: связи персоны; у пары «Имя+Имя» — свадьба/развод
@@ -863,6 +892,7 @@ function deleteEventCascade(peerId, key) {
         qr("UPDATE fam SET wife=NULL WHERE chat=? AND wife=?", peerId, x);
         // сама запись удаляется: «Событие удалено» — персона целиком (раньше
         // строка оставалась и персон показывали поиск/списки/роспись/гедком)
+        invalidateDatelessPanels(peerId, x);
         qr("DELETE FROM indi WHERE chat=? AND xref=?", peerId, x);
         for (const fx of fams) normalizeFam(peerId, fx);
     } else if (name.includes("+")) {
@@ -1376,23 +1406,24 @@ function openExport(peerId, settings, input, trace, signal, onProgress) {
     return exportPool.open({ ...input, snapshot }, trace, signal, size, onProgress);
 }
 
-async function exportFocused(o, head, heroKey, radius, kb) {
-    return exportDna(o, head, heroKey, radius, kb);
+async function exportFocused(o, head, heroKey, radius, kb, dateless) {
+    return exportDna(o, head, heroKey, radius, kb, dateless);
 }
 
 async function exportWhole(o, kb) {
     await exportDna(o, 'Древо чата', null, null, kb);
 }
 
-async function exportDna(o, head, heroKey, radius, kb) {
+async function exportDna(o, head, heroKey, radius, kb, dateless) {
     const peerId = o.peer_id;
+    const focused = !!(heroKey || dateless);
     const s = getSettings(peerId);
     const id = peerId + ':' + o.conversation_message_id;
     cancelDnaExport(peerId, o.conversation_message_id);
     const control = new AbortController();
     activeDnaExports.set(id, control);
     let lastDot = -Infinity, dots = 0;
-    const isCurrent = () => activeDnaExports.get(id) === control;
+    const isCurrent = () => activeDnaExports.get(id) === control && (!dateless || dateless.current());
     const editProgress = (text, attachment = '') => {
         const previous = control.progressTail;
         return control.progressTail = Promise.resolve(previous).then(() => {
@@ -1415,11 +1446,15 @@ async function exportDna(o, head, heroKey, radius, kb) {
         const trace = { peer: peerId, cmid: o.conversation_message_id, event_id: o.event_id || o.id };
         const started = performance.now();
         await showProgress();
-        if (!isCurrent()) return;
-        lease = await openExport(peerId, s, { head, heroKey, radius, fullPack: !heroKey, manualCancel: true }, trace, control.signal, onProgress);
+        if (!isCurrent()) {
+            if (activeDnaExports.get(id) === control) activeDnaExports.delete(id);
+            return;
+        }
+        lease = await openExport(peerId, s, { head: dateless?.title ?? head, heroKey, radius, fullPack: !focused, manualCancel: true,
+            ...(dateless && { keys: dateless.keys, heroXref: dateless.heroXref }) }, trace, control.signal, onProgress);
         const pack = await lease.step(heroKey ? 'focus' : 'flat');
         if (control.signal.aborted) { lease.release(); return; }
-        if (!heroKey) {
+        if (!focused) {
             await answerEvent(o.event_id || o.id, o.user_id, peerId, pack.trim() ? 'роспись древа чата' : 'древо пусто');
             if (!pack.trim()) {
                 await editProgress(head + '\n(древо пусто)');
@@ -1428,9 +1463,14 @@ async function exportDna(o, head, heroKey, radius, kb) {
                 return;
             }
         }
-        if (!isCurrent()) { lease.release(); return; }
+        if (!isCurrent()) {
+            lease.release();
+            if (activeDnaExports.get(id) === control) activeDnaExports.delete(id);
+            return;
+        }
+        if (dateless && !pack.trim()) throw new Error('Пустая роспись радиуса');
         if (LOG_VK_TIMINGS && heroKey) vkTiming('focus_prepare', { ...trace, status: 'ok', ms: elapsedMs(started) });
-        await sendGedArtifacts(o, undefined, head, heroKey, pack, s, kb, { lease, control,
+        await sendGedArtifacts(o, undefined, head, heroKey, pack, s, kb, { lease, control, dateless,
             progress: (text, attachments) => {
                 showProgress = () => editProgress(text + '.'.repeat(dots), attachments());
                 return showProgress();
@@ -1444,14 +1484,15 @@ async function exportDna(o, head, heroKey, radius, kb) {
 
 async function sendGedArtifacts(o, keys, head, heroKey, pack, s, kb, offload) {
     const peerId = o.peer_id;
-    const base = fileBaseOf(head);
+    const base = fileBaseOf(offload?.dateless?.title ?? head);
     const radius = heroKey ? parseInt(head, 10) || 1 : null;
     const max = 4000;
     const suffix = '\n✂️⏳' + (offload ? '........' : '');
     const maxHead = max - suffix.length - NOT_FOR_GRAFT.length - 1;
-    const prefix = !heroKey ? '' : (head.length <= maxHead ? head : head.slice(0, maxHead - 1) + '…') + '\n';
-    const overflow = prefix.length + pack.length + '\n⏳'.length + (offload ? 8 : 0) > max;
-    const preview = overflow ? (prefix + cutLines(pack, max, prefix.length + suffix.length, false)).trimEnd() : prefix + pack;
+    const prefix = !heroKey && !offload?.dateless ? '' : (head.length <= maxHead ? head : head.slice(0, maxHead - 1) + '…') + '\n';
+    const body = offload?.dateless && pack.startsWith(NOT_FOR_GRAFT + '\n') ? pack.slice(NOT_FOR_GRAFT.length + 1) : pack;
+    const overflow = prefix.length + body.length + '\n⏳'.length + (offload ? 8 : 0) > max;
+    const preview = overflow ? (prefix + cutLines(body, max, prefix.length + suffix.length, false)).trimEnd() : prefix + body;
     const finalText = overflow ? (preview ? preview + '\n' : '') + '✂️' : preview;
     const holdText = finalText + (overflow ? '⏳' : '\n⏳');
     const formats = ['epub', 'html'].filter(format => s[format]);
@@ -1462,7 +1503,7 @@ async function sendGedArtifacts(o, keys, head, heroKey, pack, s, kb, offload) {
     const token = offload?.control ?? Symbol();
     if (!offload) cancelDnaExport(peerId, o.conversation_message_id);
     activeDnaExports.set(exportId, token);
-    const isCurrent = () => activeDnaExports.get(exportId) === token;
+    const isCurrent = () => activeDnaExports.get(exportId) === token && (!offload?.dateless || offload.dateless.current());
     // An empty list removes attachments from previous taps.
     const edit = (message, keyboard = kb) => vkApi('messages.edit', {
         peer_id: peerId, conversation_message_id: o.conversation_message_id,
@@ -1562,12 +1603,12 @@ async function sendGedArtifacts(o, keys, head, heroKey, pack, s, kb, offload) {
                     if (!isCurrent()) return;
                     await vkApi('messages.edit', { peer_id: peerId, conversation_message_id: o.conversation_message_id,
                         message: text }).catch(e => console.error('DNA text edit:', e.message));
-                    if (isCurrent()) await messagesSend(peerId, text, 0, o.conversation_message_id, kb, atts.join(','));
+                    if (isCurrent()) await messagesSend(peerId, text, 0, o.conversation_message_id, offload?.dateless ? null : kb, atts.join(','));
                 }
             }
             if (isCurrent() && errorText && !inlineErrors) await notice(errorText);
         } finally {
-            if (isCurrent()) activeDnaExports.delete(exportId);
+            if (activeDnaExports.get(exportId) === token) activeDnaExports.delete(exportId);
         }
     };
     const editHold = () => offload?.progress ? offload.progress(holdText, () => atts.join(','))
@@ -1744,7 +1785,7 @@ async function sendWithRetry(params) {
 async function bisectKeyboard(params) {
     let kb;
     try { kb = JSON.parse(params.keyboard); } catch (e) { return; }
-    const peerId = params.peer_id;
+    const peerId = params.peer_id ?? params.peer_ids;
     const flat = kb.buttons.flatMap((row, ri) => row.map((b, ci) => ({ ...b, _pos: ri + ":" + ci })));
     for (const b of flat) {
         const one = JSON.stringify({ inline: true, buttons: [[{ action: { type: b.action.type, label: b.action.label, payload: b.action.payload, color: b.action.color } }]] });
@@ -1844,9 +1885,9 @@ const vkApi = reqVk("lib/api").createVkApi(token, LOG_RAW);
 
 // ответ на сообщение: reply_to по глобальному id (личка) либо forward по
 // conversation_message_id (в чатах id приходит 0 — как в pinguin vk.go)
-async function messagesSend(peerId, text, msgId, convMsgId, keyboard, attachment) {
+async function messagesSend(peerId, text, msgId, convMsgId, keyboard, attachment, withCmid = false) {
     const params = {
-        peer_id: peerId,
+        [withCmid ? 'peer_ids' : 'peer_id']: peerId,
         message: text,
         random_id: Date.now() % 2147483647
     };
@@ -2142,6 +2183,73 @@ async function handleTxtDrop(peerId, doc, msgId, convMsgId, fromId, replyMsg) {
 const focusLabel = rangeLevel;
 // dd — дата смерти/развода, если есть; радиус — цифрой перед ключом
 const focusHead = (key, radius, dd) => String(radius) + " " + key + (dd ? " " + dd : "");
+
+// A process-local capability binds every button to the message VK actually sent.
+// Entry eviction/restart fails closed; tree replacement and person removal revoke it.
+const datelessPanels = new Map();
+
+function invalidateDatelessPanels(peerId, xref) {
+    for (const [id, panel] of datelessPanels) {
+        if (panel.peerId !== peerId || (xref !== undefined && panel.xref !== xref)) continue;
+        datelessPanels.delete(id);
+        if (panel.cmid) cancelDnaExport(peerId, panel.cmid);
+    }
+}
+
+function datelessPanel(peerId, cmid, id) {
+    const panel = datelessPanels.get(id);
+    if (!panel || !cmid || panel.peerId !== peerId || panel.cmid !== cmid) return null;
+    const row = indiOf(peerId, panel.xref);
+    return row?.birt_d === null && row.name === panel.name ? panel : null;
+}
+
+function datelessView(peerId, panel, requested = panel.radius) {
+    const data = exportData(peerId);
+    const scope = createFlatAnnotationScope(data.flatRows(), data.pairsOf(), data.spousesOf());
+    const depth = scope.depthOf(panel.xref);
+    const radius = normalizeFocusRadius(requested, depth);
+    const mk = (label, a, r) => ({ action: { type: 'callback', label,
+        payload: JSON.stringify({ c: 'dateless', id: panel.id, a, r }) }, color: 'secondary' });
+    const digits = [1, 2, 3, 4, 5].filter(n => n !== radius && n <= depth).map(n => mk(String(n), 'radius', n));
+    const head = NOT_FOR_GRAFT + '\n' + panel.line + (radius === 1 ? '' : '\n' + focusLabel(radius));
+    const kb = JSON.stringify({ inline: true, buttons: [
+        [...digits, mk('👎', 'delete')],
+        [mk('🔔', 'bell'), mk('🧬', 'tree'), mk('-+=', 'branch'), mk('❌', 'close')],
+    ] });
+    return { radius, head, kb, scope };
+}
+
+async function sendExactSearchResult(peerId, hit, line, msgId, convMsgId, fromId) {
+    const rec = indiOf(peerId, hit.key);
+    if (!rec || rec.name !== hit.name || (rec.birt_d ?? null) !== (hit.d ?? null)
+        || (rec.birt_abt || 0) !== (hit.abt || 0)) return false;
+    if (rec.birt_d != null) {
+        await sendJubileeMsg(peerId, personFromRow(rec), '', msgId, convMsgId, fromId);
+        return true;
+    }
+    if (!line) return false;
+    const id = require('node:crypto').randomUUID();
+    const panel = { id, peerId, xref: rec.xref, name: rec.name, line: line.length > 3000 ? line.slice(0, 2999) + '…' : line, radius: 1 };
+    const { head, kb } = datelessView(peerId, panel);
+    if (datelessPanels.size >= 2048) datelessPanels.delete(datelessPanels.keys().next().value);
+    datelessPanels.set(id, panel);
+    try {
+        const items = await messagesSend(peerId, head, msgId, convMsgId, kb, undefined, true);
+        const sent = items?.[0];
+        if (sent?.peer_id !== peerId || !(sent.conversation_message_id > 0) || sent.error) {
+            datelessPanels.delete(id);
+            console.error('dateless panel: VK did not confirm conversation_message_id', peerId);
+        } else panel.cmid = sent.conversation_message_id;
+    } catch (e) {
+        datelessPanels.delete(id);
+        throw e;
+    }
+    return true;
+}
+
+function closeDatelessPanel(panel) {
+    datelessPanels.delete(panel.id);
+}
 
 // клавиатура фокуса: как «/»-ответ по роли, но 🔔/🧬 действуют в радиусе,
 // а в ряд с ❌ добавлены неактивные цифры радиуса (активная скрыта;
@@ -2683,6 +2791,7 @@ const updateRouter = createUpdateRouter({
     exportFocused, exportWhole, cancelDnaExport, computeExport, parseImport,
     hasDnaExport: (peer, cmid) => activeDnaExports.has(peer + ':' + cmid),
     cancelWorkerIndicator, isWorkerCancelled,
+    datelessPanel, datelessView, closeDatelessPanel, deleteDatelessPerson, sendExactSearchResult,
     withWorkerUpdate: (peerId, run) => workerUpdates.run({ peerId }, run),
     get groupId() { return groupId; }, get ownerId() { return ownerId; },
 }, byPeer);

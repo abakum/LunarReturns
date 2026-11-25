@@ -14,6 +14,37 @@ import './a3-text-check.mjs';
 import './a3-flat-check.mjs';
 import './a3-ged-check.mjs';
 import './a3-list-check.mjs';
+import { chatPersonKey, findPersonSearch } from '../tgcloud/lib/text.cjs';
+import { createFlatAnnotationScope, datelessFocusList, datelessSearchLine, parseSearchQuery } from '../tgcloud/lib/flat.cjs';
+import { prepareXrefChart } from '../tgcloud/lib/annotations.cjs';
+
+{
+    const parent = { key: 'I42', name: 'Бездатный ~I42', sex: 'M', nameOnly: true };
+    const sibling = { key: 'I4', name: 'Бездатный ~I4', nameOnly: true };
+    const child = { key: 'I1', name: 'Потомок', d: '1990-05-06', sex: 'M' };
+    const estimated = { key: 'I2', name: 'Мария Доценко ~I2', d: '1878-01-01', abt: 15 };
+    const snapshot = [[parent, sibling, child, estimated], [{ hKey: 'I42', children: ['I1'] }]];
+    const lookup = query => findPersonSearch(snapshot[0], parseSearchQuery(query));
+    assert.equal(chatPersonKey('html', null), null);
+    assert.equal(chatPersonKey('Имя\n+Семья', child.d), null);
+    assert.equal(chatPersonKey('Мария ~I№2', estimated.d, 15), '/Мария ~I№2 1878-01-01~');
+    assert.equal(lookup('/Бездатный ~I4'), sibling);
+    assert.equal(lookup('/бездатный ~i42'), parent);
+    assert.equal(lookup('/Мария Доценко ~I2 1878-01-01~'), estimated);
+    assert.equal(lookup('/Потомок 1990-05-06'), child);
+    assert.equal(lookup('/Потомок 1990-05-07'), null);
+    assert.equal(lookup('/ Потомок 1990-05-06'), null);
+    assert.equal(lookup('/Потомок 1990-05-06\n!слово'), null);
+    assert.equal(findPersonSearch([child, { ...child, key: 'I3' }], parseSearchQuery('/Потомок 1990-05-06')), false);
+    assert.equal(datelessSearchLine(snapshot, parent.key), '-Бездатный ~I42');
+    const scope = createFlatAnnotationScope(snapshot, [], []);
+    assert.deepEqual([...scope.keysOf(parent.key)], [parent.key, child.key]);
+    assert.match(datelessFocusList(snapshot, scope, parent.key, 1, '05-05', false), /^Потомок 1990-05-06 сын$/);
+    assert.throws(() => prepareXrefChart(snapshot, [], [], [parent.key], parent.name, parent.key, 1, false), /персоны пусты/);
+    const chart = prepareXrefChart(snapshot, [], [], [...scope.keysOf(parent.key)], parent.name, parent.key, 1, false);
+    assert.deepEqual(chart.model.annotationRegions.filter(r => r.bar).map(r => r.r.xref), [child.key]);
+    assert.match(chart.renderPdf(), /^%PDF-/);
+}
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');

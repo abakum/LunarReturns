@@ -1,7 +1,7 @@
 const { createFlatAnnotationScope, flatTreeText } = require('./flat.cjs');
 const { approxOut } = require('./text.cjs');
 const { eventMapLink, parseEventNote } = require('./parse.cjs');
-const { rangeLevel } = require('./chart.cjs');
+const { rangeLevel, chartModel, chartPdf, chartFont } = require('./chart.cjs');
 
 function annotationRow(text, note, events, birthDate, fieldStart = 0) {
     const tail = (note || '').split('^').map(part => ({ part, event: parseEventNote(part) }));
@@ -116,4 +116,35 @@ function pdfPersonMetadata([persons, fams], heroKey, xref, radius) {
         subject: radius != null ? `Радиус родства ${radius}: ${rangeLevel(radius)}.` : '' };
 }
 
-module.exports = { createAnnotationRows, createPdfAnnotationText, pdfPersonMetadata };
+function prepareXrefChart(snapshot, pairs, spouses, keys, title, heroXref, radius, fynny) {
+    const [persons, families] = snapshot;
+    const picked = new Set(keys), byXref = new Map(persons.map(p => [p.key, p]));
+    const scope = createFlatAnnotationScope(snapshot, pairs, spouses);
+    const anchors = new Map();
+    for (const f of families) for (const [a, b] of [[f.hKey, f.wKey], [f.wKey, f.hKey]]) {
+        if (!picked.has(a) || !picked.has(b) || anchors.has(a)) continue;
+        const birth = byXref.get(b)?.d;
+        if (birth) anchors.set(a, Number(birth.slice(0, 4)));
+    }
+    const rows = persons.filter(p => picked.has(p.key) && (p.d || anchors.has(p.key)))
+        .map(p => ({ k: p.key, xref: p.key, name: p.name, birth: p.d ?? null, anchor: anchors.get(p.key),
+            death: p.dd ?? null, sex: p.sex, h: p.h, m: p.m, abt: p.abt ?? 0 }));
+    const visible = new Set(rows.map(r => r.k));
+    const links = [], marriages = [];
+    for (const f of families) {
+        const parents = [f.hKey, f.wKey].filter(x => visible.has(x));
+        if (!parents.length) continue;
+        for (const child of f.children) if (visible.has(child)) links.push({ child, parents });
+        if (f.marr) marriages.push({ fam: parents, year: Number(f.marr.d.slice(0, 4)) });
+    }
+    const rel = { hero: heroXref, range: radius, fynny, pairs: scope.pairs, spouses: scope.spouses,
+        sex: Object.fromEntries(persons.map(p => [p.key, p.sex])) };
+    const model = chartModel(title, rows, links, rel, marriages);
+    return { model, persons: rows.length, renderPdf() {
+        const annotations = createPdfAnnotationText(snapshot, pairs, spouses, fynny);
+        const metadata = pdfPersonMetadata(snapshot, byXref.get(heroXref)?.name, heroXref, radius);
+        return chartPdf(title, rows, links, chartFont(), rel, marriages, annotations, metadata, model);
+    } };
+}
+
+module.exports = { createAnnotationRows, createPdfAnnotationText, pdfPersonMetadata, prepareXrefChart };

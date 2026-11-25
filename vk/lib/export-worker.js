@@ -3,6 +3,8 @@ const { parentPort } = require('node:worker_threads');
 const { createExportData } = require('./export-data.js');
 const { focusListKeys, focusKeys, focusListText, focusListMessage, focusSearch, prepareReplySearch } = require('../../tgcloud/lib/tree.cjs');
 const { checkEpubLimit, epubChart } = require('../../tgcloud/lib/epub.cjs');
+const { createFlatAnnotationScope, datelessFocusList, datelessSearchLine, flatSearch, personSearchLines } = require('../../tgcloud/lib/flat.cjs');
+const { findPersonSearch } = require('../../tgcloud/lib/text.cjs');
 
 let job;
 parentPort.on('message', async ({ op, input }) => {
@@ -19,8 +21,8 @@ parentPort.on('message', async ({ op, input }) => {
         const { data, head, heroKey, radius, heroXref, settings, progress } = job;
         const getGed = () => job.ged ??= data.gedcomText(job.keys);
         const getChart = () => job.chart ??= epubChart(() => data.prepareChart(
-            heroKey ? focusKeys(data.pairsOf(), heroKey, radius, data.spousesOf()) : job.keys,
-            head.replace(/^\d\s+/, ''), heroKey, radius, false, settings.fynny));
+            heroKey && !job.keys?.xrefs ? focusKeys(data.pairsOf(), heroKey, radius, data.spousesOf()) : job.keys,
+            head.replace(/^\d\s+/, ''), heroKey, radius, false, settings.fynny, heroXref));
         let result;
         switch (op) {
         case 'focus': {
@@ -59,7 +61,25 @@ parentPort.on('message', async ({ op, input }) => {
         }
         case 'parse_gedcom': result = require('../../tgcloud/lib/parse.cjs').parseGedcom(input); break;
         case 'parse_flat': result = require('../../tgcloud/lib/parse.cjs').parseTree(input); break;
-        case 'flat_search': result = require('../../tgcloud/lib/flat.cjs').flatSearch(data.chatFlatText(), input); break;
+        case 'flat_search': {
+            if (!input.exact) { result = flatSearch(data.chatFlatText(), input); break; }
+            const snapshot = data.flatRows();
+            const ambiguous = [];
+            const hit = findPersonSearch(snapshot[0], input.query, ambiguous);
+            if (hit) {
+                const line = hit.d == null ? datelessSearchLine(snapshot, hit.key) : '';
+                result = { hit, hits: line ? [line] : [], line };
+            } else result = { hit, hits: hit === false ? personSearchLines(snapshot, ambiguous.map(p => p.key))
+                : flatSearch(data.chatFlatText(), input.query) };
+            break;
+        }
+        case 'dateless_bell': {
+            const snapshot = data.flatRows();
+            const scope = createFlatAnnotationScope(snapshot, data.pairsOf(), data.spousesOf());
+            const body = datelessFocusList(snapshot, scope, heroXref, radius, input.mmdd, settings.fynny);
+            result = focusListMessage(head, body || '(в радиусе нет событий)');
+            break;
+        }
         case 'bell': {
             const persons = data.personsOf(), pairs = data.pairsOf(), spouses = data.spousesOf();
             const sex = new Map(persons.map(r => [r.n + ' ' + r.d, r.sex ?? null]));

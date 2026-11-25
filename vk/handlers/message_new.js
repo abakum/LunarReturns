@@ -18,7 +18,7 @@ module.exports = async (msg, { deps, peerId, source, groupId, ownerId }) => {
         focusHead, focusSpousePairs, focusText, getSettings, handleGedDrop, handleTxtDrop, hasTree, holdAttach,
         isChatAdmin, linkPairs, markSeen, messagesSend, mskNowParts, ownerKeyboard, personRows, pkey,
         recordOf, relKeyboard, replaceWithGedcom, resolveReply, sendChatFlatArtifacts, sendFocus,
-        sendGedcom, sendJubileeMsg, sendPdf, sendViewer, setChatSetting, splitText, unpay,
+        sendExactSearchResult, sendGedcom, sendJubileeMsg, sendPdf, sendViewer, setChatSetting, splitText, unpay,
         upcomingEvents, upsertPerson, vkApi, vkUploadDoc, weddingRows,
     } = deps;
     if (source === "catch_up") {
@@ -346,8 +346,14 @@ module.exports = async (msg, { deps, peerId, source, groupId, ownerId }) => {
                 }
                 return;
             }
-            let hits;
-            try { hits = await computeExport(peerId, 'flat_search', {}, parsed); }
+            let hits, hit, line;
+            try {
+                if (!msg.reply_message && !/[\r\n\u2028\u2029]/.test(text)) {
+                    ({ hits, hit, line } = await computeExport(peerId, 'flat_search', {}, { query: parsed, exact: true }));
+                    if (hit && await sendExactSearchResult(peerId, hit, line, msgId, convMsgId, fromId)) return;
+                    if (hit && !hits?.length) hits = await computeExport(peerId, 'flat_search', {}, parsed);
+                } else hits = await computeExport(peerId, 'flat_search', {}, parsed);
+            }
             catch (e) {
                 if (deps.isWorkerCancelled?.(e)) throw e;
                 console.error('flat search:', e.message);
@@ -359,7 +365,7 @@ module.exports = async (msg, { deps, peerId, source, groupId, ownerId }) => {
                 // с клавиатурой-юбилеем (триггера нет — реплаить не на что, новое
                 // сообщение); нерезолвимое (свадьба, заглушка, тёзки) —
                 // списком/файлом как прежде
-                if (hits.length === 1) {
+                if (hit == null && hits.length === 1) {
                     const key = flatHitKey(hits[0], personRows(peerId));
                     const rec = key ? recordOf(peerId, key) : null;
                     if (rec) {

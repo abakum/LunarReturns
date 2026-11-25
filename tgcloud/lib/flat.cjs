@@ -16,7 +16,7 @@
 // Экспорт shorthand-объектом — cjs-module-lexer (ESM-шим/reqLib).
 
 const { approxOut } = require('./text.cjs');
-const { focusListKeys } = require('./tree.cjs');
+const { focusDepth, focusListKeys, focusListText } = require('./tree.cjs');
 const { kinLabel } = require('./kinship.cjs');
 const { localRecord } = require('./event-time.cjs');
 
@@ -407,9 +407,39 @@ function createFlatAnnotationScope([persons, fams], linkPairs, focusSpousePairs)
     for (const [a, b] of focusSpousePairs) put(spouses, seenSpouses, xOf.get(a), xOf.get(b), true);
     const sexOf = key => byXref.get(key)?.sex ?? null;
     return {
-        keysOf: key => new Set(focusListKeys(pairs, spouses, key, 1, sexOf, false)),
+        pairs, spouses, sexOf,
+        keysOf: (key, radius = 1, levels = false) => new Set(focusListKeys(pairs, spouses, key, radius, sexOf, levels)),
+        depthOf: key => focusDepth(pairs, spouses, key),
         labelOf: (from, to, chain) => kinLabel(pairs, spouses, sexOf, from, to, 1, chain),
     };
+}
+
+function datelessFocusList([persons, families], scope, xref, radius, mmddToday, chain) {
+    const names = new Map(persons.map(p => [p.key, p.name]));
+    const items = persons.filter(p => p.d != null).map(p => ({ ...p, n: p.name }));
+    const weddings = new Set();
+    for (const f of families) {
+        if (!f.marr || !names.has(f.hKey) || !names.has(f.wKey)) continue;
+        const n = names.get(f.hKey) + '+' + names.get(f.wKey);
+        const signature = n + ' ' + f.marr.d;
+        if (weddings.has(signature)) continue;
+        weddings.add(signature);
+        items.push({ n, d: f.marr.d, mabt: f.marr.abt, dd: f.div?.d, dabt: f.div?.abt, members: [f.hKey, f.wKey] });
+    }
+    return focusListText(items, scope.keysOf(xref, radius, true), xref, scope.pairs, scope.spouses,
+        scope.sexOf, false, mmddToday, radius, chain, r => r.key);
+}
+
+function datelessSearchLine([persons, families], xref) {
+    return personSearchLines([persons, families], [xref])[0] ?? '';
+}
+
+function personSearchLines([persons, families], xrefs) {
+    const keys = new Set(xrefs), matches = new Map();
+    for (const { person, prefix, text } of flatTreeText(persons, families, true, true)) {
+        if (person && keys.has(person.key) && (prefix || !matches.has(person.key))) matches.set(person.key, prefix + text);
+    }
+    return [...matches.values()];
 }
 
 // строку-попадание поиска «/Имя» в персону {n, d}: маркеры сняты, хвост
@@ -479,4 +509,5 @@ function cutLines(text, budget, reserved = 0, joinReserve = true) {
     return acc;
 }
 
-module.exports = { flatTreeText, subsetBranch, parseSearchQuery, flatSearch, flatHitPerson, flatHitKey, searchHead, cutLines, datePlusYears, treeReport, rootOf, graftError, createFlatAnnotationScope };
+module.exports = { flatTreeText, subsetBranch, parseSearchQuery, flatSearch, flatHitPerson, flatHitKey, searchHead, cutLines, datePlusYears, treeReport, rootOf, graftError,
+    createFlatAnnotationScope, datelessFocusList, datelessSearchLine, personSearchLines };

@@ -4,8 +4,8 @@ const { famsByGenerations } = reqLib('tree');
 const { gedNoteLines, NOT_FOR_GRAFT } = reqLib('parse');
 const { localRecord } = reqLib('event-time');
 const { flatTreeText, subsetBranch } = reqLib('flat');
-const { checkChartLimit, chartDiagnostics, chartRows, chartModel, chartFont, chartPdf } = reqLib('chart');
-const { createPdfAnnotationText, pdfPersonMetadata } = reqLib('annotations');
+const { checkChartLimit, chartDiagnostics, chartRows, chartModel, chartFont, chartPdf, fileBaseOf } = reqLib('chart');
+const { createPdfAnnotationText, pdfPersonMetadata, prepareXrefChart } = reqLib('annotations');
 const pkey = r => r.n + ' ' + r.d;
 const ckey = k => k;
 const personFromRow = r => {
@@ -64,8 +64,9 @@ function createExportData({ people, families, children, pairs, settings }) {
         // идентикаторе INDI @…@; в NAME метку снимаем (реимпорт восстановит её
         // из файлового xref — круглый trip остаётся идемпотентным)
         const cleanName = n => n.replace(/ ~\S+$/, "");
+        const xrefs = keys?.xrefs && new Set(keys.xrefs);
         const hasKeys = Array.isArray(keys) && keys.length > 0;
-        const persons = personsOf().filter(r => !hasKeys || keys.includes(pkey(r))).map(localRecord);
+        const persons = personsOf().filter(r => xrefs ? xrefs.has(r.xref) : !hasKeys || keys.includes(pkey(r))).map(localRecord);
         const idOf = new Map(persons.map(r => [r.xref, r.xref]));
         // усыновления: xref ребёнка → xref семьи (chil.adopted)
         const adoptedOf = new Map();
@@ -88,17 +89,17 @@ function createExportData({ people, families, children, pairs, settings }) {
         // семья НЕ схлопывается — каждая строка fam БД даёт ровно одну FAM
         // (у двух жён одного мужа остаются две FAM, а не один FAM с двумя WIFE)
         const fams = [];
+        const stubOf = x => {
+            const i = indiOf(x);
+            if (!i || !i.name) return null;
+            return { xref: x, name: i.name, sex: i.sex || null, deat: i.deat_d || null, dp: i.deat_plac || null,
+                dh: i.deat_h, dm: i.deat_m, dsrcH: i.dsrc_h, dsrcM: i.dsrc_m,
+                dabt: i.deat_d ? i.deat_abt || 0 : 0, note: i.note || null };
+        };
         for (const f of families) {
             const par = [], chd = [], stubs = [], kstubs = [];
-            const stubOf = x => {
-                const i = indiOf(x);
-                if (!i || !i.name) return null;
-                return { xref: x, name: i.name, sex: i.sex || null, deat: i.deat_d || null, dp: i.deat_plac || null,
-                    dh: i.deat_h, dm: i.deat_m, dsrcH: i.dsrc_h, dsrcM: i.dsrc_m,
-                    dabt: i.deat_d ? i.deat_abt || 0 : 0, note: i.note || null };
-            };
             for (const [role, x] of [['HUSB', f.husb], ['WIFE', f.wife]]) {
-                if (!x) continue;
+                if (!x || (xrefs && !xrefs.has(x))) continue;
                 const k = keyOfXref(x);
                 if (k) par.push({ x, k, role });
                 else {
@@ -107,6 +108,7 @@ function createExportData({ people, families, children, pairs, settings }) {
                 }
             }
             for (const r of childrenOf(f.xref)) {
+                if (xrefs && !xrefs.has(r.indi)) continue;
                 const k = keyOfXref(r.indi);
                 if (k) chd.push({ x: r.indi, k });
                 else {
@@ -150,6 +152,11 @@ function createExportData({ people, families, children, pairs, settings }) {
         for (const f of fams) {
             for (const st of f.stubs) addStub(st);
             for (const st of f.kstubs) addStub(st);
+        }
+        if (xrefs) for (const x of xrefs) {
+            if (idOf.has(x) || stubInfo.has(x)) continue;
+            const stub = stubOf(x);
+            if (stub) addStub(stub);
         }
         const fidOf = new Map(fams.map(f => [f, f.xref]));
         const out = ["0 HEAD", "1 SOUR LunarReturns", "1 GEDC", "2 VERS 5.5.1", "2 FORM LINEAGE-LINKED", "1 CHAR UTF-8"];
@@ -263,6 +270,14 @@ function createExportData({ people, families, children, pairs, settings }) {
         // («Имя ГГГГ-ММ-ДД»); семьи фильтруются по касанию персон карт ключей
         const hasKeys = Array.isArray(keys) && keys.length > 0;
         const [rows, allFams] = flatRows();
+        if (keys?.xrefs) {
+            const picked = new Set(keys.xrefs);
+            const persons = rows.filter(r => picked.has(r.key));
+            const fams = allFams.map(f => ({ ...f, hKey: picked.has(f.hKey) ? f.hKey : null,
+                wKey: picked.has(f.wKey) ? f.wKey : null, children: f.children.filter(k => picked.has(k)) }))
+                .filter(f => f.hKey || f.wKey || f.children.length);
+            return NOT_FOR_GRAFT + '\n' + flatTreeText(persons, fams, true);
+        }
         const persons = rows.filter(r => !hasKeys || keys.includes(r.name + " " + (r.d ?? "")));
         if (!hasKeys) return flatTreeText(persons, allFams, true); // canonical — рецепт порядка
         const kOf = new Map(rows.map(r => [r.key, r.name + " " + (r.d ?? "")]));
@@ -275,9 +290,11 @@ function createExportData({ people, families, children, pairs, settings }) {
             [f.hKey, f.wKey, ...f.children].some(k => k != null && keys.includes(kOf.get(k) || ""))), true);
     }
 
-    function prepareChart(keys, title, heroKey, range, diagnose = false, fynnySetting) {
+    function prepareChart(keys, title, heroKey, range, diagnose = false, fynnySetting, heroXref) {
         const snapshot = flatRows();
         const pairs = pairsOf(), spousePairs = spousesOf();
+        if (keys?.xrefs) return prepareXrefChart(snapshot, pairs, spousePairs, keys.xrefs,
+            title, heroXref, range, fynnySetting ?? settings.fynny);
         const xOf = new Map(snapshot[0].filter(p => p.d != null).map(p => [p.name + " " + p.d, p.key]));
         const hasKeys = Array.isArray(keys) && keys.length > 0;
         const recs = personsOf().filter(r => !hasKeys || keys.includes(pkey(r)));
@@ -390,18 +407,20 @@ function createExportData({ people, families, children, pairs, settings }) {
     function exportViewer(g, heroKey, heroXref, radius, s, chart, progress) {
         const { viewerEpub, viewerWithChart, epubBase, zipFiles } = reqLib('epub');
         const { viewerAnnotations } = reqLib('viewer');
-        const title = epubBase(heroKey, radius || 1);
-        const annotations = viewerAnnotations(g, flatRows(), pairsOf(), spousesOf(), s.fynny, chart.model,
+        const snapshot = flatRows();
+        const heroName = !heroKey && indiOf(heroXref)?.name;
+        const title = heroName ? fileBaseOf((radius || 1) + ' ' + heroName) : epubBase(heroKey, radius || 1);
+        const annotations = viewerAnnotations(g, snapshot, pairsOf(), spousesOf(), s.fynny, chart.model,
             (done, total) => progress?.('annotations', done, total));
-        const html = viewerWithChart(g, title, heroXref, annotations, { chart });
+        const html = viewerWithChart(g, title, heroXref, annotations, { chart, snapshot });
         progress?.('markup', 1, 1);
         return format => format === 'html' ? [title + '.zip', zipFiles([[title + '.html', html]])]
-            : [title + '.epub', viewerEpub(g, title, heroXref, annotations, { heroKey, radius: radius || 1, html })];
+            : [title + '.epub', viewerEpub(g, title, heroXref, annotations, { heroKey: heroName || heroKey, radius: radius || 1, html })];
     }
     function branchFlatText(key) {
         const [rows, fams] = flatRows();
         const xrefs = new Map(rows.map(r => [r.name + ' ' + (r.d ?? ''), r.key]));
-        const root = xrefs.get(key);
+        const root = typeof key === 'object' ? key.xref : xrefs.get(key);
         if (!root) return '';
         const kids = new Map();
         for (const [p, c] of pairs) {

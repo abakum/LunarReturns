@@ -1,7 +1,7 @@
 const { script, licenses } = require('./viewer-bundle.cjs');
 const { createAnnotationRows } = require('./annotations.cjs');
 const { parseGedcom } = require('./parse.cjs');
-const { approxOut } = require('./text.cjs');
+const { approxOut, chatPersonKey } = require('./text.cjs');
 
 function viewerAnnotations(gedcom, snapshot, pairs = [], spouses = [], chain = false, model = null, progress) {
     const ids = new Set([...gedcom.matchAll(/^0 @([^\r\n@]+)@ INDI\r?$/gm)].map(m => m[1]));
@@ -20,11 +20,17 @@ function viewerAnnotations(gedcom, snapshot, pairs = [], spouses = [], chain = f
     }));
 }
 
-function viewerHtml(gedcom, title, heroXref = null, annotations = {}, { svg, notice } = {}) {
+function viewerHtml(gedcom, title, heroXref = null, annotations = {}, { svg, notice, snapshot, barXrefs = [] } = {}) {
     const escape = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-    const births = Object.fromEntries((parseGedcom(gedcom)?.indis ?? [])
+    const indis = parseGedcom(gedcom)?.indis ?? [];
+    const births = Object.fromEntries(indis
         .filter(p => p.birt?.date).map(p => [p.__xref, approxOut(p.birt.date, p.birt.abt)]));
-    const data = JSON.stringify({ gedcom, heroXref, annotations, births }).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+    const ids = new Set([...indis.map(p => p.__xref), ...(svg ? barXrefs : [])]);
+    const keys = snapshot ? Object.fromEntries(snapshot[0].filter(p => ids.has(p.key)).flatMap(p => {
+        const key = chatPersonKey(p.name, p.d, p.abt);
+        return key ? [[p.key, key]] : [];
+    })) : null;
+    const data = JSON.stringify({ gedcom, heroXref, annotations, births, keys }).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
     const scrollbar = (id, orientation, controls, label) => `<div id="${id}" class="viewer-scroll" role="scrollbar" aria-label="${label}" aria-orientation="${orientation}" aria-controls="${controls}" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" tabindex="0" hidden="hidden"><div class="scroll-thumb"></div></div>`;
     return `<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">

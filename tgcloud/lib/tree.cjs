@@ -219,16 +219,20 @@ function eventRows(rows, byFullDate) {
     return byFullDate ? rows : rows.filter(isExactEvent);
 }
 
-function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "", depth = 2, chain) {
+function focusListText(items, keys, key, pairs, spousePairs, sexOf, byFullDate = false, mmddToday = "", depth = 2, chain, rowKey) {
     const set = new Set(keys);
     const map = rs => rs
         .map(r => r.n + " " + eventDate(r.d, r.abt || r.mabt || 0)
             + (r.dd ? " " + eventDate(r.dd, r.dabt || 0) : "")
             + (r.h !== undefined ? " " + String(r.h).padStart(2, "0") + ":" + String(r.m).padStart(2, "0") : "")
-            + (() => { const l = kinLabel(pairs, spousePairs, sexOf, key, r.n + " " + r.d, depth, chain); return l ? " " + l : ""; })())
+            + (() => {
+                const to = rowKey ? rowKey(r) : r.n + " " + r.d;
+                const l = to == null ? "" : kinLabel(pairs, spousePairs, sexOf, key, to, depth, chain);
+                return l ? " " + l : "";
+            })())
         .join("\n");
-    return map(sortEvents(eventRows(items, byFullDate).filter(r => set.has(r.n + " " + r.d)
-        || (r.n.includes("+") && focusHasPair(r.n, keys))), byFullDate, mmddToday));
+    return map(sortEvents(eventRows(items, byFullDate).filter(r => rowKey ? (r.members?.every(x => set.has(x)) ?? set.has(rowKey(r)))
+        : set.has(r.n + " " + r.d) || (r.n.includes("+") && focusHasPair(r.n, keys))), byFullDate, mmddToday));
 }
 
 // A weight of one denotes the chain alphabet; larger weights are short labels.
