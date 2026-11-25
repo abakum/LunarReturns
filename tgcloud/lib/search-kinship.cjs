@@ -77,7 +77,7 @@ function compatible(left, right) {
 
 // null means ordinary/mixed literal text. A recognized but ungrammatical
 // phrase deliberately returns a diagnostic object instead of becoming literal.
-function compileKinship(text) {
+function compileKinship(text, endAnchored = false) {
     text = String(text);
     const leading = text.match(/^\s*/)[0], trailing = text.match(/\s*$/)[0];
     const words = fold(text.trim()).split(/\s+/);
@@ -185,7 +185,9 @@ function compileKinship(text) {
             states = next; step++;
             if (!states.size) return false;
         }
-        return [...states.values()].some(({ pos }) => line.startsWith(trailing, pos));
+        return [...states.values()].some(({ pos }) => endAnchored
+            ? pos + trailing.length === line.length && line.endsWith(trailing)
+            : line.startsWith(trailing, pos));
     };
     const allVariants = () => {
         if (!valid) return [];

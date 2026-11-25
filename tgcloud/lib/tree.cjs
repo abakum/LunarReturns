@@ -268,8 +268,9 @@ function searchChain(query, chain = false) {
 function searchProgressHead(radius, chain, query, decomposition) {
     const parsed = searchConditions(query);
     const last = parsed.conditions.at(-1);
-    const lines = parsed.lines.slice(0, last.line);
-    lines[last.line - 1] = last.raw.split('#', 1)[0] + "#" + radius + " /fynny" + Number(!!chain);
+    const lastLine = parsed.postfix?.lastLine ?? last.endLine ?? last.line;
+    const lines = parsed.lines.slice(0, lastLine);
+    lines[lastLine - 1] = lines[lastLine - 1].split('#', 1)[0] + "#" + radius + " /fynny" + Number(!!chain);
     return lines.join("\n") + (decomposition ? '\n\n' + decomposition : '');
 }
 
@@ -326,7 +327,7 @@ function prepareReplySearch(query, chatChain = false) {
     const parsed = searchConditions(query);
     const chain = searchChain(parsed, chatChain);
     const compiled = parsed.conditions.map(c => c.sub && !c.mark && c.needle
-        ? compileKinship(c.needle) : null);
+        ? compileKinship(c.needle, !!c.endLine) : null);
     const expand = compiled.some((p, i) => p?.known && (p.neutral
         || !searchKinshipWordsPossible(parsed.conditions[i].needle, chain)));
     if (!expand) return { query: parsed, chain, radius: searchRadius(parsed, chain),
@@ -361,11 +362,13 @@ function prepareReplySearch(query, chatChain = false) {
     let detail = '';
     try { detail = parsed.conditions.map((c, i) => {
         const p = compiled[i];
-        if (!p?.valid) return c.raw;
-        return p.allVariants().map((variant, j) => (c.op === '!' ? '!' : j ? '|' : c.op) + ' ' + variant).join('\n');
+        if (!p?.valid) return c.endLine ? c.raw + '\n' + parsed.lines[c.endLine - 1] : c.raw;
+        return p.allVariants().map((variant, j) => (c.op === null ? '' : c.op === '!' ? '!' : j ? '|' : c.op) + ' ' + variant
+            + (c.endLine ? '\n$' : '')).join('\n');
     }).filter(Boolean).join('\n\n'); }
     catch (e) { error ||= e.message; }
-    const decomposition = detail;
+    const decomposition = detail && (parsed.postfix || (parsed.conditions.length > 1 && parsed.conditions.some(c => c.endLine)))
+        ? 'Разложение по условиям (варианты внутри блока):\n' + detail : detail;
     return { query: { ...parsed, conditions, expanded: true }, chain: true, radius, error, decomposition };
 }
 

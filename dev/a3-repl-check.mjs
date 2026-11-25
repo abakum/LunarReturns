@@ -144,6 +144,35 @@ for (const failed of ['.ged', '.pdf', '.ged.txt', '.epub', 'all', 'none']) {
 }
 globalThis.fetch = realFetch;
 for (const platform of ['tg', 'vk']) {
+    const script = platform === 'tg' ? 'dev/repl.mjs' : 'dev/vk-repl.mjs';
+    const args = [script, '--fresh', ...(platform === 'tg' ? ['--private'] : [])];
+    const env = { ...process.env, LR_DEV_DB: path.join(tmp, platform + '-anchor.json'),
+        LR_DB: path.join(tmp, platform + '-anchor.db'), LR_VKOFF: process.env.LR_VKOFF || '937' };
+    const commands = [kids, '/Старший', '>4 / родитель\\n$', '/ 1972-02-29\\n$', '/ 1972-02\\n$',
+        '/Старший\\n Супруга\\n 1952-01-01\\n$\\n/\\n|',
+        '>4 /#2\\n родитель\\n$\\n!\\n/'];
+    const result = spawnSync(process.execPath, args, {
+        cwd: root, env, input: commands.join('\n') + '\n', encoding: 'utf8', timeout: 120000,
+    });
+    const log = result.stdout + result.stderr;
+    assert.equal(result.status, 0, log);
+    assert.doesNotMatch(log, /ERROR:|Ошибка поискового запроса/);
+    assert.match(log, /    \/ отец\n    \$\n    \| мать\n    \$/);
+    assert.match(log, /Родитель 1950-01-01 отец/);
+    assert.match(log, /Супруга 1952-01-01 мать/);
+    const [, exact, partial, postfix, ...replyParts] = log.split(/^ {4}(?:\/ 1972-02(?:-29)?|\/Старший(?=\r?\n {4} Супруга)|\/#2(?=\r?\n {4} родитель))\r?$/m);
+    const replyPostfix = replyParts.join('\n');
+    assert.match(exact, /Старший 1972[\-_.]02[\-_.]29/);
+    assert.doesNotMatch(exact, /Ничего не найдено/);
+    assert.match(partial, /Ничего не найдено/);
+    assert.match(postfix, /Супруга 1952-01-01/);
+    assert.match(postfix, /Старший 1972-02-29/);
+    assert.match(replyPostfix, /    \/#2 \/fynny1/);
+    assert.match(replyPostfix, /Разложение по условиям/);
+    assert.doesNotMatch(postfix + replyPostfix, /Условие:|Ошибка поискового запроса/);
+    console.log(`A3 ${platform} REPL: global and reply end anchors and postfix OK`);
+}
+if (!process.argv.includes('--search-anchors-only')) for (const platform of ['tg', 'vk']) {
     const trace = path.join(tmp, platform + '-radius.jsonl');
     const env = { ...process.env, LR_DEV_DB: path.join(tmp, platform + '.json'), LR_DB: path.join(tmp, platform + '.db'),
         LR_VKOFF: '937', LR_VK_TRACE: trace };

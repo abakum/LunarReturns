@@ -315,6 +315,7 @@ function flatTreeText(persons, fams, canonical = false, structured = false, hero
 function parseSearchQuery(query) {
     if (query && typeof query === "object" && Array.isArray(query.conditions)) return query;
     const lines = String(query).split(/\r?\n/), conditions = [], radii = [];
+    let postfix, depth = 1, previous, lastLine;
     const fail = (line, message) => { throw new Error("Ошибка поискового запроса: строка " + line + ": " + message); };
     for (let i = 0; i < lines.length; i++) {
         const raw = lines[i], hash = raw.indexOf('#');
@@ -324,46 +325,99 @@ function parseSearchQuery(query) {
             radii.push(Math.max(1, Math.min(9, Number(comment.trim().split(/\s/)[0]))));
         if (!part.trim()) continue;
         const op = part[0];
-        if (!"/|!".includes(op)) fail(i + 1, "условие должно начинаться с /, | или !");
+        const token = part.trimEnd();
+        lastLine = i + 1;
+        if (!postfix && conditions.length && token.length > 1 && !"/|!$".includes(op)) {
+            postfix = { start: conditions.length, instructions: [] };
+        }
+        if (token === '$' || (!postfix && op === '$')) {
+            if (token !== '$') fail(i + 1, "после $ допустим только комментарий");
+            if (!previous?.needle) fail(i + 1, "$ требует предыдущего условия с текстом");
+            if (previous.endLine) fail(i + 1, "$ уже задан для этого условия");
+            previous.endLine = i + 1;
+            continue;
+        }
+        if (postfix && (token === '/' || token === '|' || token === '!')) {
+            if (depth < (op === '!' ? 1 : 2)) fail(i + 1, "недостаточно операндов для " + op);
+            if (op !== '!') depth--;
+            postfix.instructions.push({ op, line: i + 1 });
+            previous = undefined;
+            continue;
+        }
+        if (!postfix && !"/|!".includes(op)) fail(i + 1, "условие должно начинаться с /, |, ! или $");
         if (!conditions.length && op !== '/') fail(i + 1, "первое условие должно начинаться с /");
-        const q = part.slice(1), sub = q.startsWith(" ");
+        const q = postfix ? part : part.slice(1), sub = q.startsWith(" ");
         const mark = (q.match(/^([-+=])\1*/) || [""])[0];
         const text = sub ? q.slice(1) : q.slice(mark.length);
         const needle = (comment !== null ? text.trimStart() : text.trim()).toLowerCase();
         const full = !conditions.length && !needle && !mark && comment !== null
             && /^[1-9](?:\s+\/fynny[01])?$/.test(comment.trim());
-        conditions.push({ op, sub, mark, needle, comment, line: i + 1, raw, full });
+        if (postfix) {
+            postfix.instructions.push({ index: conditions.length, line: i + 1 });
+            depth++;
+        }
+        previous = { op: postfix ? null : op, sub, mark, needle, comment, line: i + 1, raw, full };
+        conditions.push(previous);
     }
     if (conditions.length > 1) for (const c of conditions)
         if (!c.needle && !c.mark && !c.full) fail(c.line, "пустое условие");
+    if (postfix) {
+        if (depth !== 1) fail(lastLine, "после вычисления должен остаться один набор, осталось: " + depth);
+        return { conditions, radii, lines, postfix: { ...postfix, lastLine } };
+    }
     return { conditions, radii, lines };
 }
 
 function flatSearch(flat, query, fullList = false) {
-    const { conditions } = parseSearchQuery(query);
+    const { conditions, postfix } = parseSearchQuery(query);
     const lines = flat ? String(flat).split(/\r?\n/) : [];
+    const haystack = lines.map(line => {
+        const mark = (line.match(/^([-+=])\1*/) || [""])[0];
+        return { mark, body: line.slice(mark.length).toLowerCase() };
+    });
     // Track each original occurrence and whether a non-prefix match selected it.
-    const selected = new Map();
-    for (let n = 0; n < conditions.length; n++) {
-        const { op, sub, mark, needle, full, test } = conditions[n];
-        const matches = new Set();
-        for (let i = 0; i < lines.length; i++) {
-            const lmark = (lines[i].match(/^([-+=])\1*/) || [""])[0];
-            const body = lines[i].slice(lmark.length).toLowerCase();
+    function match({ sub, mark, needle, full, test, endLine }) {
+        const matches = new Map();
+        for (let i = 0; i < haystack.length; i++) {
+            const { mark: lmark, body } = haystack[i];
             if (test ? test(body) : full ? fullList : (!needle && !mark ? false
-                : mark ? lmark === mark && (!needle || body.startsWith(needle))
-                    : sub ? body.includes(needle) : body.startsWith(needle))) matches.add(i);
+                : mark && lmark !== mark ? false
+                    : sub ? (endLine ? body.endsWith(needle) : body.includes(needle))
+                        : (endLine ? body === needle : body.startsWith(needle)))) matches.set(i, !!(sub || mark || full));
         }
+        return matches;
+    }
+    function combine(left, right, op) {
         if (op === '!') {
-            for (const i of matches) selected.delete(i);
-        } else if (n === 0 || op === '|') {
-            for (const i of matches) selected.set(i, !!(selected.get(i) || sub || mark || full));
+            for (const i of right.keys()) left.delete(i);
+        } else if (op === '|') {
+            for (const [i, keep] of right) left.set(i, !!(left.get(i) || keep));
         } else {
-            for (const i of selected.keys()) {
-                if (!matches.has(i)) selected.delete(i);
-                else if (sub || mark || full) selected.set(i, true);
+            for (const i of left.keys()) {
+                if (!right.has(i)) left.delete(i);
+                else if (right.get(i)) left.set(i, true);
             }
         }
+    }
+    let selected = new Map();
+    for (let n = 0; n < (postfix?.start ?? conditions.length); n++) {
+        const condition = conditions[n];
+        combine(selected, match(condition), n === 0 ? '|' : condition.op);
+    }
+    if (postfix) {
+        const stack = [selected];
+        for (const { op, index } of postfix.instructions) {
+            if (!op) stack.push(match(conditions[index]));
+            else {
+                const right = stack.pop();
+                if (op === '!') {
+                    const inverse = new Map();
+                    for (let i = 0; i < lines.length; i++) if (!right.has(i)) inverse.set(i, true);
+                    stack.push(inverse);
+                } else combine(stack.at(-1), right, op);
+            }
+        }
+        [selected] = stack;
     }
     const hits = lines.filter((_, i) => selected.has(i));
     // Префиксный поиск: одна персона теперь рисуется дважды — под свадьбой

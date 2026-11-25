@@ -319,6 +319,26 @@ function checkCanon(tag) {
             sonKey, plan.query, plan.chain, plan.radius) };
     };
     for (const chatChain of [false, true]) {
+        const anchored = preparedSearch('/ родитель\n$', chatChain);
+        const mixed = preparedSearch('/#2\n родитель\n$\n!\n/#2', chatChain);
+        const mixedHead = tree.searchProgressHead(mixed.radius, mixed.chain, mixed.query);
+        assert.equal(mixedHead, '/#2\n родитель\n$\n!\n/#2 /fynny1');
+        assert.deepEqual(preparedSearch(mixedHead, chatChain).hits, mixed.hits);
+        assert.deepEqual(mixed.hits, preparedSearch('/#2\n! родитель\n$', chatChain).hits);
+        assert.match(mixed.decomposition, /\n отец\n\$\n мать\n\$\n родитель\n\$$/u);
+        assert.deepEqual(anchored.hits, ['Отец 1955-03-03 отец', 'Мать 1956-05-05 мать']);
+        assert.equal(anchored.decomposition, '/ отец\n$\n| мать\n$\n| родитель\n$');
+        assert.deepEqual(preparedSearch('/Дед\n/ родитель родителя\n$', chatChain).hits,
+            ['Дед 1930-01-01 отец отца']);
+        assert.deepEqual(preparedSearch('/Отец\n/ родитель родителя\n$', chatChain).hits, []);
+        assert.deepEqual(preparedSearch('/#2\n! родитель\n$', chatChain).hits,
+            preparedSearch('/#2', true).hits.filter(l => !/(?:отец|мать|родитель)$/.test(l)));
+        const multi = preparedSearch('/Дед\n/ родитель родителя\n$\n! примерно\n$', chatChain);
+        assert.match(multi.decomposition, /^Разложение по условиям.*\n\/Дед\n\n/u);
+        assert.match(multi.decomposition, /\/ отец отца\n\$\n\| отец матери\n\$/);
+        assert.match(multi.decomposition, /\n\n! примерно\n\$$/);
+        assert.equal(tree.searchProgressHead(multi.radius, multi.chain, multi.query),
+            '/Дед\n/ родитель родителя\n$\n! примерно\n$#2 /fynny1');
         assert.deepEqual(preparedSearch('/ родитель', chatChain).hits,
             ['Отец 1955-03-03 отец', 'Мать 1956-05-05 мать', 'Отец+Мать 1979~ 1990-01-01']);
         assert.deepEqual(preparedSearch('/ родитель родителя', chatChain).hits,
@@ -374,6 +394,11 @@ function checkCanon(tag) {
     assert.equal(trailing.test('Name 2000-01-01 отец'), false);
     assert.equal(trailing.test('Name 2000-01-01 отец отца'), true);
     assert.equal(compileKinship('родитель').test('Отецкий'), true);
+    const parentAtEnd = compileKinship('родитель', true);
+    for (const label of ['отец', 'мать', 'родитель']) assert.ok(parentAtEnd.test('Имя ' + label));
+    assert.equal(parentAtEnd.test('Имя отец брата'), false);
+    assert.equal(parentAtEnd.test('Имя отец '), false);
+    assert.equal(compileKinship('родитель ', true).test('Имя отец '), true);
     const shownPlan = tree.prepareReplySearch('/ бабушка отца');
     const shownHead = tree.searchProgressHead(shownPlan.radius, shownPlan.chain,
         shownPlan.query, shownPlan.decomposition);

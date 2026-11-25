@@ -7,6 +7,43 @@ import { createRequire } from 'node:module';
 // фрозен-реплики циклов ВК (дословно до A3) сверяются с каноном flat.cjs.
 const require = createRequire(import.meta.url);
 const { searchHead, cutLines, flatSearch, parseSearchQuery } = require('../tgcloud/lib/flat.cjs');
+{
+    const flat = ['Мария Сидорова', 'Иван Сидоров', '-Иван Петров', 'Иван Петров', 'Мария Петрова', '/Петров',
+        '|Петров', '!Петров', '$Петров'].join('\n');
+    assert.deepEqual(flatSearch(flat, '/ Иван\n/ Петров\n Мария\n Сидорова\n/\n|'),
+        ['Мария Сидорова', '-Иван Петров', 'Иван Петров']);
+    assert.deepEqual(flatSearch(flat, '/Иван\nПетров\n!\n/'), ['Иван Сидоров', '-Иван Петров', 'Иван Петров']);
+    assert.deepEqual(flatSearch(flat, '/Мария\n Иван\n!\n|'), ['Мария Сидорова', 'Мария Петрова', '/Петров', '|Петров', '!Петров', '$Петров']);
+    assert.deepEqual(flatSearch(flat, '/Иван\n ИВАН\n$\n|'), ['Иван Сидоров', '-Иван Петров']);
+    assert.deepEqual(flatSearch(flat, '/Никого\n Иван\n Петров\n$\n/\n|'), ['-Иван Петров', 'Иван Петров']);
+    assert.deepEqual(flatSearch(flat, '//Петров\nНикого\n|\n|Петров\n|\n!Петров\n|\n$Петров\n|'),
+        ['/Петров', '|Петров', '!Петров', '$Петров']);
+    assert.deepEqual(flatSearch(flat, '/Никого\nДругой\n|\n/Петров\n|'), ['/Петров']);
+    assert.deepEqual(flatSearch(flat, '/Никого\n /Петров\n|'), ['/Петров']);
+    assert.deepEqual(flatSearch(flat, '/Иван\n А\n|'), ['Мария Сидорова', 'Иван Сидоров', '-Иван Петров', 'Иван Петров', 'Мария Петрова']);
+    assert.deepEqual(parseSearchQuery('/Иван\r\n# пояснение\r\n Мария\r\n| #3 /fynny1\r\n').radii, [3]);
+    for (const [query, line] of [['/Иван\n/\n|', 2], ['/Иван\nА', 2], ['/Иван\nМария', 2],
+        ['/Иван\nМария\n|\n/', 4], ['/Иван\nМария\n|\n$', 4]]) {
+        assert.throws(() => parseSearchQuery(query), new RegExp('строка ' + line + ':'));
+    }
+}
+{
+    const lines = ['-FOO', 'foo bar', 'prefix foo', 'foo$', '--foo', 'prefix foo ', 'other'];
+    const flat = lines.join('\n');
+    for (const [query, indices] of [
+        ['/foo\n$', [0, 4]], ['/ foo\n$', [0, 2, 4]],
+        ['/other\n|foo\n$', [0, 4, 6]], ['/other\n| foo\n$', [0, 2, 4, 6]],
+        ['/ foo\n!foo\n$', [1, 2, 3, 5]], ['/ foo\n! foo\n$', [1, 3, 5]],
+        ['/--foo\n$', [4]], ['/ foo$', [3]], ['/ foo #comment\n$', [5]],
+        ['/ foo\n$\n/ prefix\n| foo$', [2, 3]],
+        ['/foo\r\n# comment\r\n\r\n$ #3 /fynny1', [0, 4]],
+    ]) assert.deepEqual(flatSearch(flat, query), indices.map(i => lines[i]), query);
+    assert.deepEqual(parseSearchQuery('/foo\n$ #3 /fynny1').radii, [3]);
+    for (const [query, line] of [['$', 1], ['/foo\n$\n$', 3], ['/foo\n$ text', 2], ['/foo\n$|bar', 2],
+        ['/\n$', 2], ['/-\n$', 2], ['/#1\n$', 2]]) {
+        assert.throws(() => parseSearchQuery(query), new RegExp('строка ' + line + ':'));
+    }
+}
 const peters = '-Пётр I 1672-06-09\n-Пётр II 1715-10-23\n-Пётр Иванов 1980-01-01';
 assert.deepEqual(flatSearch(peters, '/Пётр I #foo bar'), ['-Пётр I 1672-06-09']);
 assert.equal(flatSearch(peters, '/Пётр I').length, 2);
