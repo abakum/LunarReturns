@@ -61,8 +61,13 @@ function graftError(tree, anchorKey, records = []) {
     return null;
 }
 
-// отчёт по применению росписи (applyTree/cutAndGraft): «древо: персон …»,
-// маркер росписи радиуса → отказ, дубли и ошибки построчно
+function birthOrderReport(errors) {
+    if (!errors?.length) return "";
+    return "Оценочные даты рождения: нарушения\n" + errors.map(({ xref, name, fam, date, reasons }) =>
+        `- ${name} (${xref}), семья ${fam}, ${date}: ${reasons.join("; ")}`).join("\n");
+}
+
+// Отчёт по применению росписи или импорту GEDCOM.
 function treeReport(rep) {
     if (rep.graftError) return "💥 " + rep.graftError;
     if (rep.noGraft) // роспись радиуса в ответ на триггер — правки нет
@@ -76,6 +81,8 @@ function treeReport(rep) {
         body += "\n" + rep.dups.map(d => "♻️ дубль: " + d.from + " → " + d.to).join("\n");
     if (rep.errors.length)
         body += "\n" + rep.errors.map(e => "💥 стр " + e.line + ": " + e.msg).join("\n");
+    const birthOrder = birthOrderReport(rep.birthOrderErrors);
+    if (birthOrder) body += "\n" + birthOrder;
     if (rep.chartWarnings?.length)
         body += "\n" + rep.chartWarnings.map(msg => "💥 Диаграмма не построена: " + msg).join("\n");
     return body;
@@ -563,5 +570,5 @@ function cutLines(text, budget, reserved = 0, joinReserve = true) {
     return acc;
 }
 
-module.exports = { flatTreeText, subsetBranch, parseSearchQuery, flatSearch, flatHitPerson, flatHitKey, searchHead, cutLines, datePlusYears, treeReport, rootOf, graftError,
+module.exports = { flatTreeText, subsetBranch, parseSearchQuery, flatSearch, flatHitPerson, flatHitKey, searchHead, cutLines, datePlusYears, treeReport, birthOrderReport, rootOf, graftError,
     createFlatAnnotationScope, datelessFocusList, datelessSearchLine, personSearchLines };

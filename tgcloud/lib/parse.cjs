@@ -588,134 +588,202 @@ function gedStats(g) {
     return { persons, fams: g.fams.length, links };
 }
 
-// каскад фиктивных дат гедком-импорта до фиксированной точки (волна A3, план
-// .kilo/plans/20261108-canon-pure-a3-plan.md): единая карта полных дат
-// (xref → фиктивная полная дата|null) — датированные в файле послеколлизионные
-// (resolved), бездатные поимённые, упомянутые в famRefs, — вычисленные.
-// Два правила: у детей якорь первого бездатного (датный — в т.ч. фиктивный —
-// сиблинг +1, иначе свадьба +1, иначе максимум +1 среди датных — в т.ч.
-// фиктивных — детей других семей общего родителя — первенцы разных жён одного
-// родителя не «рождаются» в один год, иначе датный — в т.ч. уже фиктивный —
-// родитель +20), каждый следующий бездатный ребёнок — +1 год к предыдущей
-// присвоенной дате; повторный FAMC — первая fam (присвоенное — якорь).
-// У супругов — дата партнёра по цепочкам браков (первая fam с датированной —
-// в т.ч. фиктивной — половиной). Всё в одной карте, чтобы фиктивная ДР
-// родителя/супруга (которой нет в файле) работала якорем дальше —
-// раньше бездатные жёны такого родителя оставались заглушками.
-// Детский якорь проецируется на допустимые даты: свадьба +1 год,
-// развод +1 год, смерть, годовой интервал до детей той же семьи.
-// Нет места — день смерти; нет смерти — прежний якорь.
-// Чистая: g/famRefs/resolved не мутирует; вставки в БД, счётчики и разруление
-// коллизий фиктивных дат (uniqueKeyOf yearly) — у адаптеров (importGedcom
-// ВК lunarreturns.js и ТГ lib/bot.js). Независимые ожидания — dev/a3-ged-check.mjs
+// Чистый каскад оценок: входные ДР неизменны, оценочные ДР и ошибки общие для ВК/ТГ.
 function gedFictiveDates(g, famRefs, resolved) {
-    const fullOf = new Map(); // xref → фиктивная полная дата|null
+    const fullOf = new Map();
+    const people = new Map();
     for (const ind of g.indis) {
         if (!ind.name) continue;
-        if (ind.birt && ind.birt.date) fullOf.set(ind.__xref, resolved.get(ind.__xref) || ind.birt.date);
+        people.set(ind.__xref, ind);
+        if (ind.birt?.date) fullOf.set(ind.__xref, resolved.get(ind.__xref) || ind.birt.date);
         else if (famRefs.has(ind.__xref)) fullOf.set(ind.__xref, null);
     }
-    const kidDated = cx => fullOf.get(cx) || null;
-    const parentLimit = x => {
-        const first = g.fams.filter(f => f.husb === x || f.wife === x)
-            .flatMap(f => f.chil).map(kidDated).filter(Boolean).sort()[0];
-        return first ? datePlusYears(first, -20) : null;
+    const minDate = '0001-01-01', maxDate = '9999-12-31';
+    const earliest = dates => dates.filter(Boolean).sort()[0] || null;
+    const latest = dates => dates.filter(Boolean).sort().at(-1) || null;
+    const shift = (date, years) => {
+        const year = Number(date.slice(0, 4)) + years;
+        if (year < 1) return '0000-12-31';
+        if (year > 9999) return '9999-12-32';
+        return datePlusYears(date, years);
     };
+    const day = (date, delta) => {
+        if (delta < 0 && date <= minDate) return '0000-12-31';
+        if (delta > 0 && date >= maxDate) return '9999-12-32';
+        return new Date(Date.parse(date) + delta * 86400000).toISOString().slice(0, 10);
+    };
+    const yearBefore = date => {
+        const d = shift(date, -1);
+        return d >= minDate && shift(d, 1) > date ? day(d, -1) : d;
+    };
+    const byParent = new Map(), byChild = new Map(), childrenByFamily = new Map();
+    const families = g.fams.map((f, i) => {
+        const children = [...new Set(f.chil)].filter(x => fullOf.has(x));
+        // Переставляем только детей с входными ДР, не передвигая пропуски.
+        const dated = children.filter(x => fullOf.get(x))
+            .sort((a, b) => fullOf.get(a).localeCompare(fullOf.get(b)));
+        let next = 0;
+        const family = {
+            xref: f.__xref || `#${i + 1}`,
+            parents: [...new Set([f.husb, f.wife].filter(Boolean))],
+            children: children.map(x => fullOf.get(x) ? dated[next++] : x),
+            lower: f.marr?.date ? shift(f.marr.date, 1) : null,
+            upper: f.div?.date ? shift(f.div.date, 1) : null,
+        };
+        childrenByFamily.set(f, family.children);
+        for (const x of family.parents) {
+            if (!byParent.has(x)) byParent.set(x, []);
+            byParent.get(x).push(family);
+        }
+        family.children.forEach((x, index) => {
+            if (!byChild.has(x)) byChild.set(x, []);
+            byChild.get(x).push({ family, index });
+        });
+        return family;
+    });
+    const parentLimit = x => {
+        const first = earliest((byParent.get(x) || []).flatMap(f => f.children.map(c => c === x ? null : fullOf.get(c))));
+        return first ? shift(first, -20) : null;
+    };
+    const clamp = (anchor, lower, upper) => lower > upper ? null
+        : anchor < lower ? lower : anchor > upper ? upper : anchor;
+    const chooseChild = (x, anchor, fallback = false) => {
+        const slots = byChild.get(x);
+        const death = people.get(x).deat?.date;
+        const limit = parentLimit(x);
+        const lower = latest([minDate, ...slots.map(({ family }) => family.lower)]);
+        const upper = earliest([maxDate, death, limit, ...slots.map(({ family }) => family.upper)]);
+        const older = [], younger = [];
+        for (const { family, index } of slots) {
+            family.children.forEach((c, i) => {
+                const date = fullOf.get(c);
+                if (date && i !== index) (i < index ? older : younger).push(date);
+            });
+        }
+        const orderLower = latest([lower, ...older.map(d => shift(d, 1))]);
+        const orderUpper = earliest([upper, ...younger.map(yearBefore)]);
+        const ordered = clamp(anchor, orderLower, orderUpper);
+        if (ordered || !fallback) return ordered;
+        if (lower <= upper) {
+            // Ближайший вариант вне годовых окон либо проекция якоря, либо граница окна.
+            const gaps = [...older, ...younger].map(d => [yearBefore(d), shift(d, 1)]);
+            const target = clamp(anchor, lower, upper);
+            const time = Date.parse(target);
+            const candidates = [target, lower, upper, ...gaps.flat()]
+                .filter(d => d >= lower && d <= upper && gaps.every(([a, b]) => d <= a || d >= b));
+            candidates.sort((a, b) => Math.abs(Date.parse(a) - time) - Math.abs(Date.parse(b) - time) || a.localeCompare(b));
+            return candidates[0] || clamp(anchor, latest([lower, ...older.map(d => day(d, 1))]),
+                earliest([upper, ...younger.map(d => day(d, -1))])) || target;
+        }
+        // Противоречивые события: верхняя граница жизни/поколения важнее свадьбы.
+        return clamp(earliest([death, limit]) || anchor, minDate, maxDate);
+    };
+    const familyAnchor = (f, x) => {
+        if (f.lower) return f.lower;
+        const half = latest(f.parents.flatMap(p => byParent.get(p)
+            .filter(other => other !== f)
+            .flatMap(other => other.children.map(c => c === x ? null : fullOf.get(c)))));
+        if (half) return shift(half, 1);
+        const parent = latest(f.parents.map(p => p === x ? null : fullOf.get(p)));
+        return parent ? shift(parent, 20) : people.get(x).deat?.date;
+    };
+    const propose = (x, anchor) => {
+        if (!anchor) return false;
+        const date = byChild.has(x) ? chooseChild(x, anchor) : clamp(anchor, minDate,
+            latest([minDate, earliest([maxDate, parentLimit(x)])]));
+        if (!date) return false;
+        fullOf.set(x, date);
+        return true;
+    };
+    const fillAnchored = () => {
+        let changed;
+        do {
+            changed = false;
+            for (const f of families) {
+                const kids = f.children;
+                let left = null;
+                for (let start = 0; start < kids.length;) {
+                    if (fullOf.get(kids[start])) { left = fullOf.get(kids[start++]); continue; }
+                    let end = start + 1;
+                    while (end < kids.length && !fullOf.get(kids[end])) end++;
+                    let right = fullOf.get(kids[end]);
+                    if (right) {
+                        for (let i = end - 1; i >= start; i--) {
+                            if (propose(kids[i], yearBefore(right))) {
+                                right = fullOf.get(kids[i]);
+                                changed = true;
+                            }
+                        }
+                    } else {
+                        for (let i = start; i < end; i++) {
+                            if (propose(kids[i], left ? shift(left, 1) : familyAnchor(f, kids[i]))) {
+                                left = fullOf.get(kids[i]);
+                                changed = true;
+                            }
+                        }
+                    }
+                    start = end;
+                }
+            }
+            for (const [x, date] of fullOf) {
+                if (date) continue;
+                const spouse = (byParent.get(x) || []).map(f => fullOf.get(f.parents.find(p => p !== x))).find(Boolean);
+                if (propose(x, spouse || parentLimit(x))) changed = true;
+            }
+        } while (changed);
+    };
+    fillAnchored();
+    for (const [x, slots] of byChild) {
+        if (fullOf.get(x)) continue;
+        const { family, index } = slots[0];
+        const right = family.children.slice(index + 1).map(c => fullOf.get(c)).find(Boolean);
+        const left = family.children.slice(0, index).map(c => fullOf.get(c)).findLast(Boolean);
+        const anchor = right ? yearBefore(right) : left ? shift(left, 1)
+            : familyAnchor(family, x) || '1900-01-01';
+        fullOf.set(x, chooseChild(x, anchor, true));
+        fillAnchored();
+    }
+    // Новые ДР потомков могут ограничить родителя. Сдвигаем только назад и
+    // ограничиваем проходы на случай циклических родословных во входном GEDCOM.
     for (let sweep = 0; sweep < fullOf.size; sweep++) {
         let changed = false;
-        // дети fam'а: якорь первого бездатного (датный — в т.ч. фиктивный —
-        // сиблинг +1 год, иначе свадьба +1 год, иначе максимум +1 среди датных
-        // детей других семей общего родителя — первенцы разных жён одного
-        // родителя не «рождаются» в один год, иначе датный родитель +20 лет),
-        // каждый следующий бездатный — +1 год к предыдущей присвоенной дате
-        // (у детей с разными именами коллизии нет — без каскада все получили
-        // бы одну дату); повторный FAMC — первая fam (присвоенное — якорь)
-        for (const f of g.fams) {
-            const datedSibs = f.chil.map(kidDated).filter(Boolean).sort();
-            const pars = [f.husb, f.wife].map(kidDated).filter(Boolean).sort();
-            const fpars = [f.husb, f.wife].filter(Boolean);
-            let cousMax = null; // макс. датная (в т.ч. фиктивная) дата детей семей общих родителей
-            for (const f2 of g.fams) {
-                if (f2 === f) continue;
-                if (![f2.husb, f2.wife].some(px => px && fpars.includes(px))) continue;
-                for (const d of f2.chil.map(kidDated).filter(Boolean))
-                    if (cousMax === null || d > cousMax) cousMax = d;
-            }
-            let prev = null;
-            for (const cx of f.chil) {
-                if (kidDated(cx) !== null) continue; // датный сиблинг — только якорь
-                const p = g.indis.find(i => i.__xref === cx);
-                if (!p || !p.name || !fullOf.has(cx)) continue; // безымянные — мимо
-                if (prev === null) {
-                    if (datedSibs.length) prev = datePlusYears(datedSibs[datedSibs.length - 1], 1);
-                    else if (f.marr && f.marr.date) prev = datePlusYears(f.marr.date, 1);
-                    else if (cousMax !== null) prev = datePlusYears(cousMax, 1);
-                    else if (pars.length) prev = datePlusYears(pars[pars.length - 1], 20);
-                    else if (p.deat && p.deat.date) prev = p.deat.date;
-                    else continue;
-                } else {
-                    prev = datePlusYears(prev, 1);
-                }
-                const original = prev;
-                const lower = f.marr && f.marr.date ? datePlusYears(f.marr.date, 1) : null;
-                const death = p.deat && p.deat.date || null;
-                const limit = parentLimit(cx);
-                const upper = [death, limit, f.div && f.div.date ? datePlusYears(f.div.date, 1) : null]
-                    .filter(Boolean).sort()[0] || null;
-                const gaps = f.chil.filter(x => x !== cx).map(kidDated).filter(Boolean)
-                    .map(d => [datePlusYears(d, -1), datePlusYears(d, 1)]);
-                // Ближайшая допустимая дата — исходная или граница одного из
-                // интервалов. Дни не перебираем; открытые годовые окна запрещены.
-                const candidates = [original, lower, upper, ...gaps.flat()].filter(Boolean)
-                    .filter(d => (!lower || d >= lower) && (!upper || d <= upper)
-                        && gaps.every(([a, b]) => d <= a || d >= b));
-                candidates.sort((a, b) => Math.abs(Date.parse(a) - Date.parse(original))
-                    - Math.abs(Date.parse(b) - Date.parse(original)) || a.localeCompare(b));
-                prev = candidates[0] || death || original;
-                if (limit && prev > limit) prev = limit;
-                fullOf.set(cx, prev);
-                changed = true;
-            }
+        for (const [x, date] of fullOf) {
+            if (!date || people.get(x).birt?.date) continue;
+            const limit = parentLimit(x);
+            if (!limit || date <= limit) continue;
+            const earlier = byChild.has(x) ? chooseChild(x, limit, true) : clamp(limit, minDate, maxDate);
+            if (earlier < date) { fullOf.set(x, earlier); changed = true; }
         }
-        // супруги: дата партнёра (первая fam с датированной — в т.ч. фиктивной
-        // — половиной); раньше датированный в файле супруг имел приоритет —
-        // его послеколлизионная дата и так в fullOf, отдельный приоритет лишён
-        for (const ind of g.indis) {
-            if (!fullOf.has(ind.__xref) || fullOf.get(ind.__xref) !== null) continue;
-            for (const f of g.fams) {
-                if (f.husb !== ind.__xref && f.wife !== ind.__xref) continue;
-                const sx = f.husb === ind.__xref ? f.wife : f.husb;
-                const v = (sx && fullOf.get(sx)) || null;
-                if (v !== null) {
-                    const limit = parentLimit(ind.__xref);
-                    fullOf.set(ind.__xref, limit && v > limit ? limit : v);
-                    changed = true;
+        if (!changed) break;
+    }
+    // Позиции CHIL подсказали якоря, но итоговый порядок задают сами даты.
+    for (const { children } of families) {
+        children.sort((a, b) => fullOf.get(a).localeCompare(fullOf.get(b)));
+    }
+    const birthOrderErrors = [];
+    for (const [x, slots] of byChild) {
+        const person = people.get(x);
+        if (person.birt?.date) continue;
+        const date = fullOf.get(x), limit = parentLimit(x);
+        for (const { family } of slots) {
+            const reasons = new Set();
+            for (const c of family.children) {
+                const sibling = fullOf.get(c);
+                if (c === x || !sibling) continue;
+                const [older, younger] = sibling < date ? [sibling, date] : [date, sibling];
+                if (shift(older, 1) > younger) {
+                    reasons.add('не выдержан годовой интервал между рождениями');
                     break;
                 }
             }
-            // Датированный первенец — самостоятельный якорь, даже без супруга.
-            if (fullOf.get(ind.__xref) === null) {
-                const limit = parentLimit(ind.__xref);
-                if (limit) { fullOf.set(ind.__xref, limit); changed = true; }
-            }
+            if (family.lower && date < family.lower) reasons.add('ДР раньше свадьбы + 1 год');
+            if (family.upper && date > family.upper) reasons.add('ДР позже развода + 1 год');
+            if (person.deat?.date && date > person.deat.date) reasons.add('ДР позже смерти');
+            if (limit && date > limit) reasons.add('до рождения первенца меньше 20 лет');
+            if (reasons.size) birthOrderErrors.push({ xref: x, name: person.name, fam: family.xref, date, reasons: [...reasons] });
         }
-        if (!changed) break;
     }
-    // Потомки могли получить даты после родителя: распространяем верхнюю
-    // границу вверх по поколениям, не меняя явно заданные в файле даты.
-    for (let sweep = 0; sweep < fullOf.size; sweep++) {
-        let changed = false;
-        for (const ind of g.indis) {
-            if (ind.birt && ind.birt.date) continue;
-            const date = kidDated(ind.__xref), limit = parentLimit(ind.__xref);
-            if (date && limit && date > limit) {
-                fullOf.set(ind.__xref, limit);
-                changed = true;
-            }
-        }
-        if (!changed) break;
-    }
-    return fullOf;
+    return { fullOf, birthOrderErrors, childrenByFamily };
 }
 
 // ====================== РОДОСЛОВНАЯ РОСПИСЬ -+= (пакетный ввод) ======================

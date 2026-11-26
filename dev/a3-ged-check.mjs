@@ -1,37 +1,17 @@
 // dev/a3-ged-check.mjs — независимые ожидаемые результаты каскада фиктивных
 // дат GEDCOM-импорта (волна A3, план .kilo/plans/20261108-canon-pure-a3-plan.md).
 //
-// Литералы сняты с текущего ВК ДО удаления встроенной копии: тело каскада
-// (block fullOf в importGedcom lunarreturns.js) вырезается из исходника и
-// исполняется в VM с каноническим datePlusYears (flat.cjs). После переноса
-// в канон проверяется tgcloud/lib/parse.cjs gedFictiveDates (тот же контракт:
-// (g, famRefs, resolved) → Map xref → полная дата|null; входы не мутируются).
+// Проверяется общий gedFictiveDates: даты, ошибки и неизменность входов.
 // Поведенческая сверка ВК/ТГ на импорте — в dev/sync-check.mjs (GED_KIDS и
 // соседние блоки), здесь — чистый seam с конкретными ожиданиями.
 //
 // Запуск: node dev/a3-ged-check.mjs (также автоматически из dev/sync-check.mjs)
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import vm from 'node:vm';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const canon = require('../tgcloud/lib/parse.cjs');
-const { datePlusYears } = require('../tgcloud/lib/flat.cjs');
-
-// каскад: канон после переноса, иначе — встроенное тело из ВК (этап снятия
-// ожиданий, канона ещё нет)
-function loadCascade() {
-    if (typeof canon.gedFictiveDates === 'function') return { canon: true, f: canon.gedFictiveDates };
-    const src = fs.readFileSync(new URL('../lunarreturns.js', import.meta.url), 'utf8');
-    const m = src.match(/const fullOf = new Map\(\);[\s\S]*?if \(!changed\) break;\n    \}/);
-    if (!m) throw new Error('каскад не найден: ни канона gedFictiveDates, ни блока fullOf в lunarreturns.js');
-    return { canon: false, f: vm.runInNewContext('(function (g, famRefs, resolved, datePlusYears) {' + m[0] + '\nreturn fullOf;\n})', {}) };
-}
-const cascade = loadCascade();
-const run = (g, famRefs, resolved) => cascade.canon
-    ? cascade.f(g, famRefs, resolved)
-    : cascade.f(g, famRefs, resolved, datePlusYears);
+const run = canon.gedFictiveDates;
 
 // входы адаптеров: famRefs — xref'ы, упомянутые в семьях; resolved —
 // послеколлизионные даты датированных
@@ -102,9 +82,9 @@ const cases = [
         want: [['C1', '1960-02-28'], ['C2', '1981-03-01'], ['C3', '1982-03-01']],
     },
     {
-        // отсутствие опорных дат: бездатные в семье — заглушки (null);
+        // отсутствие опорных дат: CHIL получает техническую дату;
         // бездатный вне семей и безымянный датированный — вовсе мимо карты
-        name: 'без якорей: null-заглушки, посторонние мимо',
+        name: 'без якорей: технические даты, посторонние мимо',
         g: ged([
             '0 @D1@ INDI', '1 NAME Сирота1 /С/',
             '0 @D2@ INDI', '1 NAME Сирота2 /С/',
@@ -112,7 +92,7 @@ const cases = [
             '0 @D4@ INDI', '1 BIRT', '2 DATE 1 JAN 1900',
             '0 @K1@ FAM', '1 CHIL @D1@', '1 CHIL @D2@']),
         resolved: new Map(),
-        want: [['D1', null], ['D2', null]],
+        want: [['D1', '1900-01-01'], ['D2', '1901-01-01']],
     },
     {
         // дубль имени в файле: resolved несёт послеколлизионные (здесь —
@@ -199,29 +179,36 @@ const cases = [
     },
 ];
 
-// Один бездатный ребёнок; датные сиблинги намеренно стоят после него в CHIL.
-for (const [name, marr, div, death, siblings, want] of [
-    ['свадьба ограничивает ранний якорь', '1900-06-01', null, null, ['1900-01-01'], '1901-06-01'],
+// Один бездатный ребёнок; позиция задаёт ожидаемое старшинство.
+for (const [name, marr, div, death, siblings, want, position = 0, errors = [], order] of [
+    ['свадьба ограничивает ранний якорь', '1900-06-01', null, null, ['1900-01-01'], '1901-06-01', 1],
     ['смерть: свободное место до младшего', null, null, '1904-01-01', ['1905-01-01'], '1904-01-01'],
-    ['развод: свободное место между детьми', '1900-01-01', '1904-01-01', null, ['1902-01-01', '1906-01-01'], '1905-01-01'],
-    ['ровно год между детьми', '1900-01-01', '1902-01-01', '1903-01-01', ['1902-01-01', '1904-01-01'], '1903-01-01'],
-    ['нет места: день смерти', '1900-01-01', null, '1901-06-01', ['1901-01-01'], '1901-06-01'],
-    ['нет места и смерти: старый вариант', '1900-01-01', '1900-01-01', null, ['1901-01-01'], '1902-01-01'],
-    ['смерть до свадьбы', '1900-01-01', null, '1899-12-31', [], '1899-12-31'],
+    ['развод: свободное место между детьми', '1900-01-01', '1904-01-01', null, ['1902-01-01', '1906-01-01'], '1905-01-01', 1],
+    ['ровно год между детьми', '1900-01-01', '1902-01-01', '1903-01-01', ['1902-01-01', '1904-01-01'], '1903-01-01', 1],
+    ['нет места с годовым отступом', '1900-01-01', null, '1901-06-01', ['1901-01-01'], '1901-01-01', 0, ['годовой интервал']],
+    ['развод: единственный день совпал с ДР сиблинга', '1900-01-01', '1900-01-01', null, ['1901-01-01'], '1901-01-01', 0, ['годовой интервал']],
+    ['смерть до свадьбы', '1900-01-01', null, '1899-12-31', [], '1899-12-31', 0, ['раньше свадьбы']],
     ['только смерть', null, null, '1900-05-06', [], '1900-05-06'],
     ['високосная граница свадьбы', '1904-02-29', null, '1905-03-01', [], '1905-03-01'],
     ['ограничение внутри одного года', null, null, '1904-04-01', ['1905-03-01'], '1904-03-01'],
+    ['годовой отступ требует другого места, без ошибки', '1900-01-01', null, null, ['1901-02-01'], '1902-02-01', 0, [], ['S0', 'C']],
+    ['в тесном окне сохраняется только порядок', '1900-01-01', '1900-01-01', null, ['1901-07-01'], '1901-01-01', 0, ['годовой интервал']],
+    ['год до 29 февраля', null, null, null, ['2000-02-29'], '1999-02-28'],
+    ['исправляем обратный порядок известных ДР', null, null, null, ['1980-01-01', '1975-01-01'], '1979-01-01', 1, [], ['S1', 'C', 'S0']],
+    ['равные известные ДР сохраняют свой порядок', null, null, null, ['1980-01-01', '1980-01-01'], '1979-01-01', 0, [], ['C', 'S0', 'S1']],
 ]) {
+    const children = siblings.map((_, i) => 'S' + i);
+    children.splice(position, 0, 'C');
     const g = {
         indis: [{ __xref: 'C', name: 'Child', deat: death ? { date: death } : undefined },
             ...siblings.map((d, i) => ({ __xref: 'S' + i, name: 'Sibling' + i, birt: { date: d } }))],
-        fams: [{ chil: ['C', ...siblings.map((_, i) => 'S' + i)],
+        fams: [{ chil: children,
             marr: marr ? { date: marr } : undefined, div: div ? { date: div } : undefined }],
     };
-    cases.push({ name, g, resolved: new Map(), want: [['C', want], ...siblings.map((d, i) => ['S' + i, d])] });
+    cases.push({ name, g, resolved: new Map(), errors, order, want: [['C', want], ...siblings.map((d, i) => ['S' + i, d])] });
 }
 cases.push({
-    name: 'частичные даты: первая назначившая семья, супруги без изменений',
+    name: 'частичные даты: конфликт двух семей, супруги без изменений',
     g: ged([
         '0 @P@ INDI', '1 NAME Parent', '1 BIRT', '2 DATE 1880',
         '0 @W@ INDI', '1 NAME Wife',
@@ -232,7 +219,8 @@ cases.push({
         '0 @F2@ FAM', '1 CHIL @C@', '1 MARR', '2 DATE 1950',
     ]),
     resolved: new Map(),
-    want: [['P', '1880-01-01'], ['W', '1880-01-01'], ['C', '1903-01-01'], ['S', '1904-01-01']],
+    want: [['P', '1880-01-01'], ['W', '1880-01-01'], ['C', '1903-06-01'], ['S', '1904-01-01']],
+    errors: ['годовой интервал', 'позже развода', 'раньше свадьбы'],
 });
 cases.push({
     name: 'полусиблинг не блокирует место, выбранная дата якорит следующего',
@@ -284,23 +272,52 @@ cases.push({
     resolved: new Map(), want: [['P', '1889-10-19'], ['C', '1909-10-19']],
 });
 
+cases.push({
+    name: 'CHIL, а не XREF или порядок INDI; два пропуска до и между якорями',
+    g: ged([
+        '0 @I1@ INDI', '1 NAME Later', '1 BIRT', '2 DATE 10 MAR 1978',
+        '0 @I3@ INDI', '1 NAME First', '0 @I90@ INDI', '1 NAME Second',
+        '0 @I8@ INDI', '1 NAME Start', '1 BIRT', '2 DATE 10 MAR 1975',
+        '0 @I25@ INDI', '1 NAME Middle1', '0 @I4@ INDI', '1 NAME Middle2',
+        '0 @F@ FAM', '1 CHIL @I3@', '1 CHIL @I90@', '1 CHIL @I8@',
+        '1 CHIL @I25@', '1 CHIL @I4@', '1 CHIL @I1@',
+    ]), resolved: new Map(),
+    want: [['I3', '1973-03-10'], ['I90', '1974-03-10'], ['I8', '1975-03-10'],
+        ['I25', '1976-03-10'], ['I4', '1977-03-10'], ['I1', '1978-03-10']], errors: [],
+});
+cases.push({
+    name: 'поздний первенец переставляет оценённого ребёнка без ошибки',
+    g: ged([
+        '0 @A@ INDI', '1 NAME Older', '1 BIRT', '2 DATE 1900',
+        '0 @B@ INDI', '1 NAME Younger', '0 @C@ INDI', '1 NAME Child',
+        '0 @F@ FAM', '1 CHIL @A@', '1 CHIL @B@', '1 CHIL @B@',
+        '0 @F2@ FAM', '1 HUSB @B@', '1 CHIL @C@', '1 MARR', '2 DATE 1900',
+    ]), resolved: new Map(), want: [['A', '1900-01-01'], ['B', '1881-01-01'], ['C', '1901-01-01']],
+    errors: [], order: ['B', 'A'],
+});
+
 for (const c of cases) {
     const famRefs = famRefsOf(c.g);
     const resolvedBefore = JSON.stringify([...c.resolved.entries()]);
     const gedBefore = JSON.stringify(c.g);
     const refsBefore = [...famRefs];
-    const norm = m => [...m.entries()].map(([k, v]) => [k, v]).sort((a, b) => a[0] < b[0] ? -1 : 1); // VM-realm → host
-    const fullOf = run(c.g, famRefs, c.resolved);
+    const norm = m => [...m].sort(([a], [b]) => a.localeCompare(b));
+    const { fullOf, birthOrderErrors, childrenByFamily } = run(c.g, famRefs, c.resolved);
     const got = norm(fullOf);
-    const want = [...c.want].sort((a, b) => a[0] < b[0] ? -1 : 1);
+    const want = norm(c.want);
     assert.deepEqual(got, want, c.name + '\n  факт: ' + JSON.stringify(got));
+    if (c.order) assert.deepEqual(childrenByFamily.get(c.g.fams[0]), c.order, c.name);
+    if (c.errors) {
+        const reasons = birthOrderErrors.flatMap(e => e.reasons);
+        assert.equal(reasons.length, c.errors.length, c.name + ': ' + JSON.stringify(birthOrderErrors));
+        for (const expected of c.errors) assert.ok(reasons.some(r => r.includes(expected)), c.name + ': ' + expected);
+    }
     // чистота: входы не мутируются, повторный вызов — тот же результат
     assert.equal(JSON.stringify([...c.resolved.entries()]), resolvedBefore, c.name + ': resolved мутирован');
     assert.equal(JSON.stringify(c.g), gedBefore, c.name + ': GEDCOM мутирован');
     assert.deepEqual([...famRefs], refsBefore, c.name + ': famRefs мутирован');
-    assert.deepEqual(norm(run(c.g, famRefs, c.resolved)), want, c.name + ': повторный вызов');
+    const repeated = run(c.g, famRefs, c.resolved);
+    assert.deepEqual(repeated, { fullOf, birthOrderErrors, childrenByFamily }, c.name + ': повторный вызов');
 }
 
-console.log('A3 ged fictive-cascade expectations: OK'
-    + ' (' + (cascade.canon ? 'canon gedFictiveDates' : 'inline VK body, pre-extraction') + ', '
-    + cases.length + ' сценариев)');
+console.log('A3 ged fictive-cascade expectations: OK (' + cases.length + ' сценариев)');

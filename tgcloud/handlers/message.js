@@ -57,7 +57,7 @@ const sendJubilee = async (chatId, rec, note = "", replyTo = 0) => {
     const xref = rec.xref ?? rec.fx ?? null;
     if (!xref) throw new Error("нет xref у записи");
     const sent = await sendLong(chatId, jubileeText(rec, note),
-        jubileeMarkup(xref, depth, false, rec.n.includes("+")), undefined, replyTo);
+        jubileeMarkup(xref, depth, false, rec.n.includes("+")), undefined, replyTo, true);
     if (sent && sent.message_id) {
         // чистка устаревших строк чата (старше 7 суток) + запись текущей
         const weekAgo = Date.now() - 7 * 24 * 3600000;

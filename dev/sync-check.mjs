@@ -1495,36 +1495,38 @@ VK.importGedcom(GS_CH, VK.parseGedcom(VK.gedcomText(GS_CH)));
 await TG.importGedcom(GS_CH, TGP.parseGedcom(await TG.gedcomText(GS_CH)));
 cmp('round-trip .ged бездатные', VK.chatFlatText(GS_CH), await TG.chatFlatText(GS_CH));
 
-// ==================== 3бв-1. полностью бездатное древо: гейт выгрузки ======
-// все персоны бездатные — связи «Имя Д» (edges/links) пусты, но выгрузка
-// .ged по xref возможна; гейт «связей пока нет» смотрит на fam/chil, а не
-// на численность ключевых связей
+// ==================== 3бв-1. полностью бездатный GEDCOM: импорт и выгрузка ======
+// Техническая дата запускает каскад даже без единой входной даты рождения.
 const GED_NODATE = fs.readFileSync(path.join(ROOT, 'dev', 'fixtures', 'fam-nodate.ged'), 'utf8');
 const ND_CH = 140;
 VK.clearChatTree(ND_CH);
 await TG.clearChatTree(ND_CH);
-VK.importGedcom(ND_CH, VK.parseGedcom(GED_NODATE));
-await TG.importGedcom(ND_CH, TGP.parseGedcom(GED_NODATE));
+const vkImpND = VK.importGedcom(ND_CH, VK.parseGedcom(GED_NODATE));
+const tgImpND = await TG.importGedcom(ND_CH, TGP.parseGedcom(GED_NODATE));
+cmp('бездатное древо отчёт', vkImpND, tgImpND);
+assert.deepEqual(vkImpND.birthOrderErrors, [], 'technical anchor alone is not a warning');
 cmp('бездатное древо hasTree', VK.hasTree(ND_CH) ? 'да' : 'нет', (await TG.hasTree(ND_CH)) ? 'да' : 'нет');
 if (!VK.hasTree(ND_CH))
     { failed++; console.log('✗ hasTree: бездатное древо не распознано'); }
 cmp('бездатное древо гедком', VK.gedcomText(ND_CH), await TG.gedcomText(ND_CH));
 if (!VK.gedcomText(ND_CH).includes('1 FAMS'))
     { failed++; console.log('✗ бездатное древо: выгрузка пуста'); }
+{
+    const ged = TGP.parseGedcom(VK.gedcomText(ND_CH));
+    for (const xref of ['X1', 'X3', 'X5', 'X6'])
+        assert.equal(ged.indis.find(i => i.__xref === xref).birt.abt, 15, 'estimated child ' + xref);
+}
 
 // ==================== 3бв. бездатные дети: сиблинг/свадьба/родитель ======
-// приоритет: ДР последнего сиблинга +1 год → свадьба +1 год →
-// ДР младшего родителя +20 лет; каждый следующий бездатный ребёнок семьи —
-// +1 год к предыдущей присвоенной дате (каскад, не повторно к якорю);
-// одноимённые дети тоже следуют каскаду; коллизии ключей — суффикс ~xref;
-// без всего перечисленного — заглушка без даты
+// Шаг назад от правого CHIL-якоря, вперёд от левого; без сиблингов —
+// свадьба/родители, а без любых якорей — техническая дата.
 const GED_KIDS = ['0 HEAD',
     '0 @I1@ INDI', '1 NAME Отец /О/', '1 SEX M', '1 BIRT', '2 DATE 10 MAY 1900',
     '0 @I2@ INDI', '1 NAME Мать /О/', '1 SEX F', '1 BIRT', '2 DATE 20 NOV 1903',
     '0 @I3@ INDI', '1 NAME Старший /О/', '1 BIRT', '2 DATE 1 FEB 1930',
     '0 @I4@ INDI', '1 NAME Дочь /О/', '1 SEX F',                          // сиблинг
     '0 @I5@ INDI', '1 NAME Большой /О/', '1 BIRT', '2 DATE 9 AUG 1933',
-    '0 @I18@ INDI', '1 NAME Младший /О/',                                 // каскад после Дочи О
+    '0 @I18@ INDI', '1 NAME Младший /О/',                                 // левый якорь: Большой О
     '0 @F1@ FAM', '1 HUSB @I1@', '1 WIFE @I2@', '1 CHIL @I3@', '1 CHIL @I4@', '1 CHIL @I5@', '1 CHIL @I18@',
     '1 MARR', '2 DATE 7 JUL 1928',
     '0 @I6@ INDI', '1 NAME Папа /П/', '1 BIRT', '2 DATE 1 JAN 1901',
@@ -1544,7 +1546,7 @@ const GED_KIDS = ['0 HEAD',
     '0 @F4@ FAM', '1 HUSB @I14@', '1 WIFE @I15@', '1 CHIL @I12@', '1 CHIL @I13@', '1 CHIL @I19@',
     '1 MARR', '2 DATE 1 DEC 1943',
     '0 @I16@ INDI', '1 NAME Мать4 /Н/', '1 SEX F',
-    '0 @I17@ INDI', '1 NAME Реб /Н/',                                     // ничего не известно — без даты
+    '0 @I17@ INDI', '1 NAME Реб /Н/',                                     // техническая дата
     '0 @F5@ FAM', '1 WIFE @I16@', '1 CHIL @I17@',
     '0 TRLR'].join('\n');
 const GK_CH = 15;
@@ -1568,40 +1570,40 @@ const kidWant = (n, d, what) => {
     if (!kidOf(n).some(r => r.d === d))
         { failed++; console.log('✗ бездатные дети ' + what + ': нет ключа «' + n + ' ' + d + '»: ' + kidOf(n).map(r => r.n + ' ' + r.d).join(' | ')); }
 };
-kidWant('Дочь О', '1934-08-09', 'последний сиблинг +1 год');
-kidWant('Младший О', '1935-08-09', 'каскад +1 год к фиктивной дате Дочи');
+kidWant('Дочь О', '1932-08-09', 'правый сиблинг −1 год');
+kidWant('Младший О', '1934-08-09', 'левый сиблинг +1 год');
 kidWant('Тот П', '1924-02-02', 'младший родитель +20 лет');
 kidWant('Сын П', '1926-03-03', 'родитель без свадьбы +20 лет');
 kidWant('Дочка П', '1927-03-03', 'каскад +1 год к фиктивной дате Сына');
 kidWant('Близнец К', '1944-12-01', 'свадьба +1 год');
 kidWant('Близнец К', '1945-12-01', 'второй одноимённый ребёнок — каскад +1 год');
 kidWant('Третий К', '1946-12-01', 'каскад +1 год к фиктивной дате Близнеца');
-{
-    const reb = kidOf('Реб Н')[0];
-    if (reb && reb.d !== undefined) { failed++; console.log('✗ бездатные дети: «Реб Н» получил дату ' + reb.d); }
-}
+kidWant('Реб Н', '1900-01-01', 'техническая дата без якорей');
 
 // Constrained children keep their selected dates through adapter collisions and GED round-trips.
 {
     const id = 151;
-    const source = ['0 HEAD',
-        '0 @P@ INDI', '1 NAME Constraint Parent', '1 BIRT', '2 DATE 1 JAN 1970',
-        '0 @D@ INDI', '1 NAME Death Limited', '1 DEAT', '2 DATE 1 JUN 2004', '2 PLAC Rest',
-        '0 @S1@ INDI', '1 NAME Death Sibling', '1 BIRT', '2 DATE 1 JUN 2005',
-        '0 @V@ INDI', '1 NAME Divorce Limited',
-        '0 @S2@ INDI', '1 NAME Divorce Sibling', '1 BIRT', '2 DATE 1 JUN 2005',
-        '0 @C1@ INDI', '1 NAME Fallback Child', '1 DEAT', '2 DATE 1 JAN 2000', '2 PLAC Rest',
-        '0 @C2@ INDI', '1 NAME Fallback Child', '1 DEAT', '2 DATE ABT 1 JAN 2000', '2 PLAC Rest',
-        '0 @FD@ FAM', '1 HUSB @P@', '1 CHIL @D@', '1 CHIL @S1@', '1 MARR', '2 DATE 1 JAN 2000',
-        '0 @FV@ FAM', '1 HUSB @P@', '1 CHIL @V@', '1 CHIL @S2@',
-        '1 MARR', '2 DATE 1 JAN 2000', '1 DIV', '2 DATE 1 JUN 2003',
-        '0 @FC@ FAM', '1 HUSB @P@', '1 CHIL @C1@', '1 CHIL @C2@', '1 MARR', '2 DATE 1 JAN 2010',
-        '0 TRLR',
-    ].join('\n');
+    const fixture = path.join(ROOT, 'dev/fixtures/ged-child-birth-order');
+    const source = TGP.parseGedcom(fs.readFileSync(fixture + '.ged', 'utf8'));
+    const diagnosticText = fs.readFileSync(fixture + '.stderr.txt', 'utf8').trimEnd();
+    const gap = 'не выдержан годовой интервал между рождениями';
+    const expectedErrors = ['C1', 'C2'].map(xref => ({
+        xref, name: 'Fallback Child', fam: 'FC', date: '2000-01-01',
+        reasons: [gap, 'ДР раньше свадьбы + 1 год'],
+    }));
+    expectedErrors.push({ xref: 'G2', name: 'Short Gap Child', fam: 'FG', date: '2008-05-01', reasons: [gap] });
     const results = [];
     for (const [platform, api] of [['VK', VK], ['TG', TG]]) {
-        const report = await api.importGedcom(id, TGP.parseGedcom(source));
+        await api.upsertPerson(id, { n: 'Replaced Person', d: '1970-01-01' });
+        const report = await api.importGedcom(id, source);
+        assert.deepEqual([report.persons, report.fams, report.links], [15, 5, 14], platform);
+        assert.deepEqual(report.errors, [], platform);
+        assert.deepEqual(report.birthOrderErrors, expectedErrors, platform);
         assert.deepEqual(report.dups, [{ from: 'Fallback Child', to: 'Fallback Child ~C2 2000-01-01~' }], platform);
+        const text = api.treeReport(report);
+        assert.match(text, /^✅ древо:/);
+        assert.doesNotMatch(text, /стр \d+/);
+        assert.ok(text.endsWith('\n' + diagnosticText), text);
         const before = {
             rows: await api.personRows(id), families: await api.famList(id),
             flat: await api.chatFlatText(id), ged: await api.gedcomText(id),
@@ -1609,12 +1611,17 @@ kidWant('Третий К', '1946-12-01', 'каскад +1 год к фиктив
         for (let pass = 0; pass < 2; pass++) {
             const rows = await api.personRows(id);
             const ged = TGP.parseGedcom(await api.gedcomText(id));
-            assert.equal(rows.length, 7, platform + ': duplicate fallback children remain distinct');
-            for (const [xref, name, date, death, deathAbt] of [
-                ['D', 'Death Limited', '2004-06-01', '2004-06-01', 0],
+            assert.equal(rows.length, 15, platform + ': duplicate fallback children remain distinct');
+            assert.ok(!rows.some(p => p.n === 'Replaced Person'), platform + ': diagnostics do not block replacement');
+            for (const [xref, name, date, death, deathAbt, deathPlace] of [
+                ['D', 'Death Limited', '2004-06-01', '2004-06-01', 0, 'Rest'],
                 ['V', 'Divorce Limited', '2004-06-01', null, 0],
-                ['C1', 'Fallback Child', '2000-01-01', '2000-01-01', 0],
-                ['C2', 'Fallback Child ~C2', '2000-01-01', '2000-01-01', 3],
+                ['C1', 'Fallback Child', '2000-01-01', '2000-01-01', 0, 'Rest'],
+                ['C2', 'Fallback Child ~C2', '2000-01-01', '2000-01-01', 3, 'Rest'],
+                ['I80', 'Before Anchor', '2001-06-01', null, 0],
+                ['I22', 'Middle Gap', '2004-06-01', null, 0],
+                ['I7', 'After Anchor', '2006-06-01', null, 0],
+                ['G2', 'Short Gap Child', '2008-05-01', '2008-05-01', 0],
             ]) {
                 const row = rows.find(p => p.n === name);
                 assert.ok(row, platform + ': saved ' + name);
@@ -1626,25 +1633,37 @@ kidWant('Третий К', '1946-12-01', 'каскад +1 год к фиктив
                 assert.equal(person.name, name.replace(/ ~\S+$/, ''));
                 assert.deepEqual([person.birt.date, person.birt.abt], [date, 15], platform + ': exported EST ' + xref);
                 assert.deepEqual(person.deat && [person.deat.date, person.deat.abt || 0, person.deat.plac],
-                    death ? [death, deathAbt, 'Rest'] : null, platform + ': exported death ' + xref);
+                    death ? [death, deathAbt, deathPlace] : null, platform + ': exported death ' + xref);
             }
-            for (const [family, children] of [['FD', ['D', 'S1']], ['FV', ['V', 'S2']], ['FC', ['C1', 'C2']]]) {
-                const f = ged.fams.find(f => f.__xref === family);
+            for (const family of source.fams) {
+                const f = ged.fams.find(f => f.__xref === family.__xref);
                 assert.equal(f.husb, 'P');
-                assert.deepEqual(f.chil, children, platform + ': preserved family ' + family);
+                const order = family.__xref === 'FO' ? ['I80', 'I3', 'I22', 'I2', 'I7'] : family.chil;
+                assert.deepEqual(f.chil, order, platform + ': exported child order in ' + family.__xref);
+                const stored = (await api.famList(id)).find(f => f.xref === family.__xref);
+                assert.deepEqual(stored.children, order.map(x => {
+                    const row = rows.find(p => p.xref === x);
+                    return row.n + ' ' + row.d;
+                }), platform + ': stored child order in ' + family.__xref);
             }
-            for (const xref of ['S1', 'S2']) {
-                const sibling = ged.indis.find(p => p.__xref === xref);
-                assert.deepEqual([sibling.birt.date, sibling.birt.abt || 0], ['2005-06-01', 0], platform + ': factual sibling unchanged');
+            const edges = api === VK ? VK.linkPairs(id) : (await TG.linksAll(id)).map(l => [l.p, l.c]);
+            assert.deepEqual(edges.sort(), rows.filter(p => p.n !== 'Constraint Parent')
+                .map(p => ['Constraint Parent 1970-01-01', p.n + ' ' + p.d]).sort(), platform + ': all parent links survive');
+            for (const p of source.indis.filter(p => p.birt)) {
+                const exported = ged.indis.find(i => i.__xref === p.__xref);
+                assert.deepEqual(exported.birt, p.birt, platform + ': input birth unchanged ' + p.__xref);
             }
-            if (pass === 0) await api.importGedcom(id, TGP.parseGedcom(before.ged));
+            if (pass === 0) {
+                const reimport = await api.importGedcom(id, TGP.parseGedcom(before.ged));
+                assert.deepEqual(reimport.birthOrderErrors, [], platform + ': input EST dates are not re-estimated');
+            }
         }
         const after = {
             rows: await api.personRows(id), families: await api.famList(id),
             flat: await api.chatFlatText(id), ged: await api.gedcomText(id),
         };
         assert.deepEqual(after, before, platform + ': constrained children export/reimport is stable');
-        results.push(after);
+        results.push({ after, text });
     }
     cmp('importGedcom constrained children export/reimport', results[0], results[1]);
 }

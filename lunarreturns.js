@@ -80,7 +80,7 @@ const { graftError } = reqLib("flat");
 // ТГ-копия напрямую из bot.js (`import … from './flat.cjs'`, как tree.cjs); правки — только в .cjs.
 const {
     flatTreeText, subsetBranch, flatSearch, flatHitPerson, flatHitKey,
-    treeReport, rootOf, cutLines, createFlatAnnotationScope } = reqLib("flat");
+    treeReport, birthOrderReport, rootOf, cutLines, createFlatAnnotationScope } = reqLib("flat");
 
 
 // ============================== ВЫВОД ==============================
@@ -917,9 +917,8 @@ function deleteEventCascade(peerId, key) {
 // заново (слияние больше не делаем — смешивание источников ломало базу).
 // fam — по одному на каждый FAM файла с точными xref'ами (без слипания
 // семей ребёнка); свадьбы живут на fam — точная привязка супругов;
-// бездатные импортируются, когда упомянуты в семье — с фиктивной датой
-// (супруг: дата половины; ребёнок: каскад сиблинг/свадьба/родитель, birt_abt 15 — EST-день),
-// без варианта — заглушки-персоны (birt_d NULL); безымянные — мимо.
+// именованные дети без ДР получают оценку с учётом порядка CHIL (EST-день);
+// бездатные супруги вне CHIL могут остаться заглушками (birt_d NULL).
 // Возвращает краткий отчёт. Повторный импорт лечит любые старые данные
 function importGedcom(peerId, g) {
     g = mskGedcom(g);
@@ -963,13 +962,7 @@ function importGedcom(peerId, g) {
         byId.set(ind.__xref, ind.__xref);
         persons++;
     }
-    // единый каскад фиктивных дат до фиксированной точки — канон
-    // gedFictiveDates (parse.cjs): карта xref → фиктивная полная дата|null,
-    // датированные в файле — послеколлизионные (resolved), бездатные
-    // поимённые в famRefs — вычисленные; правила якорей (сиблинг/свадьба/
-    // полусиблы/родитель, супруги) — в каноне. Вставки, коллизии фиктивных
-    // дат (uniqueKeyOf yearly) и счётчики — ниже, платформенные
-    const fullOf = gedFictiveDates(g, famRefs, resolved);
+    const { fullOf, birthOrderErrors, childrenByFamily } = gedFictiveDates(g, famRefs, resolved);
     const dateProtectedRefs = new Set(g.fams.flatMap(f => [...f.chil, ...(f.chil.length ? [f.husb, f.wife] : [])]));
     // второй проход: бездатные супруги и дети — фиктивная полная дата,
     // birt_abt 15 (EST-день: в шкале PDF нет года и прожитых лет, печать —
@@ -1040,7 +1033,7 @@ function importGedcom(peerId, g) {
             f.note ?? null,
             f.div && f.div.date ? f.div.date : null, (f.div && f.div.abt) || 0, f.div && f.div.plac ? f.div.plac : null);
         if (insF.changes) famCount++;
-        for (const cx of f.chil) {
+        for (const cx of childrenByFamily.get(f)) {
             const c = byId.get(cx);
             if (!c) continue;
             const insC = qr("INSERT OR IGNORE INTO chil(chat,fam,indi,adopted) VALUES(?,?,?,?)",
@@ -1064,7 +1057,7 @@ function importGedcom(peerId, g) {
             if (famRaw(peerId, fx))
                 qr("UPDATE chil SET adopted=1 WHERE chat=? AND fam=? AND indi=?", peerId, fx, c);
     }
-    return { persons, fams: famCount, links: childCount, errors: [], dups,
+    return { persons, fams: famCount, links: childCount, errors: [], dups, birthOrderErrors,
         chartWarnings: importChartWarnings(peerId) };
 }
 
@@ -2811,9 +2804,11 @@ module.exports.convertGenealogy = function (mode, text) {
         if (mode === "ged2txt") {
             const ged = parseGedcom(text);
             if (!ged) throw new Error("Invalid GEDCOM: expected HEAD and GEDC/INDI/FAM records");
-            importGedcom(0, ged);
+            const { birthOrderErrors } = importGedcom(0, ged);
             const output = chatFlatText(0);
             if (!output) throw new Error("GEDCOM contains no exportable persons");
+            const warnings = birthOrderReport(birthOrderErrors);
+            if (warnings) console.error(warnings);
             return output;
         }
         if (mode !== "txt2ged") throw new Error("Unknown conversion mode");

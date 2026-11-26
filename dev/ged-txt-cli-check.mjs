@@ -25,7 +25,8 @@ function run(mode, args, success = true) {
 try {
     const fixtures = ['repeated-one-sided-families', 'divorce-without-wedding',
         'qualified-partial-dates-notes-places', 'multigeneration-shared-person',
-        'dateless-child-fictive-birth', 'repeated-full-couple-marriages', 'hash-text-xrefs-dateless-notes', 'fam-nodate'];
+        'dateless-child-fictive-birth', 'repeated-full-couple-marriages', 'hash-text-xrefs-dateless-notes',
+        'fam-nodate', 'ged-child-birth-order'];
     for (const name of fixtures) {
         const source = fs.readFileSync(path.join(root, 'dev/fixtures', name + '.ged'), 'utf8');
         if (name === 'hash-text-xrefs-dateless-notes') {
@@ -48,8 +49,15 @@ try {
         }
         const input = path.join(tmp, name + ' with spaces.GED');
         fs.writeFileSync(input, '\uFEFF' + source);
-        run('ged2txt', [input]);
+        const conversion = run('ged2txt', [input]);
         const txt = read(input + '.txt');
+        if (name === 'ged-child-birth-order') {
+            const warnings = read(path.join(root, 'dev/fixtures', name + '.stderr.txt'));
+            assert.equal(conversion.stdout, input + '.txt\n');
+            assert.equal(conversion.stderr, warnings);
+            assert.doesNotMatch(txt, /Оценочные даты рождения|порядок старшинства|годовой интервал/);
+            assert.match(txt, /Fallback Child ~C2 2000-01-01~/);
+        }
         assert.equal(fs.readFileSync(input + '.txt')[0], 0xef);
         assert.equal(parseTree(txt).errors.length, 0, txt);
         assert.ok(txt.length);
@@ -102,6 +110,20 @@ try {
             assert.match(txt, /===Child/);
         }
         if (name === 'dateless-child-fictive-birth') assert.match(txt, /DatelessChild .*~/);
+        if (name === 'ged-child-birth-order') {
+            const groups = ged.fams.map(f => f.chil.map(xref => {
+                const p = ged.indis.find(i => i.__xref === xref);
+                return [p.name, p.birt.date, p.birt.abt || 0];
+            }));
+            assert.deepEqual(groups, [
+                [['Death Limited', '2004-06-01', 15], ['Death Sibling', '2005-06-01', 0]],
+                [['Divorce Limited', '2004-06-01', 15], ['Divorce Sibling', '2005-06-01', 0]],
+                [['Before Anchor', '2001-06-01', 15], ['Early Anchor', '2002-06-01', 0],
+                    ['Middle Gap', '2004-06-01', 15], ['Late Anchor', '2005-06-01', 16], ['After Anchor', '2006-06-01', 15]],
+                [['Short Gap Elder', '2008-01-01', 0], ['Short Gap Child', '2008-05-01', 15], ['Short Gap Younger', '2009-05-01', 0]],
+                [['Fallback Child', '2000-01-01', 15], ['Fallback Child', '2000-01-01', 15]],
+            ]);
+        }
         if (name === 'repeated-full-couple-marriages') {
             assert.equal(ged.fams.length, 3);
             assert.match(txt, /\+1970 1980 ~F1/);
@@ -112,10 +134,12 @@ try {
                 assert.deepEqual(f.chil.map(x => ged.indis.find(i => i.__xref === x).name), [child]);
             }
         }
-        run('ged2txt', [output]);
-        // TXT has no xref identity; a TXT->GED conversion allocates new stub IDs.
+        const reimport = run('ged2txt', [output]);
+        if (name === 'ged-child-birth-order') assert.equal(reimport.stderr, '', 'input EST dates are not re-estimated');
+        // TXT has no xref identity; a TXT->GED conversion allocates new IDs.
         const normalize = s => {
             if (name === 'hash-text-xrefs-dateless-notes') return s.replace(/ ~\S+(?= \^)/g, ' ~xref');
+            if (name === 'ged-child-birth-order') return s.replace(/(Fallback Child) ~\S+(?= 2000-01-01~)/g, '$1 ~xref');
             if (name !== 'fam-nodate') return s;
             const xrefs = new Map();
             return s.replace(/ ~\S+$/gm, token => {

@@ -1810,9 +1810,8 @@ export async function uniqueKeyOf(chatId, name, birtD, approx, yearly, xref) {
 
 // fam — по одному на каждый FAM файла с точными xref'ами (без слипания
 // семей ребёнка); свадьбы живут на fam — точная привязка супругов;
-// бездатные импортируются, когда упомянуты в семье — с фиктивной датой
-// (супруг: дата половины; ребёнок: каскад сиблинг/свадьба/родитель, birtAbt 15 — EST-день),
-// без варианта — заглушки-персоны (birtD null); безымянные — мимо.
+// именованные дети без ДР получают оценку с учётом порядка CHIL (EST-день);
+// бездатные супруги вне CHIL могут остаться заглушками (birtD null).
 // Возвращает краткий отчёт. Повторный импорт лечит любые старые данные
 export async function importGedcom(chatId, g) {
     g = mskGedcom(g);
@@ -1855,13 +1854,7 @@ export async function importGedcom(chatId, g) {
         byX.set(ind.__xref, ind.__xref);
         persons++;
     }
-    // единый каскад фиктивных дат до фиксированной точки — канон
-    // gedFictiveDates (parse.cjs): карта xref → фиктивная полная дата|null,
-    // датированные в файле — послеколлизионные (resolved), бездатные
-    // поимённые в famRefs — вычисленные; правила якорей (сиблинг/свадьба/
-    // полусиблы/родитель, супруги) — в каноне. Вставки, коллизии фиктивных
-    // дат (uniqueKeyOf yearly) и счётчики — ниже, платформенные
-    const fullOf = gedFictiveDates(g, famRefs, resolved);
+    const { fullOf, birthOrderErrors, childrenByFamily } = gedFictiveDates(g, famRefs, resolved);
     const dateProtectedRefs = new Set(g.fams.flatMap(f => [...f.chil, ...(f.chil.length ? [f.husb, f.wife] : [])]));
     // второй проход: бездатные супруги и дети — фиктивная полная дата,
     // birtAbt 15 (EST-день: в шкале PDF нет года и прожитых лет, печать —
@@ -1933,7 +1926,7 @@ export async function importGedcom(chatId, g) {
             divPlac: f.div && f.div.plac ? f.div.plac : null,
         }).run(); // тот же FAM zweimal — не бывает в валидном гедкоме
         famCount++;
-        for (const cx of f.chil) {
+        for (const cx of childrenByFamily.get(f)) {
             const c = byX.get(cx);
             if (!c) continue;
             try {
@@ -1961,7 +1954,7 @@ export async function importGedcom(chatId, g) {
                 .where(and(eq(chil.chatId, chatId), eq(chil.fam, fx), eq(chil.indi, c))).run();
         }
     }
-    return { persons, fams: famCount, links: childCount, errors: [], dups,
+    return { persons, fams: famCount, links: childCount, errors: [], dups, birthOrderErrors,
         chartWarnings: await importChartWarnings(chatId) };
 }
 
@@ -2002,18 +1995,16 @@ export async function replaceWithGedcom(chatId, g, backup) {
     return { ok: true, head: treeReport(r) };
 }
 
-// sendMessage с разбиением длинного текста (лимит TG 4096);
-// текст jubileeText — HTML со спойлерами, поэтому parse_mode всегда HTML.
-// Если не влезает — ВЕСЬ текст одним .txt-файлом (имя name), разметка снята
-// (stripHtml), переносы сохранены; не выложился — сообщение об ошибке (без кусков)
-export async function sendLong(chatId, text, replyMarkup, name, replyTo = 0) {
+// По умолчанию отправляем обычный текст; юбилей явно включает HTML со спойлерами.
+// Длинный текст уходит целиком одним .txt-файлом (без HTML-разметки).
+export async function sendLong(chatId, text, replyMarkup, name, replyTo = 0, html = false) {
     const reply = replyTo
         ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {};
     const parts = splitText(text);
     if (parts.length === 1) {
         // возвращаем Message: отправщику нужен message_id (например, чтобы
         // вставить строку focus_view под кнопки)
-        return api.sendMessage({ chat_id: chatId, text, parse_mode: 'HTML', reply_markup: replyMarkup, ...reply });
+        return api.sendMessage({ chat_id: chatId, text, parse_mode: html ? 'HTML' : undefined, reply_markup: replyMarkup, ...reply });
     }
     // BOM — чтобы Windows-редакторы (Блокнот) открывали как UTF-8, а не ANSI
     const base = fileBaseOf(name || "Ответ") + ".txt";
@@ -2021,7 +2012,7 @@ export async function sendLong(chatId, text, replyMarkup, name, replyTo = 0) {
         const enc = new TextEncoder();
         return await api.sendDocument({
             chat_id: chatId,
-            document: new InputFile(enc.encode("\uFEFF" + stripHtml(text)), base, { type: "text/plain" }),
+            document: new InputFile(enc.encode("\uFEFF" + (html ? stripHtml(text) : text)), base, { type: "text/plain" }),
             reply_markup: replyMarkup, ...reply,
         });
     } catch (e) {
